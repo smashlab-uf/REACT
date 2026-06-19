@@ -6,11 +6,11 @@ from rest_framework import status as http_status
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from app.models import User, UserData, NotificationData, WearableDevice, HeartRateSample, ActivitySummary, EMA, JITAILog
+from app.models import User, UserData, NotificationData, WearableDevice, HeartRateSample, StressSample, EMA, JITAILog
 from app.serializers import (
     UserSerializer, UserDataSerializer, NotificationDataSerializer,
     WearableDeviceSerializer, HeartRateSampleSerializer,
-    ActivitySummarySerializer, EMASerializer, JITAILogSerializer,
+    StressSampleSerializer, EMASerializer, JITAILogSerializer,
 )
 from app.utils import check_game_status, send_notification
 
@@ -24,15 +24,6 @@ def make_user(email='test@example.com', password='testpass123', **kwargs):
     user.set_password(password)
     user.save()
     return user
-
-
-def make_device(user, fitbit_device_id='DEV001', device_type='tracker', device_name='Charge 6'):
-    return WearableDevice.objects.create(
-        user=user,
-        fitbit_device_id=fitbit_device_id,
-        device_type=device_type,
-        device_name=device_name,
-    )
 
 
 def make_game(home_name, home_pts, away_name, away_pts, game_status):
@@ -261,6 +252,15 @@ class CreateUserViewTests(TestCase):
         }, format='json')
         user = User.objects.get(email='new@example.com')
         self.assertNotEqual(user.password, 'securepass123')
+
+    def test_new_user_is_not_enrolled_by_default(self):
+        self.client.post('/user/', {
+            'email': 'new@example.com',
+            'password': 'securepass123',
+        }, format='json')
+        user = User.objects.get(email='new@example.com')
+        self.assertFalse(user.is_enrolled)
+        self.assertIsNone(user.enrolled_at)
 
 
 # ---------------------------------------------------------------------------
@@ -569,32 +569,29 @@ class SendNotificationTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Model: Fitbit token fields
+# Model: User enrollment fields
 # ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class UserFitbitFieldTests(TestCase):
+class UserEnrollmentFieldTests(TestCase):
 
-    def test_user_stores_fitbit_credentials(self):
+    def test_is_enrolled_defaults_to_false(self):
         user = make_user()
-        expires = timezone.now()
-        user.fitbit_user_id = 'ABCD1234'
-        user.fitbit_access_token = 'access_token_value'
-        user.fitbit_refresh_token = 'refresh_token_value'
-        user.fitbit_token_expires = expires
+        self.assertFalse(user.is_enrolled)
+
+    def test_enrolled_at_defaults_to_null(self):
+        user = make_user()
+        self.assertIsNone(user.enrolled_at)
+
+    def test_can_set_enrollment(self):
+        user = make_user()
+        now = timezone.now()
+        user.is_enrolled = True
+        user.enrolled_at = now
         user.save()
         user.refresh_from_db()
-        self.assertEqual(user.fitbit_user_id, 'ABCD1234')
-        self.assertEqual(user.fitbit_access_token, 'access_token_value')
-        self.assertEqual(user.fitbit_refresh_token, 'refresh_token_value')
-        self.assertIsNotNone(user.fitbit_token_expires)
-
-    def test_fitbit_fields_are_nullable(self):
-        user = make_user()
-        self.assertIsNone(user.fitbit_user_id)
-        self.assertIsNone(user.fitbit_access_token)
-        self.assertIsNone(user.fitbit_refresh_token)
-        self.assertIsNone(user.fitbit_token_expires)
+        self.assertTrue(user.is_enrolled)
+        self.assertIsNotNone(user.enrolled_at)
 
 
 # ---------------------------------------------------------------------------
@@ -604,13 +601,11 @@ class UserFitbitFieldTests(TestCase):
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class WearableDeviceModelTests(TestCase):
 
-    def test_device_is_linked_to_user(self):
+    def test_device_is_linked_to_user_via_onetoone(self):
         user = make_user()
         device = WearableDevice.objects.create(
             user=user,
-            fitbit_device_id='ABCD1234',
-            device_type='tracker',
-            device_name='Charge 6',
+            fitabase_participant_id='FITABASE001',
         )
         self.assertEqual(device.user, user)
 
@@ -618,32 +613,38 @@ class WearableDeviceModelTests(TestCase):
         user = make_user()
         device = WearableDevice.objects.create(
             user=user,
-            fitbit_device_id='ABCD1234',
-            device_type='tracker',
-            device_name='Charge 6',
+            fitabase_participant_id='FITABASE001',
         )
         self.assertTrue(device.is_active)
 
-    def test_created_at_is_set_automatically(self):
+    def test_last_synced_at_is_nullable(self):
         user = make_user()
         device = WearableDevice.objects.create(
             user=user,
-            fitbit_device_id='ABCD1234',
-            device_type='tracker',
-            device_name='Charge 6',
+            fitabase_participant_id='FITABASE001',
         )
-        self.assertIsNotNone(device.created_at)
+        self.assertIsNone(device.last_synced_at)
 
     def test_deleting_user_deletes_device(self):
         user = make_user()
-        WearableDevice.objects.create(
-            user=user,
-            fitbit_device_id='ABCD1234',
-            device_type='tracker',
-            device_name='Charge 6',
-        )
+        WearableDevice.objects.create(user=user, fitabase_participant_id='FITABASE001')
         user.delete()
         self.assertEqual(WearableDevice.objects.count(), 0)
+
+    def test_fitabase_participant_id_is_unique(self):
+        from django.db import IntegrityError
+        user1 = make_user(email='u1@example.com')
+        user2 = make_user(email='u2@example.com')
+        WearableDevice.objects.create(user=user1, fitabase_participant_id='SAME_ID')
+        with self.assertRaises(IntegrityError):
+            WearableDevice.objects.create(user=user2, fitabase_participant_id='SAME_ID')
+
+    def test_one_user_cannot_have_two_devices(self):
+        from django.db import IntegrityError
+        user = make_user()
+        WearableDevice.objects.create(user=user, fitabase_participant_id='ID_A')
+        with self.assertRaises(IntegrityError):
+            WearableDevice.objects.create(user=user, fitabase_participant_id='ID_B')
 
 
 # ---------------------------------------------------------------------------
@@ -653,57 +654,64 @@ class WearableDeviceModelTests(TestCase):
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class HeartRateSampleModelTests(TestCase):
 
-    def test_sample_links_to_device(self):
+    def test_sample_links_to_user(self):
         user = make_user()
-        device = make_device(user)
         sample = HeartRateSample.objects.create(
-            device=device,
+            user=user,
             timestamp=timezone.now(),
             bpm=72,
-            zone='fat_burn',
         )
-        self.assertEqual(sample.device, device)
+        self.assertEqual(sample.user, user)
         self.assertEqual(sample.bpm, 72)
-        self.assertEqual(sample.zone, 'fat_burn')
 
-    def test_deleting_device_deletes_samples(self):
+    def test_source_defaults_to_garmin_fitabase(self):
         user = make_user()
-        device = make_device(user)
-        HeartRateSample.objects.create(
-            device=device, timestamp=timezone.now(), bpm=80, zone='cardio'
+        sample = HeartRateSample.objects.create(
+            user=user,
+            timestamp=timezone.now(),
+            bpm=80,
         )
-        device.delete()
+        self.assertEqual(sample.source, 'garmin_fitabase')
+
+    def test_deleting_user_deletes_samples(self):
+        user = make_user()
+        HeartRateSample.objects.create(user=user, timestamp=timezone.now(), bpm=80)
+        user.delete()
         self.assertEqual(HeartRateSample.objects.count(), 0)
 
 
 # ---------------------------------------------------------------------------
-# Model: ActivitySummary
+# Model: StressSample
 # ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class ActivitySummaryModelTests(TestCase):
+class StressSampleModelTests(TestCase):
 
-    def test_summary_links_to_device(self):
+    def test_sample_links_to_user(self):
         user = make_user()
-        device = make_device(user)
-        summary = ActivitySummary.objects.create(
-            device=device,
-            date='2026-01-01',
-            steps=8000,
-            active_minutes=45,
-            calories_burned=350,
-            distance_km=6.500,
+        sample = StressSample.objects.create(
+            user=user,
+            timestamp=timezone.now(),
+            stress_score=55,
         )
-        self.assertEqual(summary.device, device)
-        self.assertEqual(summary.steps, 8000)
+        self.assertEqual(sample.user, user)
+        self.assertEqual(sample.stress_score, 55)
 
-    def test_duplicate_device_date_raises_error(self):
-        from django.db import IntegrityError
+    def test_source_defaults_to_garmin_fitabase(self):
         user = make_user()
-        device = make_device(user)
-        ActivitySummary.objects.create(device=device, date='2026-01-01', steps=8000)
-        with self.assertRaises(IntegrityError):
-            ActivitySummary.objects.create(device=device, date='2026-01-01', steps=9000)
+        sample = StressSample.objects.create(
+            user=user,
+            timestamp=timezone.now(),
+            stress_score=40,
+        )
+        self.assertEqual(sample.source, 'garmin_fitabase')
+
+    def test_deleting_user_deletes_stress_samples(self):
+        user = make_user()
+        StressSample.objects.create(user=user, timestamp=timezone.now(), stress_score=30)
+        user.delete()
+        self.assertEqual(StressSample.objects.count(), 0)
+
 
 
 # ---------------------------------------------------------------------------
@@ -717,46 +725,60 @@ class EMAModelTests(TestCase):
         user = make_user()
         ema = EMA.objects.create(
             user=user,
-            mood=7,
-            energy=5,
+            prompt_id='PROMPT_001',
+            mood=5,
+            energy=4,
             stress=3,
-            physical_activity='moderate',
         )
-        self.assertEqual(ema.mood, 7)
-        self.assertEqual(ema.energy, 5)
+        self.assertEqual(ema.mood, 5)
+        self.assertEqual(ema.energy, 4)
         self.assertEqual(ema.stress, 3)
-        self.assertEqual(ema.physical_activity, 'moderate')
+        self.assertEqual(ema.prompt_id, 'PROMPT_001')
 
-    def test_timestamp_is_set_automatically(self):
+    def test_sent_at_is_set_automatically(self):
         user = make_user()
-        ema = EMA.objects.create(user=user)
-        self.assertIsNotNone(ema.timestamp)
+        ema = EMA.objects.create(user=user, prompt_id='P1')
+        self.assertIsNotNone(ema.sent_at)
 
-    def test_all_fields_are_optional_except_user(self):
+    def test_status_defaults_to_pending(self):
         user = make_user()
-        ema = EMA.objects.create(user=user)
+        ema = EMA.objects.create(user=user, prompt_id='P1')
+        self.assertEqual(ema.status, 'pending')
+
+    def test_responded_at_is_nullable(self):
+        user = make_user()
+        ema = EMA.objects.create(user=user, prompt_id='P1')
+        self.assertIsNone(ema.responded_at)
+
+    def test_likert_fields_are_nullable(self):
+        user = make_user()
+        ema = EMA.objects.create(user=user, prompt_id='P1')
         self.assertIsNone(ema.mood)
         self.assertIsNone(ema.energy)
         self.assertIsNone(ema.stress)
-        self.assertIsNone(ema.physical_activity)
-        self.assertIsNone(ema.weight_lbs)
-        self.assertIsNone(ema.notes)
 
     def test_deleting_user_deletes_ema_records(self):
         user = make_user()
-        EMA.objects.create(user=user, mood=5)
+        EMA.objects.create(user=user, prompt_id='P1', mood=5)
         user.delete()
         self.assertEqual(EMA.objects.count(), 0)
 
     def test_mood_rejects_out_of_range_values(self):
         from django.core.exceptions import ValidationError
         user = make_user()
-        ema_low = EMA(user=user, mood=0)
+        ema_low = EMA(user=user, prompt_id='P1', mood=0)
         with self.assertRaises(ValidationError):
             ema_low.full_clean()
-        ema_high = EMA(user=user, mood=11)
+        ema_high = EMA(user=user, prompt_id='P1', mood=8)
         with self.assertRaises(ValidationError):
             ema_high.full_clean()
+
+    def test_mood_accepts_boundary_values(self):
+        user = make_user()
+        ema_min = EMA(user=user, prompt_id='P1', mood=1)
+        ema_min.full_clean()
+        ema_max = EMA(user=user, prompt_id='P1', mood=7)
+        ema_max.full_clean()
 
 
 # ---------------------------------------------------------------------------
@@ -770,58 +792,56 @@ class JITAILogModelTests(TestCase):
         user = make_user()
         log = JITAILog.objects.create(
             user=user,
-            title='Move more!',
-            message='You have been inactive for 2 hours.',
-            trigger_reason='low_steps',
-            volatility_score=0.720,
-            threshold_used=0.650,
-            prompt_count=3,
+            prompt_id='TEMPLATE_HR_HIGH',
+            trigger_reason='hr_elevated+stress_high',
+            hr_at_trigger=105,
+            stress_at_trigger=72,
         )
-        self.assertEqual(log.trigger_reason, 'low_steps')
-        self.assertEqual(log.title, 'Move more!')
-        self.assertEqual(log.prompt_count, 3)
-        self.assertIsNotNone(log.volatility_score)
-        self.assertIsNotNone(log.threshold_used)
+        self.assertEqual(log.prompt_id, 'TEMPLATE_HR_HIGH')
+        self.assertEqual(log.trigger_reason, 'hr_elevated+stress_high')
+        self.assertEqual(log.hr_at_trigger, 105)
+        self.assertEqual(log.stress_at_trigger, 72)
 
-    def test_prompt_status_defaults_to_sent(self):
+    def test_status_defaults_to_delivered(self):
         user = make_user()
         log = JITAILog.objects.create(
             user=user,
-            title='Move!',
-            message='Get up.',
-            trigger_reason='low_steps',
+            prompt_id='TEMPLATE_001',
+            trigger_reason='hr_elevated',
         )
-        self.assertEqual(log.prompt_status, 'sent')
+        self.assertEqual(log.status, 'delivered')
 
-    def test_opened_at_and_interacted_at_are_nullable(self):
+    def test_triggered_at_is_set_automatically(self):
         user = make_user()
         log = JITAILog.objects.create(
             user=user,
-            title='Move!',
-            message='Get up.',
-            trigger_reason='low_steps',
+            prompt_id='TEMPLATE_001',
+            trigger_reason='hr_elevated',
         )
-        self.assertIsNone(log.opened_at)
-        self.assertIsNone(log.interacted_at)
+        self.assertIsNotNone(log.triggered_at)
 
-    def test_timestamp_is_set_automatically(self):
+    def test_hr_and_stress_at_trigger_are_nullable(self):
         user = make_user()
         log = JITAILog.objects.create(
             user=user,
-            title='Move!',
-            message='Get up.',
-            trigger_reason='low_steps',
+            prompt_id='TEMPLATE_001',
+            trigger_reason='ema_low_mood',
         )
-        self.assertIsNotNone(log.timestamp)
+        self.assertIsNone(log.hr_at_trigger)
+        self.assertIsNone(log.stress_at_trigger)
 
     def test_deleting_user_deletes_jitai_logs(self):
         user = make_user()
         JITAILog.objects.create(
-            user=user, title='Hi', message='Go.', trigger_reason='low_steps'
+            user=user, prompt_id='TEMPLATE_001', trigger_reason='hr_elevated'
         )
         user.delete()
         self.assertEqual(JITAILog.objects.count(), 0)
 
+
+# ---------------------------------------------------------------------------
+# Serializer: WearableDevice
+# ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class WearableDeviceSerializerTests(TestCase):
@@ -830,51 +850,73 @@ class WearableDeviceSerializerTests(TestCase):
         user = make_user()
         data = {
             'user': user.user_id,
-            'fitbit_device_id': 'DEV001',
-            'device_type': 'tracker',
-            'device_name': 'Charge 6',
+            'fitabase_participant_id': 'FITABASE001',
+            'device_name': 'Garmin Vivoactive 6',
         }
         serializer = WearableDeviceSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
         device = serializer.save()
-        self.assertEqual(device.device_name, 'Charge 6')
+        self.assertEqual(device.fitabase_participant_id, 'FITABASE001')
 
+    def test_id_is_read_only(self):
+        user = make_user()
+        data = {
+            'id': 999,
+            'user': user.user_id,
+            'fitabase_participant_id': 'FITABASE002',
+        }
+        serializer = WearableDeviceSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        device = serializer.save()
+        self.assertNotEqual(device.id, 999)
+
+
+# ---------------------------------------------------------------------------
+# Serializer: HeartRateSample
+# ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class HeartRateSampleSerializerTests(TestCase):
 
     def test_serializer_creates_sample(self):
         user = make_user()
-        device = make_device(user)
         data = {
-            'device': device.device_id,
+            'user': user.user_id,
             'timestamp': '2026-01-01T10:00:00Z',
             'bpm': 72,
-            'zone': 'fat_burn',
         }
         serializer = HeartRateSampleSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
         sample = serializer.save()
         self.assertEqual(sample.bpm, 72)
+        self.assertEqual(sample.source, 'garmin_fitabase')
 
+
+# ---------------------------------------------------------------------------
+# Serializer: StressSample
+# ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class ActivitySummarySerializerTests(TestCase):
+class StressSampleSerializerTests(TestCase):
 
-    def test_serializer_creates_summary(self):
+    def test_serializer_creates_stress_sample(self):
         user = make_user()
-        device = make_device(user)
         data = {
-            'device': device.device_id,
-            'date': '2026-01-01',
-            'steps': 8000,
-            'active_minutes': 45,
+            'user': user.user_id,
+            'timestamp': '2026-01-01T10:00:00Z',
+            'stress_score': 55,
         }
-        serializer = ActivitySummarySerializer(data=data)
+        serializer = StressSampleSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        summary = serializer.save()
-        self.assertEqual(summary.steps, 8000)
+        sample = serializer.save()
+        self.assertEqual(sample.stress_score, 55)
+        self.assertEqual(sample.source, 'garmin_fitabase')
 
+
+
+# ---------------------------------------------------------------------------
+# Serializer: EMA
+# ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class EMASerializerTests(TestCase):
@@ -883,16 +925,33 @@ class EMASerializerTests(TestCase):
         user = make_user()
         data = {
             'user': user.user_id,
-            'mood': 7,
-            'energy': 5,
+            'prompt_id': 'PROMPT_001',
+            'mood': 5,
+            'energy': 4,
             'stress': 3,
-            'physical_activity': 'moderate',
         }
         serializer = EMASerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
         ema = serializer.save()
-        self.assertEqual(ema.mood, 7)
+        self.assertEqual(ema.mood, 5)
+        self.assertEqual(ema.status, 'pending')
 
+    def test_sent_at_is_read_only(self):
+        user = make_user()
+        data = {
+            'user': user.user_id,
+            'prompt_id': 'PROMPT_001',
+            'sent_at': '2020-01-01T00:00:00Z',
+        }
+        serializer = EMASerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        ema = serializer.save()
+        self.assertNotEqual(str(ema.sent_at.year), '2020')
+
+
+# ---------------------------------------------------------------------------
+# Serializer: JITAILog
+# ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class JITAILogSerializerTests(TestCase):
@@ -901,16 +960,29 @@ class JITAILogSerializerTests(TestCase):
         user = make_user()
         data = {
             'user': user.user_id,
-            'title': 'Move more!',
-            'message': 'You have been inactive for 2 hours.',
-            'trigger_reason': 'low_steps',
-            'prompt_count': 1,
+            'prompt_id': 'TEMPLATE_HR_HIGH',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'hr_at_trigger': 105,
+            'stress_at_trigger': 72,
         }
         serializer = JITAILogSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
         log = serializer.save()
-        self.assertEqual(log.trigger_reason, 'low_steps')
-        self.assertEqual(log.prompt_status, 'sent')
+        self.assertEqual(log.trigger_reason, 'hr_elevated+stress_high')
+        self.assertEqual(log.status, 'delivered')
+
+    def test_triggered_at_is_read_only(self):
+        user = make_user()
+        data = {
+            'user': user.user_id,
+            'prompt_id': 'TEMPLATE_001',
+            'trigger_reason': 'hr_elevated',
+            'triggered_at': '2020-01-01T00:00:00Z',
+        }
+        serializer = JITAILogSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        log = serializer.save()
+        self.assertNotEqual(str(log.triggered_at.year), '2020')
 
 
 # ---------------------------------------------------------------------------
@@ -928,46 +1000,37 @@ class TelemetryIngestViewTests(TestCase):
         return {
             'user_id': self.user.user_id,
             'wearable_device': {
-                'fitbit_device_id': 'PHONE-001',
-                'device_type': 'phone',
-                'device_name': 'Matt POC Phone',
+                'fitabase_participant_id': 'FITABASE-001',
+                'device_name': 'Garmin Vivoactive 6',
                 'is_active': True,
             },
             'heart_rate_samples': [
                 {
                     'timestamp': '2026-06-12T14:00:00Z',
                     'bpm': 82,
-                    'zone': 'fat_burn',
                 }
             ],
-            'activity_summaries': [
+            'stress_samples': [
                 {
-                    'date': '2026-06-12',
-                    'steps': 8400,
-                    'active_minutes': 52,
-                    'calories_burned': 430,
-                    'distance_km': '6.250',
+                    'timestamp': '2026-06-12T14:03:00Z',
+                    'stress_score': 45,
                 }
             ],
             'emas': [
                 {
-                    'mood': 7,
+                    'prompt_id': 'EMA_TEMPLATE_01',
+                    'mood': 5,
                     'energy': 6,
                     'stress': 3,
-                    'physical_activity': 'moderate',
-                    'weight_lbs': '182.5',
-                    'notes': '',
+                    'status': 'completed',
                 }
             ],
             'jitai_logs': [
                 {
-                    'title': 'JITAI prompt',
-                    'message': 'Prompt issued',
-                    'trigger_reason': 'low_activity',
-                    'volatility_score': '0.720',
-                    'threshold_used': '0.650',
-                    'prompt_status': 'sent',
-                    'prompt_count': 1,
+                    'prompt_id': 'JITAI_TEMPLATE_01',
+                    'trigger_reason': 'hr_elevated+stress_high',
+                    'hr_at_trigger': 105,
+                    'stress_at_trigger': 72,
                 }
             ],
         }
@@ -978,10 +1041,11 @@ class TelemetryIngestViewTests(TestCase):
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         self.assertEqual(WearableDevice.objects.filter(user=self.user).count(), 1)
         self.assertEqual(HeartRateSample.objects.count(), 1)
-        self.assertEqual(ActivitySummary.objects.count(), 1)
+        self.assertEqual(StressSample.objects.count(), 1)
         self.assertEqual(EMA.objects.count(), 1)
         self.assertEqual(JITAILog.objects.count(), 1)
         self.assertEqual(response.data['counts']['heart_rate_samples'], 1)
+        self.assertEqual(response.data['counts']['stress_samples'], 1)
 
     def test_missing_user_id_returns_400(self):
         payload = self._payload()
@@ -999,22 +1063,18 @@ class TelemetryIngestViewTests(TestCase):
 
         self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
 
-    def test_invalid_heart_rate_zone_returns_400(self):
+    def test_bpm_out_of_range_returns_400(self):
         payload = self._payload()
-        payload['heart_rate_samples'][0]['zone'] = 'invalid_zone'
+        payload['heart_rate_samples'][0]['bpm'] = 999
 
         response = self.client.post('/telemetry/ingest/', payload, format='json')
 
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
         self.assertEqual(HeartRateSample.objects.count(), 0)
 
-    def test_repeated_activity_summary_updates_existing_record(self):
-        payload = self._payload()
-        self.client.post('/telemetry/ingest/', payload, format='json')
-        payload['activity_summaries'][0]['steps'] = 9000
-
-        response = self.client.post('/telemetry/ingest/', payload, format='json')
+    def test_repeated_device_upsert_does_not_duplicate(self):
+        self.client.post('/telemetry/ingest/', self._payload(), format='json')
+        response = self.client.post('/telemetry/ingest/', self._payload(), format='json')
 
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        self.assertEqual(ActivitySummary.objects.count(), 1)
-        self.assertEqual(ActivitySummary.objects.get().steps, 9000)
+        self.assertEqual(WearableDevice.objects.filter(user=self.user).count(), 1)

@@ -2,31 +2,27 @@ from django.db import models
 from django.contrib.auth.hashers import make_password, check_password as django_check_password
 from django.core.validators import MinValueValidator, MaxValueValidator
 
-# User model
+
 class User(models.Model):
     user_id = models.AutoField(primary_key=True)
     email = models.EmailField(unique=True)
     first_name = models.CharField(max_length=100, default="")
     last_name = models.CharField(max_length=100, default="")
     birthdate = models.DateField()
-    gender = models.CharField(max_length=10, choices=[('male', 'Male'), ('female', 'Female'), ('other', 'Other')]) # The first value is the value stored in the DB, and the second value is the label displayed on the UI
+    gender = models.CharField(max_length=10, choices=[('male', 'Male'), ('female', 'Female'), ('other', 'Other')])
     height_feet = models.CharField(max_length=10, default="")
     height_inches = models.CharField(max_length=10, default="")
-    goal_weight = models.DecimalField(max_digits=4, decimal_places=1, null=True, blank=True)  # Weight in pounds
+    goal_weight = models.DecimalField(max_digits=4, decimal_places=1, null=True, blank=True)
     goal_to_lose_weight = models.BooleanField(default=False)
     goal_to_feel_better = models.BooleanField(default=False)
-    password = models.CharField(max_length=128, blank=True, null=True)  # Optional if signing in with Google
+    password = models.CharField(max_length=128, blank=True, null=True)
     push_token = models.CharField(max_length=128, blank=True, null=True)
-    fitbit_user_id = models.CharField(max_length=64, blank=True, null=True)
-    fitbit_access_token = models.TextField(blank=True, null=True)
-    fitbit_refresh_token = models.TextField(blank=True, null=True)
-    fitbit_token_expires = models.DateTimeField(blank=True, null=True)
-    #google_acct_id = models.CharField(max_length=255, blank=True, null=True)  # Optional if creating an account directly
+    is_enrolled = models.BooleanField(default=False)
+    enrolled_at = models.DateTimeField(null=True, blank=True)
 
     USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['user_id', 'first_name', 'last_name', 'birthdate', 'gender', 'height_feet', 'height_inches', 'goal_weight', 'goal_to_lose_weight', 'goal_to_feel_better', 'password']  # Add any additional required fields here
+    REQUIRED_FIELDS = ['user_id', 'first_name', 'last_name', 'birthdate', 'gender', 'height_feet', 'height_inches', 'goal_weight', 'goal_to_lose_weight', 'goal_to_feel_better', 'password']
 
-    # When an instance is referenced, prints the user ID and name instead of the default "User object (1)"
     def __str__(self):
         return f"User ID: {self.user_id}, Email: {self.email}"
 
@@ -38,142 +34,117 @@ class User(models.Model):
             return False
         return django_check_password(raw_password, self.password)
 
-    # def check_password(self, password_entered):
-    #     if (password_entered == self.password):
-    #         return True
-    #     else:
-    #         return False
-        
-# UserData model
+
 class UserData(models.Model):
     data_id = models.AutoField(primary_key=True)
-    user = models.ForeignKey(User, on_delete=models.CASCADE)  # Foreign key to User, CASCADE -> all related UserData instances will be deleted if User is deleted
-    timestamp = models.DateTimeField(auto_now_add=True)  # Automatically sets the field to the current date and time
-    goal_type = models.CharField(max_length=20, choices=[('loseWeight', 'Lose Weight'), ('feelBetter', 'Feel Better'), ('both', 'Both')]) # The first value is the value stored in the DB, and the second value is the label displayed on the UI
-    weight_value = models.DecimalField(max_digits=4, decimal_places=1, null=True, blank=True)  # Weight in pounds (optional, depends on goal type)
-    feel_better_value = models.IntegerField(null=True, blank=True)  # Scale of 1 to 5 (optional, depends on goal type)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    timestamp = models.DateTimeField(auto_now_add=True)
+    goal_type = models.CharField(max_length=20, choices=[('loseWeight', 'Lose Weight'), ('feelBetter', 'Feel Better'), ('both', 'Both')])
+    weight_value = models.DecimalField(max_digits=4, decimal_places=1, null=True, blank=True)
+    feel_better_value = models.IntegerField(null=True, blank=True)
 
-    # When an instance is referenced, prints the user name and timestamp instead of the default "User object (1)"
     def __str__(self):
         return f"Data for {self.user.email} at {self.timestamp}"
-    
-# NotificationData model
+
+
 class NotificationData(models.Model):
     notification_id = models.AutoField(primary_key=True)
-    user = models.ForeignKey(User, on_delete=models.CASCADE)  # Foreign key to User, CASCADE -> all related NotificationData instances will be deleted if User is deleted
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
     notification_title = models.CharField(max_length=255, default="Default Title")
     notification_message = models.CharField(max_length=255)
-    timestamp = models.DateTimeField(auto_now_add=True)  # Automatically sets the field to the current date and time
+    timestamp = models.DateTimeField(auto_now_add=True)
     read_status = models.BooleanField(default=False)
 
-     # When an instance is referenced, prints the user name and timestamp instead of the default "User object (1)"
     def __str__(self):
         return f"Notification for {self.user.email} at {self.timestamp}"
 
 
-# WearableDevice model
 class WearableDevice(models.Model):
-    device_id = models.AutoField(primary_key=True)
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    fitbit_device_id = models.CharField(max_length=64)
-    device_type = models.CharField(max_length=32)
-    device_name = models.CharField(max_length=64)
-    last_synced_at = models.DateTimeField(blank=True, null=True)
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    fitabase_participant_id = models.CharField(max_length=64, unique=True)
+    device_name = models.CharField(max_length=100, blank=True, null=True)
     is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
-        return f"{self.device_name} ({self.user.email})"
+        return f"{self.fitabase_participant_id} ({self.user.email})"
 
 
 class HeartRateSample(models.Model):
-    ZONE_CHOICES = [
-        ('out_of_range', 'Out of Range'),
-        ('fat_burn', 'Fat Burn'),
-        ('cardio', 'Cardio'),
-        ('peak', 'Peak'),
-    ]
-
-    sample_id = models.AutoField(primary_key=True)
-    device = models.ForeignKey(WearableDevice, on_delete=models.CASCADE)
-    timestamp = models.DateTimeField()
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    timestamp = models.DateTimeField(db_index=True)
     bpm = models.PositiveSmallIntegerField()
-    zone = models.CharField(max_length=20, choices=ZONE_CHOICES)
+    source = models.CharField(max_length=32, default='garmin_fitabase')
+
+    class Meta:
+        ordering = ['-timestamp']
+        indexes = [models.Index(fields=['user', 'timestamp'])]
 
     def __str__(self):
         return f"{self.bpm} bpm at {self.timestamp}"
 
 
-class ActivitySummary(models.Model):
-    summary_id = models.AutoField(primary_key=True)
-    device = models.ForeignKey(WearableDevice, on_delete=models.CASCADE)
-    date = models.DateField()
-    steps = models.PositiveIntegerField(blank=True, null=True)
-    active_minutes = models.PositiveIntegerField(blank=True, null=True)
-    calories_burned = models.PositiveIntegerField(blank=True, null=True)
-    distance_km = models.DecimalField(max_digits=6, decimal_places=3, blank=True, null=True)
+class StressSample(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    timestamp = models.DateTimeField(db_index=True)
+    stress_score = models.PositiveSmallIntegerField()
+    source = models.CharField(max_length=32, default='garmin_fitabase')
 
     class Meta:
-        unique_together = ('device', 'date')
+        ordering = ['-timestamp']
+        indexes = [models.Index(fields=['user', 'timestamp'])]
 
     def __str__(self):
-        return f"Activity for {self.device} on {self.date}"
+        return f"Stress {self.stress_score} at {self.timestamp}"
+
 
 
 class EMA(models.Model):
-    ACTIVITY_CHOICES = [
-        ('none', 'None'),
-        ('light', 'Light'),
-        ('moderate', 'Moderate'),
-        ('vigorous', 'Vigorous'),
-    ]
+    STATUS_CHOICES = [('pending', 'Pending'), ('completed', 'Completed'), ('expired', 'Expired')]
 
-    ema_id = models.AutoField(primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    timestamp = models.DateTimeField(auto_now_add=True)
+    prompt_id = models.CharField(max_length=64)
+    sent_at = models.DateTimeField(auto_now_add=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='pending')
     mood = models.PositiveSmallIntegerField(
-        blank=True, null=True,
-        validators=[MinValueValidator(1), MaxValueValidator(10)],
-    )
-    energy = models.PositiveSmallIntegerField(
-        blank=True, null=True,
-        validators=[MinValueValidator(1), MaxValueValidator(10)],
+        null=True, blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(7)],
     )
     stress = models.PositiveSmallIntegerField(
-        blank=True, null=True,
-        validators=[MinValueValidator(1), MaxValueValidator(10)],
+        null=True, blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(7)],
     )
-    physical_activity = models.CharField(
-        max_length=20, choices=ACTIVITY_CHOICES, blank=True, null=True
+    energy = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(7)],
     )
-    weight_lbs = models.DecimalField(max_digits=4, decimal_places=1, blank=True, null=True)
-    notes = models.TextField(blank=True, null=True)
+
+    class Meta:
+        ordering = ['-sent_at']
 
     def __str__(self):
-        return f"EMA for {self.user.email} at {self.timestamp}"
+        return f"EMA for {self.user.email} at {self.sent_at}"
 
 
 class JITAILog(models.Model):
-    PROMPT_STATUS_CHOICES = [
-        ('sent', 'Sent'),
+    STATUS_CHOICES = [
         ('delivered', 'Delivered'),
         ('opened', 'Opened'),
-        ('dismissed', 'Dismissed'),
-        ('acted_on', 'Acted On'),
+        ('interacted', 'Interacted'),
+        ('failed', 'Failed'),
     ]
 
-    log_id = models.AutoField(primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    timestamp = models.DateTimeField(auto_now_add=True)
-    title = models.CharField(max_length=255)
-    message = models.TextField()
-    trigger_reason = models.CharField(max_length=100)
-    volatility_score = models.DecimalField(max_digits=6, decimal_places=3, blank=True, null=True)
-    threshold_used = models.DecimalField(max_digits=6, decimal_places=3, blank=True, null=True)
-    prompt_status = models.CharField(max_length=20, choices=PROMPT_STATUS_CHOICES, default='sent')
-    prompt_count = models.PositiveIntegerField(default=0)
-    opened_at = models.DateTimeField(blank=True, null=True)
-    interacted_at = models.DateTimeField(blank=True, null=True)
+    prompt_id = models.CharField(max_length=64)
+    triggered_at = models.DateTimeField(auto_now_add=True)
+    trigger_reason = models.CharField(max_length=128)
+    hr_at_trigger = models.PositiveSmallIntegerField(null=True, blank=True)
+    stress_at_trigger = models.PositiveSmallIntegerField(null=True, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='delivered')
+
+    class Meta:
+        ordering = ['-triggered_at']
 
     def __str__(self):
-        return f"JITAI for {self.user.email} at {self.timestamp}"
+        return f"JITAI for {self.user.email} at {self.triggered_at}"

@@ -2,11 +2,11 @@ from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
 from .models import (
-    ActivitySummary,
     EMA,
     HeartRateSample,
     JITAILog,
     NotificationData,
+    StressSample,
     User,
     UserData,
     WearableDevice,
@@ -399,10 +399,10 @@ class DeleteNotificationView(APIView):
 
 class TelemetryIngestView(APIView):
     @swagger_auto_schema(
-        operation_summary="Ingest phone telemetry",
+        operation_summary="Ingest telemetry",
         operation_description=(
-            "Store content-free phone telemetry into the current wearable, heart rate, "
-            "activity, EMA, and JITAI tables."
+            "Store telemetry from Fitabase polling into the wearable, heart rate, "
+            "stress, EMA, and JITAI tables."
         ),
         request_body=TelemetryIngestSerializer,
     )
@@ -418,53 +418,31 @@ class TelemetryIngestView(APIView):
             return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
         device_payload = data.get("wearable_device") or {}
-        device = None
         if device_payload:
-            device, _ = WearableDevice.objects.update_or_create(
+            WearableDevice.objects.update_or_create(
                 user=user,
-                fitbit_device_id=device_payload["fitbit_device_id"],
                 defaults={
-                    "device_type": device_payload.get("device_type", "tracker"),
-                    "device_name": device_payload.get("device_name", "Phone Telemetry Device"),
+                    "fitabase_participant_id": device_payload["fitabase_participant_id"],
+                    "device_name": device_payload.get("device_name"),
                     "last_synced_at": device_payload.get("last_synced_at"),
                     "is_active": device_payload.get("is_active", True),
-                },
-            )
-        elif data.get("heart_rate_samples") or data.get("activity_summaries"):
-            device, _ = WearableDevice.objects.get_or_create(
-                user=user,
-                fitbit_device_id=f"phone-telemetry-{user.user_id}",
-                defaults={
-                    "device_type": "phone",
-                    "device_name": "Phone Telemetry Device",
-                    "is_active": True,
                 },
             )
 
         created_counts = {
             "heart_rate_samples": 0,
-            "activity_summaries": 0,
+            "stress_samples": 0,
             "emas": 0,
             "jitai_logs": 0,
         }
 
         for sample in data.get("heart_rate_samples", []):
-            HeartRateSample.objects.create(device=device, **sample)
+            HeartRateSample.objects.create(user=user, **sample)
             created_counts["heart_rate_samples"] += 1
 
-        for summary in data.get("activity_summaries", []):
-            summary_defaults = {
-                "steps": summary.get("steps"),
-                "active_minutes": summary.get("active_minutes"),
-                "calories_burned": summary.get("calories_burned"),
-                "distance_km": summary.get("distance_km"),
-            }
-            ActivitySummary.objects.update_or_create(
-                device=device,
-                date=summary["date"],
-                defaults=summary_defaults,
-            )
-            created_counts["activity_summaries"] += 1
+        for sample in data.get("stress_samples", []):
+            StressSample.objects.create(user=user, **sample)
+            created_counts["stress_samples"] += 1
 
         for ema in data.get("emas", []):
             EMA.objects.create(user=user, **ema)
@@ -478,7 +456,6 @@ class TelemetryIngestView(APIView):
             {
                 "message": "Telemetry ingested.",
                 "user_id": user.user_id,
-                "device_id": device.device_id if device else None,
                 "counts": created_counts,
             },
             status=status.HTTP_201_CREATED,
