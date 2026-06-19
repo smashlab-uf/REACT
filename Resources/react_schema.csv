@@ -20,12 +20,6 @@ react_db,public,user_data,timestamp,3,DATETIME,,,,,
 react_db,public,user_data,goal_type,4,VARCHAR,20,,,,
 react_db,public,user_data,weight_value,5,DECIMAL,4,,,,
 react_db,public,user_data,feel_better_value,6,INT,,,,,
-react_db,public,notification_data,notification_id,1,INT,8,PRIMARY KEY,,,
-react_db,public,notification_data,user_id,2,INT,4,FOREIGN KEY,public,user,user_id
-react_db,public,notification_data,notification_title,3,VARCHAR,255,,,,
-react_db,public,notification_data,notification_message,4,VARCHAR,255,,,,
-react_db,public,notification_data,timestamp,5,DATETIME,,,,,
-react_db,public,notification_data,read_status,6,BOOLEAN,,,,,
 react_db,public,wearable_device,id,1,INT,8,PRIMARY KEY,,,
 react_db,public,wearable_device,user_id,2,INT,4,FOREIGN KEY (UNIQUE),public,user,user_id
 react_db,public,wearable_device,fitabase_participant_id,3,VARCHAR,64,UNIQUE,,,

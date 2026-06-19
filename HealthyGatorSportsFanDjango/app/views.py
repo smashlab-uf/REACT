@@ -5,7 +5,6 @@ from .models import (
     EMA,
     HeartRateSample,
     JITAILog,
-    NotificationData,
     StressSample,
     User,
     UserData,
@@ -15,7 +14,6 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, generics
 from .serializers import (
-    NotificationDataSerializer,
     TelemetryIngestSerializer,
     UserDataSerializer,
     UserSerializer,
@@ -52,19 +50,6 @@ from rest_framework.decorators import api_view, permission_classes
 # 'request.data' is used to access parsed data like the JSON or form data
 # 'request.body' is used to access raw data that is not parsed
 # 'self' refers to the current instance
-
-# API view to handle POST requests for data sent from Postman
-#class WeightView(APIView):
-    #def post(self, request):
-
-        ## Print for debugging
-        #print("Received Data:", request.data)
-
-        #serializer = UserDataSerializer(data=request.data) # Validate the data
-        #if serializer.is_valid():
-            #serializer.save() # Save the validated data to the database
-            #return Response(serializer.data, status=status.HTTP_201_CREATED)
-        #return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 def index(request):
     return render(request, "index.html")
@@ -339,63 +324,6 @@ class UserLoginView(APIView):
 #     def logout_view(request):
 #         logout(request)
     
-# API view to handle GET requests for all notifications for a userID  
-class NotificationListView(generics.ListAPIView):
-    serializer_class = NotificationDataSerializer
-    @swagger_auto_schema(
-        operation_summary="List notifications", operation_description="Get all notifications for a user by user ID.",
-        manual_parameters=[
-            openapi.Parameter(
-                'user_id',  # Name of the parameter
-                openapi.IN_PATH,  # Location of the parameter
-                description="User ID for which we are getting all notifications for",
-                type=openapi.TYPE_STRING,  # Type of the parameter
-                required=True  # Whether the parameter is required
-            )
-        ],
-        responses={200: NotificationDataSerializer(many=True)}  # Define response schema
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-    def get_queryset(self):
-        user_id = self.kwargs['user_id']
-        return NotificationData.objects.filter(user_id=user_id)  # Adjust based on your model's field
-    
-class BulkDeleteNotificationsView(APIView):
-    @swagger_auto_schema(operation_summary="Delete all notifications for a user", operation_description="Delete all notifications for a user by user ID", request_body=NotificationDataSerializer)
-    def delete(self, request, user_id):
-        print("Entered BulkDeleteNotifications View")  
-        try:
-            notifications = NotificationData.objects.filter(user_id=user_id)
-            deleted_count, _ = notifications.delete()
-            if deleted_count > 0:
-                return Response({'message': f'Deleted {deleted_count} notifications.'}, status=status.HTTP_200_OK)
-            else:
-                return Response({'message': 'No notifications found for this user.'}, status=status.HTTP_404_NOT_FOUND)
-        except Exception as e:
-            print("Errors:", e)
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-                
-# API view to handle CRUD requests for a single notification
-class CreateNotificationView(APIView):
-    @swagger_auto_schema(operation_summary="Add notification", operation_description="Create a new notification to add to the database.", request_body=NotificationDataSerializer)
-    def post(self, request):
-        serializer = NotificationDataSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.data, status=status.HTTP_400_BAD_REQUEST)
-
-class DeleteNotificationView(APIView):
-    @swagger_auto_schema(operation_summary="Delete notification", operation_description="Delete a notification by ID", request_body=NotificationDataSerializer)
-    def delete(self, request, notification_id):
-        try:
-            notification = NotificationData.objects.get(notification_id=notification_id)
-            notification.delete()
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        except NotificationData.DoesNotExist:
-            return Response(status=status.HTTP_404_NOT_FOUND)
-
 
 class TelemetryIngestView(APIView):
     @swagger_auto_schema(

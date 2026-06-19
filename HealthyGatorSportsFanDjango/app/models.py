@@ -47,18 +47,6 @@ class UserData(models.Model):
         return f"Data for {self.user.email} at {self.timestamp}"
 
 
-class NotificationData(models.Model):
-    notification_id = models.AutoField(primary_key=True)
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    notification_title = models.CharField(max_length=255, default="Default Title")
-    notification_message = models.CharField(max_length=255)
-    timestamp = models.DateTimeField(auto_now_add=True)
-    read_status = models.BooleanField(default=False)
-
-    def __str__(self):
-        return f"Notification for {self.user.email} at {self.timestamp}"
-
-
 class WearableDevice(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     fitabase_participant_id = models.CharField(max_length=64, unique=True)

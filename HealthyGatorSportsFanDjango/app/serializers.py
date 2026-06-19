@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import UserData, User, NotificationData, WearableDevice, HeartRateSample, StressSample, EMA, JITAILog
+from .models import UserData, User, WearableDevice, HeartRateSample, StressSample, EMA, JITAILog
 from django.contrib.auth.hashers import make_password
 
 import logging
@@ -72,13 +72,6 @@ class UserDataSerializer(serializers.ModelSerializer):
         instance.feel_better_value = validated_data.get('feel_better_value', instance.feel_better_value)
         instance.save()
         return instance
-
-
-class NotificationDataSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = NotificationData
-        fields = ['notification_id', 'user', 'notification_title', 'notification_message', 'timestamp', 'read_status']
-        read_only_fields = ('notification_id', 'timestamp')
 
 
 class WearableDeviceSerializer(serializers.ModelSerializer):

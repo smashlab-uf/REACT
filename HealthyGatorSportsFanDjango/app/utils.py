@@ -2,7 +2,7 @@ from exponent_server_sdk import PushClient, PushMessage
 import os
 import cfbd
 import redis
-from .models import User, NotificationData
+from .models import User
 from .serializers import UserSerializer
 from django.core.cache import cache
 
@@ -20,14 +20,6 @@ def send_push_notification_next_game(header, users, message):
                 )
                 sentTokens.add(user['push_token'])
 
-            user_instance = User.objects.get(user_id=user['user_id'])
-            NotificationData.objects.create(
-                user=user_instance,
-                notification_title=header,
-                notification_message=message,
-            )
-
-            
         except Exception as e:
             errorMessage = "Couldn't send push notification"
             print(errorMessage)

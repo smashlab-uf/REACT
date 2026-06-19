@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path
-from app.views import index, CreateUserView, poll_cfbd_view, home_tile_view, schedule_view, CreateUserDataView, NotificationListView, CreateNotificationView, DeleteNotificationView, BulkDeleteNotificationsView, UserLoginView, LatestUserDataView, UserUpdateView, CheckEmailView, me_view, TelemetryIngestView
+from app.views import index, CreateUserView, poll_cfbd_view, home_tile_view, schedule_view, CreateUserDataView, UserLoginView, LatestUserDataView, UserUpdateView, CheckEmailView, me_view, TelemetryIngestView
 
 # Import drf-yasg components
 from drf_yasg.views import get_schema_view 
@@ -53,10 +53,6 @@ urlpatterns = [
     path('user/checkemail/', CheckEmailView.as_view(), name='check-user-email'),
     path('userdata/<int:user_id>/', CreateUserDataView.as_view(), name='user-data-create'),
     path('userdata/latest/<int:user_id>/', LatestUserDataView.as_view(), name='get-latest-user-data'),
-    path('notificationdata/<int:user_id>/', NotificationListView.as_view(), name='notification-list'),
-    path('notificationdata/', CreateNotificationView.as_view(), name='notification-create'),
-    path('notificationdata/delete/<int:notification_id>/', DeleteNotificationView.as_view(), name='notification-delete'),
-    path('notificationdata/deleteall/<int:user_id>/', BulkDeleteNotificationsView.as_view(), name='notifications-delete-all'),
     path('telemetry/ingest/', TelemetryIngestView.as_view(), name='telemetry-ingest'),
     path('poll-cfbd/', poll_cfbd_view, name='poll_cfbd'),
     path('home-tile/', home_tile_view, name='home_tile_view'),

@@ -6,9 +6,9 @@ from rest_framework import status as http_status
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from app.models import User, UserData, NotificationData, WearableDevice, HeartRateSample, StressSample, EMA, JITAILog
+from app.models import User, UserData, WearableDevice, HeartRateSample, StressSample, EMA, JITAILog
 from app.serializers import (
-    UserSerializer, UserDataSerializer, NotificationDataSerializer,
+    UserSerializer, UserDataSerializer,
     WearableDeviceSerializer, HeartRateSampleSerializer,
     StressSampleSerializer, EMASerializer, JITAILogSerializer,
 )
@@ -423,67 +423,6 @@ class LatestUserDataViewTests(TestCase):
 
     def test_user_with_no_data_returns_404(self):
         response = self.client.get(f'/userdata/latest/{self.user.user_id}/')
-        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
-
-
-# ---------------------------------------------------------------------------
-# API: Notification endpoints
-# ---------------------------------------------------------------------------
-
-@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class NotificationViewTests(TestCase):
-
-    def setUp(self):
-        self.client = APIClient()
-        self.user = make_user()
-
-    def test_list_returns_all_notifications_for_user(self):
-        NotificationData.objects.create(user=self.user, notification_message='A')
-        NotificationData.objects.create(user=self.user, notification_message='B')
-        response = self.client.get(f'/notificationdata/{self.user.user_id}/')
-        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 2)
-
-    def test_list_does_not_return_other_users_notifications(self):
-        other = make_user(email='other@example.com')
-        NotificationData.objects.create(user=other, notification_message='Not mine')
-        response = self.client.get(f'/notificationdata/{self.user.user_id}/')
-        self.assertEqual(len(response.data), 0)
-
-    def test_create_notification_returns_201(self):
-        response = self.client.post('/notificationdata/', {
-            'user': self.user.user_id,
-            'notification_title': 'Score Update',
-            'notification_message': 'Florida is winning!',
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        self.assertTrue(NotificationData.objects.filter(user=self.user).exists())
-
-    def test_delete_notification_returns_204_and_removes_record(self):
-        notification = NotificationData.objects.create(
-            user=self.user, notification_message='Delete me'
-        )
-        response = self.client.delete(
-            f'/notificationdata/delete/{notification.notification_id}/'
-        )
-        self.assertEqual(response.status_code, http_status.HTTP_204_NO_CONTENT)
-        self.assertFalse(
-            NotificationData.objects.filter(pk=notification.notification_id).exists()
-        )
-
-    def test_delete_nonexistent_notification_returns_404(self):
-        response = self.client.delete('/notificationdata/delete/99999/')
-        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
-
-    def test_bulk_delete_removes_all_user_notifications_and_returns_200(self):
-        NotificationData.objects.create(user=self.user, notification_message='A')
-        NotificationData.objects.create(user=self.user, notification_message='B')
-        response = self.client.delete(f'/notificationdata/deleteall/{self.user.user_id}/')
-        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(NotificationData.objects.filter(user=self.user).count(), 0)
-
-    def test_bulk_delete_with_no_notifications_returns_404(self):
-        response = self.client.delete(f'/notificationdata/deleteall/{self.user.user_id}/')
         self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
 
 

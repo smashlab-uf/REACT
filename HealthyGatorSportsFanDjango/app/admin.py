@@ -4,7 +4,6 @@ from .models import (
     EMA,
     HeartRateSample,
     JITAILog,
-    NotificationData,
     StressSample,
     User,
     UserData,
@@ -78,25 +77,6 @@ class UserDataAdmin(ReadableAdminMixin, admin.ModelAdmin):
     ordering = ("-timestamp",)
     autocomplete_fields = ("user",)
 
-
-@admin.register(NotificationData)
-class NotificationDataAdmin(ReadableAdminMixin, admin.ModelAdmin):
-    list_display = (
-        "notification_id",
-        "user",
-        "notification_title",
-        "read_status",
-        "timestamp",
-    )
-    list_filter = ("read_status", "timestamp")
-    search_fields = (
-        "user__email",
-        "notification_title",
-        "notification_message",
-    )
-    date_hierarchy = "timestamp"
-    ordering = ("-timestamp",)
-    autocomplete_fields = ("user",)
 
 
 @admin.register(WearableDevice)
