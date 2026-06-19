@@ -52,4 +52,7 @@ react_db,public,jitai_log,triggered_at,4,DATETIME,,,,,
 react_db,public,jitai_log,trigger_reason,5,VARCHAR,128,,,,
 react_db,public,jitai_log,hr_at_trigger,6,SMALLINT,,,,,
 react_db,public,jitai_log,stress_at_trigger,7,SMALLINT,,,,,
-react_db,public,jitai_log,status,8,VARCHAR,16,,,,
+react_db,public,jitai_log,ema_id,8,INT,4,FOREIGN KEY,public,ema,id
+react_db,public,jitai_log,observed_mssd,9,FLOAT,,,,,
+react_db,public,jitai_log,send_prompt,10,BOOLEAN,,,,,
+react_db,public,jitai_log,status,11,VARCHAR,16,,,,
