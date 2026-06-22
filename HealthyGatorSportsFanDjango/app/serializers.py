@@ -1,5 +1,8 @@
 from rest_framework import serializers
-from .models import UserData, User, WearableDevice, HeartRateSample, StressSample, EMA, JITAILog
+from .models import (
+    EMA, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
+    SleepSummary, StressSample, User, UserData, WearableDevice,
+)
 from django.contrib.auth.hashers import make_password
 
 import logging
@@ -106,7 +109,11 @@ class EMASerializer(serializers.ModelSerializer):
 class JITAILogSerializer(serializers.ModelSerializer):
     class Meta:
         model = JITAILog
-        fields = ['id', 'user', 'prompt_id', 'triggered_at', 'trigger_reason', 'hr_at_trigger', 'stress_at_trigger', 'status']
+        fields = [
+            'id', 'user', 'prompt_id', 'triggered_at', 'trigger_reason',
+            'hr_at_trigger', 'stress_at_trigger', 'ema', 'observed_mssd',
+            'send_prompt', 'status',
+        ]
         read_only_fields = ('id', 'triggered_at')
 
 
@@ -153,3 +160,43 @@ class TelemetryIngestSerializer(serializers.Serializer):
     stress_samples = TelemetryStressSampleSerializer(many=True, required=False, default=list)
     emas = TelemetryEMASerializer(many=True, required=False, default=list)
     jitai_logs = TelemetryJITAILogSerializer(many=True, required=False, default=list)
+
+
+class SleepSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SleepSummary
+        fields = [
+            'id', 'user', 'date', 'total_minutes', 'light_minutes',
+            'deep_minutes', 'rem_minutes', 'awake_minutes', 'sleep_score', 'source',
+        ]
+        read_only_fields = ('id',)
+
+
+class PhoneTelemetrySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PhoneTelemetry
+        fields = [
+            'id', 'user', 'session_id', 'event_type', 'occurred_at',
+            'recorded_at', 'game_clock_state', 'screen_name', 'latency_ms', 'metadata',
+        ]
+        read_only_fields = ('id', 'recorded_at', 'game_clock_state')
+
+    def validate_metadata(self, value):
+        if value is None:
+            return value
+        for v in value.values():
+            if isinstance(v, str) and len(v) > 50:
+                raise serializers.ValidationError(
+                    "metadata string values must not exceed 50 characters"
+                )
+        return value
+
+
+class EngagementLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EngagementLog
+        fields = [
+            'id', 'user', 'jitai_log', 'event_type', 'occurred_at',
+            'recorded_at', 'game_clock_state',
+        ]
+        read_only_fields = ('id', 'recorded_at', 'game_clock_state')

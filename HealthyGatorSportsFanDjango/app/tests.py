@@ -1199,3 +1199,165 @@ class EngagementLogModelTests(TestCase):
         )
         user.delete()
         self.assertEqual(EngagementLog.objects.count(), 0)
+
+
+# ---------------------------------------------------------------------------
+# Serializer: SleepSummary
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class SleepSummarySerializerTests(TestCase):
+
+    def test_serializer_creates_sleep_summary(self):
+        from app.models import SleepSummary
+        from app.serializers import SleepSummarySerializer
+        user = make_user()
+        data = {
+            'user': user.user_id,
+            'date': '2026-08-31',
+            'total_minutes': 420,
+            'deep_minutes': 90,
+            'sleep_score': 78,
+        }
+        serializer = SleepSummarySerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        summary = serializer.save()
+        self.assertEqual(summary.total_minutes, 420)
+        self.assertEqual(summary.source, 'garmin_fitabase')
+
+    def test_id_is_read_only(self):
+        from app.serializers import SleepSummarySerializer
+        user = make_user()
+        data = {'id': 999, 'user': user.user_id, 'date': '2026-09-01'}
+        serializer = SleepSummarySerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        summary = serializer.save()
+        self.assertNotEqual(summary.id, 999)
+
+
+# ---------------------------------------------------------------------------
+# Serializer: PhoneTelemetry
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class PhoneTelemetrySerializerTests(TestCase):
+
+    def _base_data(self, user):
+        return {
+            'user': user.user_id,
+            'session_id': 'SESSION_001',
+            'event_type': 'draft_submitted',
+            'occurred_at': '2026-09-01T15:00:00Z',
+            'metadata': {'keystroke_count': 42, 'delete_count': 5},
+        }
+
+    def test_serializer_creates_event_with_integer_metadata(self):
+        from app.serializers import PhoneTelemetrySerializer
+        user = make_user()
+        serializer = PhoneTelemetrySerializer(data=self._base_data(user))
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        event = serializer.save()
+        self.assertEqual(event.event_type, 'draft_submitted')
+        self.assertEqual(event.metadata['keystroke_count'], 42)
+
+    def test_irb_violation_long_string_returns_validation_error(self):
+        from app.serializers import PhoneTelemetrySerializer
+        user = make_user()
+        data = self._base_data(user)
+        data['metadata'] = {'text': 'x' * 51}
+        serializer = PhoneTelemetrySerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('metadata', serializer.errors)
+
+    def test_irb_allows_string_under_50_chars(self):
+        from app.serializers import PhoneTelemetrySerializer
+        user = make_user()
+        data = self._base_data(user)
+        data['metadata'] = {'label': 'submit'}
+        serializer = PhoneTelemetrySerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_recorded_at_is_read_only(self):
+        from app.serializers import PhoneTelemetrySerializer
+        user = make_user()
+        data = self._base_data(user)
+        data['recorded_at'] = '2020-01-01T00:00:00Z'
+        serializer = PhoneTelemetrySerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        event = serializer.save()
+        self.assertNotEqual(str(event.recorded_at.year), '2020')
+
+    def test_game_clock_state_is_read_only(self):
+        from app.serializers import PhoneTelemetrySerializer
+        user = make_user()
+        data = self._base_data(user)
+        data['game_clock_state'] = 'live'
+        serializer = PhoneTelemetrySerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        event = serializer.save()
+        self.assertEqual(event.game_clock_state, 'pre')
+
+
+# ---------------------------------------------------------------------------
+# Serializer: EngagementLog
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EngagementLogSerializerTests(TestCase):
+
+    def test_serializer_creates_engagement_event(self):
+        from app.serializers import EngagementLogSerializer
+        user = make_user()
+        data = {
+            'user': user.user_id,
+            'event_type': 'ema_completed',
+            'occurred_at': '2026-09-01T15:05:00Z',
+        }
+        serializer = EngagementLogSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        log = serializer.save()
+        self.assertEqual(log.event_type, 'ema_completed')
+        self.assertIsNone(log.jitai_log)
+
+    def test_serializer_accepts_nullable_jitai_log(self):
+        from app.serializers import EngagementLogSerializer
+        user = make_user()
+        jitai = JITAILog.objects.create(
+            user=user, prompt_id='T1', trigger_reason='hr_elevated'
+        )
+        data = {
+            'user': user.user_id,
+            'jitai_log': jitai.id,
+            'event_type': 'notification_tapped',
+            'occurred_at': '2026-09-01T15:05:00Z',
+        }
+        serializer = EngagementLogSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        log = serializer.save()
+        self.assertEqual(log.jitai_log, jitai)
+
+
+# ---------------------------------------------------------------------------
+# Serializer: JITAILog — verify new fields present
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class JITAILogSerializerFieldsTests(TestCase):
+
+    def test_serializer_includes_ema_observed_mssd_send_prompt(self):
+        user = make_user()
+        ema = EMA.objects.create(user=user, prompt_id='P1', mood=5, stress=3, energy=4)
+        data = {
+            'user': user.user_id,
+            'prompt_id': 'TEMPLATE_001',
+            'trigger_reason': 'hr_elevated',
+            'ema': ema.id,
+            'observed_mssd': 12.5,
+            'send_prompt': True,
+        }
+        serializer = JITAILogSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        log = serializer.save()
+        self.assertEqual(log.observed_mssd, 12.5)
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.ema, ema)
