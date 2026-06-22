@@ -134,27 +134,27 @@ class SleepSummary(models.Model):
         return f"Sleep for {self.user.email} on {self.date}"
 
 
-PHONE_EVENT_TYPES = [
+PHONE_EVENT_TYPES = (
     ('draft_started', 'Draft Started'),
     ('draft_deleted', 'Draft Deleted'),
     ('draft_submitted', 'Draft Submitted'),
     ('session_start', 'Session Start'),
     ('session_end', 'Session End'),
-]
+)
 
-ENGAGEMENT_EVENT_TYPES = [
+ENGAGEMENT_EVENT_TYPES = (
     ('ema_opened', 'EMA Opened'),
     ('ema_dismissed', 'EMA Dismissed'),
     ('ema_completed', 'EMA Completed'),
     ('notification_tapped', 'Notification Tapped'),
     ('notification_dismissed', 'Notification Dismissed'),
-]
+)
 
-GAME_CLOCK_STATES = [
+GAME_CLOCK_STATES = (
     ('pre', 'Pre-Game'),
     ('live', 'Live'),
     ('post', 'Post-Game'),
-]
+)
 
 
 def validate_phone_metadata(value):
