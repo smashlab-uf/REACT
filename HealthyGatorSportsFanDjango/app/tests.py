@@ -1017,3 +1017,185 @@ class TelemetryIngestViewTests(TestCase):
 
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         self.assertEqual(WearableDevice.objects.filter(user=self.user).count(), 1)
+
+
+# ---------------------------------------------------------------------------
+# Model: SleepSummary
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class SleepSummaryModelTests(TestCase):
+
+    def test_creates_sleep_summary(self):
+        from app.models import SleepSummary
+        user = make_user()
+        summary = SleepSummary.objects.create(
+            user=user,
+            date='2026-08-31',
+            total_minutes=420,
+            deep_minutes=90,
+            sleep_score=78,
+        )
+        self.assertEqual(summary.total_minutes, 420)
+        self.assertEqual(summary.sleep_score, 78)
+        self.assertEqual(summary.source, 'garmin_fitabase')
+
+    def test_unique_together_user_date(self):
+        from django.db import IntegrityError
+        from app.models import SleepSummary
+        user = make_user()
+        SleepSummary.objects.create(user=user, date='2026-08-31', total_minutes=420)
+        with self.assertRaises(IntegrityError):
+            SleepSummary.objects.create(user=user, date='2026-08-31', total_minutes=380)
+
+    def test_all_minute_fields_are_nullable(self):
+        from app.models import SleepSummary
+        user = make_user()
+        summary = SleepSummary.objects.create(user=user, date='2026-09-01')
+        self.assertIsNone(summary.total_minutes)
+        self.assertIsNone(summary.light_minutes)
+        self.assertIsNone(summary.deep_minutes)
+        self.assertIsNone(summary.rem_minutes)
+        self.assertIsNone(summary.awake_minutes)
+        self.assertIsNone(summary.sleep_score)
+
+    def test_deleting_user_deletes_sleep_summaries(self):
+        from app.models import SleepSummary
+        user = make_user()
+        SleepSummary.objects.create(user=user, date='2026-08-31', total_minutes=420)
+        user.delete()
+        self.assertEqual(SleepSummary.objects.count(), 0)
+
+
+# ---------------------------------------------------------------------------
+# Model: PhoneTelemetry
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class PhoneTelemetryModelTests(TestCase):
+
+    def test_creates_phone_telemetry_event(self):
+        from app.models import PhoneTelemetry
+        user = make_user()
+        event = PhoneTelemetry.objects.create(
+            user=user,
+            session_id='SESSION_ABC',
+            event_type='draft_started',
+            occurred_at=timezone.now(),
+            game_clock_state='live',
+        )
+        self.assertEqual(event.event_type, 'draft_started')
+        self.assertEqual(event.game_clock_state, 'live')
+        self.assertIsNotNone(event.recorded_at)
+
+    def test_metadata_is_nullable(self):
+        from app.models import PhoneTelemetry
+        user = make_user()
+        event = PhoneTelemetry.objects.create(
+            user=user,
+            session_id='SESSION_ABC',
+            event_type='session_start',
+            occurred_at=timezone.now(),
+        )
+        self.assertIsNone(event.metadata)
+
+    def test_irb_validator_rejects_long_string_in_metadata(self):
+        from django.core.exceptions import ValidationError
+        from app.models import PhoneTelemetry
+        user = make_user()
+        event = PhoneTelemetry(
+            user=user,
+            session_id='SESSION_ABC',
+            event_type='draft_submitted',
+            occurred_at=timezone.now(),
+            metadata={'text': 'x' * 51},
+        )
+        with self.assertRaises(ValidationError):
+            event.full_clean()
+
+    def test_irb_validator_accepts_short_string_in_metadata(self):
+        from app.models import PhoneTelemetry
+        user = make_user()
+        event = PhoneTelemetry(
+            user=user,
+            session_id='SESSION_ABC',
+            event_type='draft_submitted',
+            occurred_at=timezone.now(),
+            metadata={'label': 'submit'},
+        )
+        event.full_clean()
+
+    def test_irb_validator_accepts_integer_metadata_values(self):
+        from app.models import PhoneTelemetry
+        user = make_user()
+        event = PhoneTelemetry(
+            user=user,
+            session_id='SESSION_ABC',
+            event_type='draft_submitted',
+            occurred_at=timezone.now(),
+            metadata={'keystroke_count': 42, 'delete_count': 5},
+        )
+        event.full_clean()
+
+    def test_deleting_user_deletes_phone_telemetry(self):
+        from app.models import PhoneTelemetry
+        user = make_user()
+        PhoneTelemetry.objects.create(
+            user=user, session_id='S1', event_type='session_start', occurred_at=timezone.now()
+        )
+        user.delete()
+        self.assertEqual(PhoneTelemetry.objects.count(), 0)
+
+
+# ---------------------------------------------------------------------------
+# Model: EngagementLog
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EngagementLogModelTests(TestCase):
+
+    def test_creates_engagement_event(self):
+        from app.models import EngagementLog
+        user = make_user()
+        log = EngagementLog.objects.create(
+            user=user,
+            event_type='ema_completed',
+            occurred_at=timezone.now(),
+            game_clock_state='live',
+        )
+        self.assertEqual(log.event_type, 'ema_completed')
+        self.assertIsNone(log.jitai_log)
+        self.assertIsNotNone(log.recorded_at)
+
+    def test_jitai_log_is_nullable(self):
+        from app.models import EngagementLog
+        user = make_user()
+        log = EngagementLog.objects.create(
+            user=user, event_type='ema_opened', occurred_at=timezone.now()
+        )
+        self.assertIsNone(log.jitai_log)
+
+    def test_jitai_log_deletion_sets_null(self):
+        from app.models import EngagementLog
+        user = make_user()
+        jitai = JITAILog.objects.create(
+            user=user, prompt_id='T1', trigger_reason='hr_elevated'
+        )
+        log = EngagementLog.objects.create(
+            user=user,
+            jitai_log=jitai,
+            event_type='notification_tapped',
+            occurred_at=timezone.now(),
+        )
+        jitai.delete()
+        log.refresh_from_db()
+        self.assertIsNone(log.jitai_log)
+
+    def test_deleting_user_deletes_engagement_logs(self):
+        from app.models import EngagementLog
+        user = make_user()
+        EngagementLog.objects.create(
+            user=user, event_type='ema_completed', occurred_at=timezone.now()
+        )
+        user.delete()
+        self.assertEqual(EngagementLog.objects.count(), 0)

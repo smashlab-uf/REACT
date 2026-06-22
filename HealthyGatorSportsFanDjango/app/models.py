@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.hashers import make_password, check_password as django_check_password
 from django.core.validators import MinValueValidator, MaxValueValidator
+from django.core.exceptions import ValidationError
 
 
 class User(models.Model):
@@ -115,6 +116,76 @@ class EMA(models.Model):
         return f"EMA for {self.user.email} at {self.sent_at}"
 
 
+class SleepSummary(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    date = models.DateField()
+    total_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
+    light_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
+    deep_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
+    rem_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
+    awake_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
+    sleep_score = models.PositiveSmallIntegerField(null=True, blank=True)
+    source = models.CharField(max_length=32, default='garmin_fitabase')
+
+    class Meta:
+        unique_together = ('user', 'date')
+
+    def __str__(self):
+        return f"Sleep for {self.user.email} on {self.date}"
+
+
+PHONE_EVENT_TYPES = [
+    ('draft_started', 'Draft Started'),
+    ('draft_deleted', 'Draft Deleted'),
+    ('draft_submitted', 'Draft Submitted'),
+    ('session_start', 'Session Start'),
+    ('session_end', 'Session End'),
+]
+
+ENGAGEMENT_EVENT_TYPES = [
+    ('ema_opened', 'EMA Opened'),
+    ('ema_dismissed', 'EMA Dismissed'),
+    ('ema_completed', 'EMA Completed'),
+    ('notification_tapped', 'Notification Tapped'),
+    ('notification_dismissed', 'Notification Dismissed'),
+]
+
+GAME_CLOCK_STATES = [
+    ('pre', 'Pre-Game'),
+    ('live', 'Live'),
+    ('post', 'Post-Game'),
+]
+
+
+def validate_phone_metadata(value):
+    if value is None:
+        return
+    for v in value.values():
+        if isinstance(v, str) and len(v) > 50:
+            raise ValidationError(
+                "metadata string values must not exceed 50 characters"
+            )
+
+
+class PhoneTelemetry(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    session_id = models.CharField(max_length=64)
+    event_type = models.CharField(max_length=64, choices=PHONE_EVENT_TYPES)
+    occurred_at = models.DateTimeField(db_index=True)
+    recorded_at = models.DateTimeField(auto_now_add=True)
+    game_clock_state = models.CharField(max_length=16, choices=GAME_CLOCK_STATES, default='pre')
+    screen_name = models.CharField(max_length=64, null=True, blank=True)
+    latency_ms = models.IntegerField(null=True, blank=True)
+    metadata = models.JSONField(null=True, blank=True, validators=[validate_phone_metadata])
+
+    class Meta:
+        ordering = ['-occurred_at']
+        indexes = [models.Index(fields=['user', 'occurred_at'])]
+
+    def __str__(self):
+        return f"{self.event_type} for {self.user.email} at {self.occurred_at}"
+
+
 class JITAILog(models.Model):
     STATUS_CHOICES = [
         ('delivered', 'Delivered'),
@@ -139,3 +210,19 @@ class JITAILog(models.Model):
 
     def __str__(self):
         return f"JITAI for {self.user.email} at {self.triggered_at}"
+
+
+class EngagementLog(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    jitai_log = models.ForeignKey(JITAILog, on_delete=models.SET_NULL, null=True, blank=True)
+    event_type = models.CharField(max_length=64, choices=ENGAGEMENT_EVENT_TYPES)
+    occurred_at = models.DateTimeField(db_index=True)
+    recorded_at = models.DateTimeField(auto_now_add=True)
+    game_clock_state = models.CharField(max_length=16, choices=GAME_CLOCK_STATES, default='pre')
+
+    class Meta:
+        ordering = ['-occurred_at']
+        indexes = [models.Index(fields=['user', 'occurred_at'])]
+
+    def __str__(self):
+        return f"{self.event_type} for {self.user.email} at {self.occurred_at}"

@@ -1,13 +1,8 @@
 from django.contrib import admin
 
 from .models import (
-    EMA,
-    HeartRateSample,
-    JITAILog,
-    StressSample,
-    User,
-    UserData,
-    WearableDevice,
+    EMA, EngagementLog, HeartRateSample, JITAILog,
+    PhoneTelemetry, SleepSummary, StressSample, User, UserData, WearableDevice,
 )
 
 
@@ -169,3 +164,35 @@ class JITAILogAdmin(ReadableAdminMixin, admin.ModelAdmin):
             "fields": ("trigger_reason", "hr_at_trigger", "stress_at_trigger"),
         }),
     )
+
+
+@admin.register(SleepSummary)
+class SleepSummaryAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    list_display = ("id", "user", "date", "total_minutes", "sleep_score", "source")
+    list_filter = ("source", "date")
+    search_fields = ("user__email",)
+    date_hierarchy = "date"
+    ordering = ("-date",)
+    autocomplete_fields = ("user",)
+
+
+@admin.register(PhoneTelemetry)
+class PhoneTelemetryAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    list_display = ("id", "user", "session_id", "event_type", "occurred_at", "game_clock_state", "screen_name")
+    list_filter = ("event_type", "game_clock_state", "occurred_at")
+    search_fields = ("user__email", "session_id")
+    date_hierarchy = "occurred_at"
+    ordering = ("-occurred_at",)
+    autocomplete_fields = ("user",)
+    readonly_fields = ("recorded_at",)
+
+
+@admin.register(EngagementLog)
+class EngagementLogAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    list_display = ("id", "user", "event_type", "occurred_at", "game_clock_state", "jitai_log")
+    list_filter = ("event_type", "game_clock_state", "occurred_at")
+    search_fields = ("user__email",)
+    date_hierarchy = "occurred_at"
+    ordering = ("-occurred_at",)
+    autocomplete_fields = ("user",)
+    readonly_fields = ("recorded_at",)
