@@ -1545,3 +1545,51 @@ class JITAIEndpointTests(TestCase):
         }, format='json')
         log = JITAILog.objects.get(user=self.user)
         self.assertFalse(log.send_prompt)
+
+
+# ---------------------------------------------------------------------------
+# API: GET /telemetry/hr/<user_id>/, GET /telemetry/stress/<user_id>/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class TelemetryReadEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='telread@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_hr_returns_samples_for_user(self):
+        HeartRateSample.objects.create(user=self.user, timestamp=timezone.now(), bpm=72)
+        HeartRateSample.objects.create(user=self.user, timestamp=timezone.now(), bpm=85)
+        response = self.client.get(f'/telemetry/hr/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+    def test_hr_returns_empty_list_when_no_samples(self):
+        response = self.client.get(f'/telemetry/hr/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_hr_limit_param_caps_results(self):
+        for bpm in range(1, 6):
+            HeartRateSample.objects.create(user=self.user, timestamp=timezone.now(), bpm=bpm * 10)
+        response = self.client.get(f'/telemetry/hr/{self.user.user_id}/?limit=2')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+    def test_hr_requires_auth(self):
+        response = APIClient().get(f'/telemetry/hr/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_stress_returns_samples_for_user(self):
+        StressSample.objects.create(user=self.user, timestamp=timezone.now(), stress_score=55)
+        response = self.client.get(f'/telemetry/stress/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+    def test_stress_limit_param_caps_results(self):
+        for score in range(1, 6):
+            StressSample.objects.create(user=self.user, timestamp=timezone.now(), stress_score=score * 10)
+        response = self.client.get(f'/telemetry/stress/{self.user.user_id}/?limit=3')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 3)

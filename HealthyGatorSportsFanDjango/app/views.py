@@ -15,7 +15,9 @@ from rest_framework.response import Response
 from rest_framework import status, generics
 from .serializers import (
     EMASerializer,
+    HeartRateSampleSerializer,
     JITAILogSerializer,
+    StressSampleSerializer,
     TelemetryIngestSerializer,
     UserDataSerializer,
     UserSerializer,
@@ -583,3 +585,25 @@ class JITAILogView(APIView):
     def get(self, request, user_id):
         logs = JITAILog.objects.filter(user__user_id=user_id).order_by('-triggered_at')
         return Response(JITAILogSerializer(logs, many=True).data)
+
+
+class HeartRateListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        limit = int(request.query_params.get('limit', 100))
+        samples = HeartRateSample.objects.filter(
+            user__user_id=user_id
+        ).order_by('-timestamp')[:limit]
+        return Response(HeartRateSampleSerializer(samples, many=True).data)
+
+
+class StressListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        limit = int(request.query_params.get('limit', 100))
+        samples = StressSample.objects.filter(
+            user__user_id=user_id
+        ).order_by('-timestamp')[:limit]
+        return Response(StressSampleSerializer(samples, many=True).data)
