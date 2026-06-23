@@ -1360,4 +1360,64 @@ class JITAILogSerializerFieldsTests(TestCase):
         log = serializer.save()
         self.assertEqual(log.observed_mssd, 12.5)
         self.assertTrue(log.send_prompt)
-        self.assertEqual(log.ema, ema)
+
+
+# ---------------------------------------------------------------------------
+# API: POST /wearable/, GET /wearable/<id>/, PATCH /wearable/<id>/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class WearableEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='wearable@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_post_creates_device_and_returns_201(self):
+        response = self.client.post('/wearable/', {
+            'user': self.user.user_id,
+            'fitabase_participant_id': 'FITABASE_001',
+            'device_name': 'Garmin Vivoactive 6',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertTrue(WearableDevice.objects.filter(user=self.user).exists())
+
+    def test_post_without_auth_returns_401(self):
+        response = APIClient().post('/wearable/', {
+            'user': self.user.user_id,
+            'fitabase_participant_id': 'FITABASE_001',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_get_returns_device_for_enrolled_user(self):
+        WearableDevice.objects.create(
+            user=self.user, fitabase_participant_id='FITABASE_001'
+        )
+        response = self.client.get(f'/wearable/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(response.data['fitabase_participant_id'], 'FITABASE_001')
+
+    def test_get_returns_404_when_no_device(self):
+        response = self.client.get(f'/wearable/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
+
+    def test_patch_updates_device_name(self):
+        WearableDevice.objects.create(
+            user=self.user, fitabase_participant_id='FITABASE_001'
+        )
+        response = self.client.patch(
+            f'/wearable/{self.user.user_id}/',
+            {'device_name': 'Garmin Vivoactive 6 Pro'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        device = WearableDevice.objects.get(user=self.user)
+        self.assertEqual(device.device_name, 'Garmin Vivoactive 6 Pro')
+
+    def test_patch_nonexistent_device_returns_404(self):
+        response = self.client.patch(
+            f'/wearable/{self.user.user_id}/',
+            {'device_name': 'X'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)

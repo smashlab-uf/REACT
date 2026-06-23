@@ -17,6 +17,7 @@ from .serializers import (
     TelemetryIngestSerializer,
     UserDataSerializer,
     UserSerializer,
+    WearableDeviceSerializer,
 )
 import os
 import cfbd
@@ -388,6 +389,35 @@ class TelemetryIngestView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class WearableDeviceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = WearableDeviceSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    def get(self, request, user_id):
+        try:
+            device = WearableDevice.objects.get(user__user_id=user_id)
+        except WearableDevice.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        return Response(WearableDeviceSerializer(device).data)
+
+    def patch(self, request, user_id):
+        try:
+            device = WearableDevice.objects.get(user__user_id=user_id)
+        except WearableDevice.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        serializer = WearableDeviceSerializer(device, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data)
 
 
 # class SendNotificationView(APIView):

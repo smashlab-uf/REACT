@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path
-from app.views import index, CreateUserView, poll_cfbd_view, home_tile_view, schedule_view, CreateUserDataView, UserLoginView, LatestUserDataView, UserUpdateView, CheckEmailView, me_view, TelemetryIngestView
+from app.views import index, CreateUserView, poll_cfbd_view, home_tile_view, schedule_view, CreateUserDataView, UserLoginView, LatestUserDataView, UserUpdateView, CheckEmailView, me_view, TelemetryIngestView, WearableDeviceView
 
 # Import drf-yasg components
 from drf_yasg.views import get_schema_view 
@@ -53,6 +53,8 @@ urlpatterns = [
     path('user/checkemail/', CheckEmailView.as_view(), name='check-user-email'),
     path('userdata/<int:user_id>/', CreateUserDataView.as_view(), name='user-data-create'),
     path('userdata/latest/<int:user_id>/', LatestUserDataView.as_view(), name='get-latest-user-data'),
+    path('wearable/', WearableDeviceView.as_view(), name='wearable-create'),
+    path('wearable/<int:user_id>/', WearableDeviceView.as_view(), name='wearable-detail'),
     path('telemetry/ingest/', TelemetryIngestView.as_view(), name='telemetry-ingest'),
     path('poll-cfbd/', poll_cfbd_view, name='poll_cfbd'),
     path('home-tile/', home_tile_view, name='home_tile_view'),
