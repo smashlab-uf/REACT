@@ -624,3 +624,16 @@ class PhoneTelemetryView(APIView):
         event.game_clock_state = get_game_clock_state()
         event.save(update_fields=['game_clock_state'])
         return Response(PhoneTelemetrySerializer(event).data, status=status.HTTP_201_CREATED)
+
+
+class EngagementLogView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = EngagementLogSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        log = serializer.save()
+        log.game_clock_state = get_game_clock_state()
+        log.save(update_fields=['game_clock_state'])
+        return Response(EngagementLogSerializer(log).data, status=status.HTTP_201_CREATED)

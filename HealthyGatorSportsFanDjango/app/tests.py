@@ -1650,3 +1650,74 @@ class PhoneTelemetryEndpointTests(TestCase):
         payload['event_type'] = 'not_a_real_event'
         response = self.client.post('/telemetry/phone/', payload, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# API: POST /telemetry/engagement/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EngagementEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='engage@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    @patch('app.views.get_game_clock_state', return_value='live')
+    def test_post_creates_engagement_event_and_stamps_game_clock_state(self, mock_gcs):
+        from app.models import EngagementLog
+        response = self.client.post('/telemetry/engagement/', {
+            'user': self.user.user_id,
+            'event_type': 'ema_completed',
+            'occurred_at': '2026-09-01T15:10:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = EngagementLog.objects.get(user=self.user)
+        self.assertEqual(log.game_clock_state, 'live')
+        self.assertIsNone(log.jitai_log)
+
+    @patch('app.views.get_game_clock_state', return_value='live')
+    def test_post_with_jitai_log_links_correctly(self, mock_gcs):
+        from app.models import EngagementLog
+        jitai = JITAILog.objects.create(
+            user=self.user, prompt_id='T1', trigger_reason='hr_elevated'
+        )
+        response = self.client.post('/telemetry/engagement/', {
+            'user': self.user.user_id,
+            'jitai_log': jitai.id,
+            'event_type': 'notification_tapped',
+            'occurred_at': '2026-09-01T15:10:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = EngagementLog.objects.get(user=self.user)
+        self.assertEqual(log.jitai_log, jitai)
+
+    def test_post_without_auth_returns_401(self):
+        response = APIClient().post('/telemetry/engagement/', {
+            'user': self.user.user_id,
+            'event_type': 'ema_completed',
+            'occurred_at': '2026-09-01T15:10:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_invalid_event_type_returns_400(self, mock_gcs):
+        response = self.client.post('/telemetry/engagement/', {
+            'user': self.user.user_id,
+            'event_type': 'not_a_real_event',
+            'occurred_at': '2026-09-01T15:10:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_client_supplied_game_clock_state_is_ignored(self, mock_gcs):
+        from app.models import EngagementLog
+        response = self.client.post('/telemetry/engagement/', {
+            'user': self.user.user_id,
+            'event_type': 'ema_opened',
+            'occurred_at': '2026-09-01T15:10:00Z',
+            'game_clock_state': 'live',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = EngagementLog.objects.get(user=self.user)
+        self.assertEqual(log.game_clock_state, 'pre')
