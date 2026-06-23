@@ -15,6 +15,7 @@ from rest_framework.response import Response
 from rest_framework import status, generics
 from .serializers import (
     EMASerializer,
+    JITAILogSerializer,
     TelemetryIngestSerializer,
     UserDataSerializer,
     UserSerializer,
@@ -567,3 +568,18 @@ class EMAView(APIView):
     def get(self, request, user_id):
         emas = EMA.objects.filter(user__user_id=user_id).order_by('-sent_at')
         return Response(EMASerializer(emas, many=True).data)
+
+
+class JITAILogView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = JITAILogSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        log = serializer.save()
+        return Response(JITAILogSerializer(log).data, status=status.HTTP_201_CREATED)
+
+    def get(self, request, user_id):
+        logs = JITAILog.objects.filter(user__user_id=user_id).order_by('-triggered_at')
+        return Response(JITAILogSerializer(logs, many=True).data)

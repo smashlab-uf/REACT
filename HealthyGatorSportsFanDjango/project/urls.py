@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path
-from app.views import index, CreateUserView, poll_cfbd_view, home_tile_view, schedule_view, CreateUserDataView, UserLoginView, LatestUserDataView, UserUpdateView, CheckEmailView, me_view, TelemetryIngestView, WearableDeviceView, EMAView
+from app.views import index, CreateUserView, poll_cfbd_view, home_tile_view, schedule_view, CreateUserDataView, UserLoginView, LatestUserDataView, UserUpdateView, CheckEmailView, me_view, TelemetryIngestView, WearableDeviceView, EMAView, JITAILogView
 
 # Import drf-yasg components
 from drf_yasg.views import get_schema_view 
@@ -57,6 +57,8 @@ urlpatterns = [
     path('wearable/<int:user_id>/', WearableDeviceView.as_view(), name='wearable-detail'),
     path('ema/', EMAView.as_view(), name='ema-create'),
     path('ema/<int:user_id>/', EMAView.as_view(), name='ema-list'),
+    path('jitai/', JITAILogView.as_view(), name='jitai-create'),
+    path('jitai/<int:user_id>/', JITAILogView.as_view(), name='jitai-list'),
     path('telemetry/ingest/', TelemetryIngestView.as_view(), name='telemetry-ingest'),
     path('poll-cfbd/', poll_cfbd_view, name='poll_cfbd'),
     path('home-tile/', home_tile_view, name='home_tile_view'),

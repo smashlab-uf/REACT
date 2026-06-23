@@ -1486,3 +1486,62 @@ class EMAEndpointTests(TestCase):
         response = self.client.get(f'/ema/{self.user.user_id}/')
         self.assertEqual(response.status_code, http_status.HTTP_200_OK)
         self.assertEqual(len(response.data), 0)
+
+
+# ---------------------------------------------------------------------------
+# API: POST /jitai/, GET /jitai/<user_id>/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class JITAIEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='jitai@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_post_creates_jitai_log_and_returns_201(self):
+        response = self.client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'TEMPLATE_HR_HIGH',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'hr_at_trigger': 110,
+            'stress_at_trigger': 75,
+            'observed_mssd': 18.4,
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertEqual(JITAILog.objects.count(), 1)
+
+    def test_post_without_auth_returns_401(self):
+        response = APIClient().post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_get_returns_jitai_history(self):
+        JITAILog.objects.create(
+            user=self.user, prompt_id='T1', trigger_reason='hr_elevated', send_prompt=True
+        )
+        JITAILog.objects.create(
+            user=self.user, prompt_id='T2', trigger_reason='ema_low_mood', send_prompt=False
+        )
+        response = self.client.get(f'/jitai/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+    def test_get_returns_empty_list_for_user_with_no_logs(self):
+        response = self.client.get(f'/jitai/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 0)
+
+    def test_send_prompt_false_is_stored(self):
+        self.client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'TEMPLATE_001',
+            'trigger_reason': 'cooldown',
+            'send_prompt': False,
+        }, format='json')
+        log = JITAILog.objects.get(user=self.user)
+        self.assertFalse(log.send_prompt)
