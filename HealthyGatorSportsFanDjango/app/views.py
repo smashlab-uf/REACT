@@ -2,11 +2,12 @@ from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
 from .models import (
-    ActivitySummary,
     EMA,
+    EngagementLog,
     HeartRateSample,
     JITAILog,
-    NotificationData,
+    PhoneTelemetry,
+    StressSample,
     User,
     UserData,
     WearableDevice,
@@ -15,10 +16,16 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, generics
 from .serializers import (
-    NotificationDataSerializer,
+    EMASerializer,
+    EngagementLogSerializer,
+    HeartRateSampleSerializer,
+    JITAILogSerializer,
+    PhoneTelemetrySerializer,
+    StressSampleSerializer,
     TelemetryIngestSerializer,
     UserDataSerializer,
     UserSerializer,
+    WearableDeviceSerializer,
 )
 import os
 import cfbd
@@ -26,7 +33,8 @@ import certifi
 import pytz
 from django.http import JsonResponse
 from datetime import date, datetime, timezone, timedelta
-from .utils import send_push_notification_next_game, check_game_status, send_notification, get_users_with_push_token
+from django.utils import timezone as django_timezone
+from .utils import send_push_notification_next_game, check_game_status, send_notification, get_users_with_push_token, get_game_clock_state
 from django.views.decorators.csrf import csrf_exempt
 from django.core.cache import cache
 from .management.commands import poll_cfbd
@@ -44,6 +52,16 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes
 
 
+def _get_app_user(request):
+    email = getattr(request.user, 'email', None)
+    if not email:
+        return None
+    try:
+        return User.objects.get(email=email)
+    except User.DoesNotExist:
+        return None
+
+
 # Create your views here.
 
 # Best practice is one view per page
@@ -52,19 +70,6 @@ from rest_framework.decorators import api_view, permission_classes
 # 'request.data' is used to access parsed data like the JSON or form data
 # 'request.body' is used to access raw data that is not parsed
 # 'self' refers to the current instance
-
-# API view to handle POST requests for data sent from Postman
-#class WeightView(APIView):
-    #def post(self, request):
-
-        ## Print for debugging
-        #print("Received Data:", request.data)
-
-        #serializer = UserDataSerializer(data=request.data) # Validate the data
-        #if serializer.is_valid():
-            #serializer.save() # Save the validated data to the database
-            #return Response(serializer.data, status=status.HTTP_201_CREATED)
-        #return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 def index(request):
     return render(request, "index.html")
@@ -339,70 +344,13 @@ class UserLoginView(APIView):
 #     def logout_view(request):
 #         logout(request)
     
-# API view to handle GET requests for all notifications for a userID  
-class NotificationListView(generics.ListAPIView):
-    serializer_class = NotificationDataSerializer
-    @swagger_auto_schema(
-        operation_summary="List notifications", operation_description="Get all notifications for a user by user ID.",
-        manual_parameters=[
-            openapi.Parameter(
-                'user_id',  # Name of the parameter
-                openapi.IN_PATH,  # Location of the parameter
-                description="User ID for which we are getting all notifications for",
-                type=openapi.TYPE_STRING,  # Type of the parameter
-                required=True  # Whether the parameter is required
-            )
-        ],
-        responses={200: NotificationDataSerializer(many=True)}  # Define response schema
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-    def get_queryset(self):
-        user_id = self.kwargs['user_id']
-        return NotificationData.objects.filter(user_id=user_id)  # Adjust based on your model's field
-    
-class BulkDeleteNotificationsView(APIView):
-    @swagger_auto_schema(operation_summary="Delete all notifications for a user", operation_description="Delete all notifications for a user by user ID", request_body=NotificationDataSerializer)
-    def delete(self, request, user_id):
-        print("Entered BulkDeleteNotifications View")  
-        try:
-            notifications = NotificationData.objects.filter(user_id=user_id)
-            deleted_count, _ = notifications.delete()
-            if deleted_count > 0:
-                return Response({'message': f'Deleted {deleted_count} notifications.'}, status=status.HTTP_200_OK)
-            else:
-                return Response({'message': 'No notifications found for this user.'}, status=status.HTTP_404_NOT_FOUND)
-        except Exception as e:
-            print("Errors:", e)
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-                
-# API view to handle CRUD requests for a single notification
-class CreateNotificationView(APIView):
-    @swagger_auto_schema(operation_summary="Add notification", operation_description="Create a new notification to add to the database.", request_body=NotificationDataSerializer)
-    def post(self, request):
-        serializer = NotificationDataSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.data, status=status.HTTP_400_BAD_REQUEST)
-
-class DeleteNotificationView(APIView):
-    @swagger_auto_schema(operation_summary="Delete notification", operation_description="Delete a notification by ID", request_body=NotificationDataSerializer)
-    def delete(self, request, notification_id):
-        try:
-            notification = NotificationData.objects.get(notification_id=notification_id)
-            notification.delete()
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        except NotificationData.DoesNotExist:
-            return Response(status=status.HTTP_404_NOT_FOUND)
-
 
 class TelemetryIngestView(APIView):
     @swagger_auto_schema(
-        operation_summary="Ingest phone telemetry",
+        operation_summary="Ingest telemetry",
         operation_description=(
-            "Store content-free phone telemetry into the current wearable, heart rate, "
-            "activity, EMA, and JITAI tables."
+            "Store telemetry from Fitabase polling into the wearable, heart rate, "
+            "stress, EMA, and JITAI tables."
         ),
         request_body=TelemetryIngestSerializer,
     )
@@ -418,53 +366,31 @@ class TelemetryIngestView(APIView):
             return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
         device_payload = data.get("wearable_device") or {}
-        device = None
         if device_payload:
-            device, _ = WearableDevice.objects.update_or_create(
+            WearableDevice.objects.update_or_create(
                 user=user,
-                fitbit_device_id=device_payload["fitbit_device_id"],
                 defaults={
-                    "device_type": device_payload.get("device_type", "tracker"),
-                    "device_name": device_payload.get("device_name", "Phone Telemetry Device"),
+                    "labfront_participant_id": device_payload["labfront_participant_id"],
+                    "device_name": device_payload.get("device_name"),
                     "last_synced_at": device_payload.get("last_synced_at"),
                     "is_active": device_payload.get("is_active", True),
-                },
-            )
-        elif data.get("heart_rate_samples") or data.get("activity_summaries"):
-            device, _ = WearableDevice.objects.get_or_create(
-                user=user,
-                fitbit_device_id=f"phone-telemetry-{user.user_id}",
-                defaults={
-                    "device_type": "phone",
-                    "device_name": "Phone Telemetry Device",
-                    "is_active": True,
                 },
             )
 
         created_counts = {
             "heart_rate_samples": 0,
-            "activity_summaries": 0,
+            "stress_samples": 0,
             "emas": 0,
             "jitai_logs": 0,
         }
 
         for sample in data.get("heart_rate_samples", []):
-            HeartRateSample.objects.create(device=device, **sample)
+            HeartRateSample.objects.create(user=user, **sample)
             created_counts["heart_rate_samples"] += 1
 
-        for summary in data.get("activity_summaries", []):
-            summary_defaults = {
-                "steps": summary.get("steps"),
-                "active_minutes": summary.get("active_minutes"),
-                "calories_burned": summary.get("calories_burned"),
-                "distance_km": summary.get("distance_km"),
-            }
-            ActivitySummary.objects.update_or_create(
-                device=device,
-                date=summary["date"],
-                defaults=summary_defaults,
-            )
-            created_counts["activity_summaries"] += 1
+        for sample in data.get("stress_samples", []):
+            StressSample.objects.create(user=user, **sample)
+            created_counts["stress_samples"] += 1
 
         for ema in data.get("emas", []):
             EMA.objects.create(user=user, **ema)
@@ -478,11 +404,47 @@ class TelemetryIngestView(APIView):
             {
                 "message": "Telemetry ingested.",
                 "user_id": user.user_id,
-                "device_id": device.device_id if device else None,
                 "counts": created_counts,
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class WearableDeviceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = WearableDeviceSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    def get(self, request, user_id):
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        try:
+            device = WearableDevice.objects.get(user__user_id=user_id)
+        except WearableDevice.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        return Response(WearableDeviceSerializer(device).data)
+
+    def patch(self, request, user_id):
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        try:
+            device = WearableDevice.objects.get(user__user_id=user_id)
+        except WearableDevice.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        serializer = WearableDeviceSerializer(device, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data)
 
 
 # class SendNotificationView(APIView):
@@ -607,7 +569,104 @@ def me_view(request):
         return Response({"detail": "App user not found"}, status=404)
 
 
-    print('hell yeah brother')
-    print(UserSerializer(app_user).data)
-
     return Response(UserSerializer(app_user).data, status=200)
+
+
+class EMAView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = EMASerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        ema = serializer.save()
+        if ema.mood is not None and ema.stress is not None and ema.energy is not None:
+            ema.status = 'completed'
+            ema.responded_at = django_timezone.now()
+            ema.save(update_fields=['status', 'responded_at'])
+        return Response(EMASerializer(ema).data, status=status.HTTP_201_CREATED)
+
+    def get(self, request, user_id):
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        emas = EMA.objects.filter(user__user_id=user_id).order_by('-sent_at')
+        return Response(EMASerializer(emas, many=True).data)
+
+
+class JITAILogView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = JITAILogSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        log = serializer.save()
+        return Response(JITAILogSerializer(log).data, status=status.HTTP_201_CREATED)
+
+    def get(self, request, user_id):
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        logs = JITAILog.objects.filter(user__user_id=user_id).order_by('-triggered_at')
+        return Response(JITAILogSerializer(logs, many=True).data)
+
+
+class HeartRateListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        try:
+            limit = max(1, min(int(request.query_params.get('limit', 100)), 1000))
+        except (ValueError, TypeError):
+            return Response({'error': 'limit must be a positive integer'}, status=status.HTTP_400_BAD_REQUEST)
+        samples = HeartRateSample.objects.filter(
+            user__user_id=user_id
+        ).order_by('-timestamp')[:limit]
+        return Response(HeartRateSampleSerializer(samples, many=True).data)
+
+
+class StressListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        try:
+            limit = max(1, min(int(request.query_params.get('limit', 100)), 1000))
+        except (ValueError, TypeError):
+            return Response({'error': 'limit must be a positive integer'}, status=status.HTTP_400_BAD_REQUEST)
+        samples = StressSample.objects.filter(
+            user__user_id=user_id
+        ).order_by('-timestamp')[:limit]
+        return Response(StressSampleSerializer(samples, many=True).data)
+
+
+class PhoneTelemetryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = PhoneTelemetrySerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        event = serializer.save(game_clock_state=get_game_clock_state())
+        return Response(PhoneTelemetrySerializer(event).data, status=status.HTTP_201_CREATED)
+
+
+class EngagementLogView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = EngagementLogSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        log = serializer.save(game_clock_state=get_game_clock_state())
+        return Response(EngagementLogSerializer(log).data, status=status.HTTP_201_CREATED)

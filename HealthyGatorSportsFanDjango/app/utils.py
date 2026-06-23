@@ -2,9 +2,12 @@ from exponent_server_sdk import PushClient, PushMessage
 import os
 import cfbd
 import redis
-from .models import User, NotificationData
+import logging
+from .models import User
 from .serializers import UserSerializer
 from django.core.cache import cache
+
+logger = logging.getLogger(__name__)
 
 def send_push_notification_next_game(header, users, message):
     sentTokens = set()
@@ -20,14 +23,6 @@ def send_push_notification_next_game(header, users, message):
                 )
                 sentTokens.add(user['push_token'])
 
-            user_instance = User.objects.get(user_id=user['user_id'])
-            NotificationData.objects.create(
-                user=user_instance,
-                notification_title=header,
-                notification_message=message,
-            )
-
-            
         except Exception as e:
             errorMessage = "Couldn't send push notification"
             print(errorMessage)
@@ -118,3 +113,28 @@ def send_notification(game_status: str, home_team: str, home_score: int, away_te
             if last_score != current_score:
                 send_push_notification_next_game("Health Notification", pushTokens, message)
                 cache.set('last_score', current_score)
+
+
+def get_game_clock_state():
+    from datetime import datetime, timezone as dt_timezone, timedelta
+    current_year = datetime.now(dt_timezone.utc).year
+    games_list = cache.get(f'uf_football_games_{current_year}')
+    if not games_list:
+        logger.warning('get_game_clock_state: game cache miss, defaulting to pre')
+        return 'pre'
+    now = datetime.now(dt_timezone.utc)
+    for game in games_list:
+        start_date = game.get('startDate')
+        if start_date is None:
+            continue
+        if not hasattr(start_date, 'tzinfo'):
+            continue
+        window_start = start_date - timedelta(minutes=30)
+        window_end = start_date + timedelta(hours=4)
+        if window_start <= now <= window_end:
+            return 'live'
+    future_games = [
+        g for g in games_list
+        if g.get('startDate') and hasattr(g['startDate'], 'tzinfo') and g['startDate'] > now
+    ]
+    return 'pre' if future_games else 'post'

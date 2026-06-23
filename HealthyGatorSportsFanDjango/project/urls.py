@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path
-from app.views import index, CreateUserView, poll_cfbd_view, home_tile_view, schedule_view, CreateUserDataView, NotificationListView, CreateNotificationView, DeleteNotificationView, BulkDeleteNotificationsView, UserLoginView, LatestUserDataView, UserUpdateView, CheckEmailView, me_view, TelemetryIngestView
+from app.views import index, CreateUserView, poll_cfbd_view, home_tile_view, schedule_view, CreateUserDataView, UserLoginView, LatestUserDataView, UserUpdateView, CheckEmailView, me_view, TelemetryIngestView, WearableDeviceView, EMAView, JITAILogView, HeartRateListView, StressListView, PhoneTelemetryView, EngagementLogView
 
 # Import drf-yasg components
 from drf_yasg.views import get_schema_view 
@@ -53,11 +53,17 @@ urlpatterns = [
     path('user/checkemail/', CheckEmailView.as_view(), name='check-user-email'),
     path('userdata/<int:user_id>/', CreateUserDataView.as_view(), name='user-data-create'),
     path('userdata/latest/<int:user_id>/', LatestUserDataView.as_view(), name='get-latest-user-data'),
-    path('notificationdata/<int:user_id>/', NotificationListView.as_view(), name='notification-list'),
-    path('notificationdata/', CreateNotificationView.as_view(), name='notification-create'),
-    path('notificationdata/delete/<int:notification_id>/', DeleteNotificationView.as_view(), name='notification-delete'),
-    path('notificationdata/deleteall/<int:user_id>/', BulkDeleteNotificationsView.as_view(), name='notifications-delete-all'),
+    path('wearable/', WearableDeviceView.as_view(), name='wearable-create'),
+    path('wearable/<int:user_id>/', WearableDeviceView.as_view(), name='wearable-detail'),
+    path('ema/', EMAView.as_view(), name='ema-create'),
+    path('ema/<int:user_id>/', EMAView.as_view(), name='ema-list'),
+    path('jitai/', JITAILogView.as_view(), name='jitai-create'),
+    path('jitai/<int:user_id>/', JITAILogView.as_view(), name='jitai-list'),
     path('telemetry/ingest/', TelemetryIngestView.as_view(), name='telemetry-ingest'),
+    path('telemetry/hr/<int:user_id>/', HeartRateListView.as_view(), name='telemetry-hr'),
+    path('telemetry/stress/<int:user_id>/', StressListView.as_view(), name='telemetry-stress'),
+    path('telemetry/phone/', PhoneTelemetryView.as_view(), name='telemetry-phone'),
+    path('telemetry/engagement/', EngagementLogView.as_view(), name='telemetry-engagement'),
     path('poll-cfbd/', poll_cfbd_view, name='poll_cfbd'),
     path('home-tile/', home_tile_view, name='home_tile_view'),
     path('schedule-tile/', schedule_view, name='schedule_tile'),

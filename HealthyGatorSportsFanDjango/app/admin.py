@@ -1,19 +1,13 @@
 from django.contrib import admin
 
 from .models import (
-    ActivitySummary,
-    EMA,
-    HeartRateSample,
-    JITAILog,
-    NotificationData,
-    User,
-    UserData,
-    WearableDevice,
+    EMA, EngagementLog, HeartRateSample, JITAILog,
+    PhoneTelemetry, StressSample, User, UserData, WearableDevice,
 )
 
 
-admin.site.site_header = "HealthyGatorSportsFan Admin"
-admin.site.site_title = "HealthyGatorSportsFan"
+admin.site.site_header = "REACT Admin"
+admin.site.site_title = "REACT"
 admin.site.index_title = "Backend Data Management"
 
 
@@ -35,18 +29,13 @@ class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
         "goal_weight",
         "goal_to_lose_weight",
         "goal_to_feel_better",
+        "is_enrolled",
         "has_push_token",
-        "has_fitbit_connection",
     )
-    list_filter = ("gender", "goal_to_lose_weight", "goal_to_feel_better")
-    search_fields = ("email", "first_name", "last_name", "fitbit_user_id")
+    list_filter = ("gender", "goal_to_lose_weight", "goal_to_feel_better", "is_enrolled")
+    search_fields = ("email", "first_name", "last_name")
     ordering = ("email",)
-    readonly_fields = (
-        "password",
-        "fitbit_access_token",
-        "fitbit_refresh_token",
-        "fitbit_token_expires",
-    )
+    readonly_fields = ("password", "enrolled_at")
     fieldsets = (
         ("Profile", {
             "fields": ("email", "first_name", "last_name", "birthdate", "gender"),
@@ -57,18 +46,15 @@ class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
         ("Goals", {
             "fields": ("goal_to_lose_weight", "goal_to_feel_better"),
         }),
+        ("Enrollment", {
+            "fields": ("is_enrolled", "enrolled_at"),
+        }),
         ("Notifications", {
             "fields": ("push_token",),
         }),
-        ("Credentials and Fitbit Tokens", {
+        ("Credentials", {
             "classes": ("collapse",),
-            "fields": (
-                "password",
-                "fitbit_user_id",
-                "fitbit_access_token",
-                "fitbit_refresh_token",
-                "fitbit_token_expires",
-            ),
+            "fields": ("password",),
         }),
     )
 
@@ -76,151 +62,128 @@ class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
     def has_push_token(self, obj):
         return bool(obj.push_token)
 
-    @admin.display(boolean=True, description="Fitbit")
-    def has_fitbit_connection(self, obj):
-        return bool(obj.fitbit_user_id or obj.fitbit_access_token)
-
 
 @admin.register(UserData)
 class UserDataAdmin(ReadableAdminMixin, admin.ModelAdmin):
-    list_display = ("data_id", "user", "timestamp", "goal_type", "weight_value", "feel_better_value")
-    list_filter = ("goal_type", "timestamp")
+    list_display = ("data_id", "user", "timestamp")
+    list_filter = ("timestamp",)
     search_fields = ("user__email", "user__first_name", "user__last_name")
     date_hierarchy = "timestamp"
     ordering = ("-timestamp",)
     autocomplete_fields = ("user",)
 
 
-@admin.register(NotificationData)
-class NotificationDataAdmin(ReadableAdminMixin, admin.ModelAdmin):
-    list_display = (
-        "notification_id",
-        "user",
-        "notification_title",
-        "read_status",
-        "timestamp",
-    )
-    list_filter = ("read_status", "timestamp")
-    search_fields = (
-        "user__email",
-        "notification_title",
-        "notification_message",
-    )
-    date_hierarchy = "timestamp"
-    ordering = ("-timestamp",)
-    autocomplete_fields = ("user",)
-
 
 @admin.register(WearableDevice)
 class WearableDeviceAdmin(ReadableAdminMixin, admin.ModelAdmin):
     list_display = (
-        "device_id",
         "user",
+        "labfront_participant_id",
         "device_name",
-        "device_type",
-        "fitbit_device_id",
         "is_active",
         "last_synced_at",
-        "created_at",
     )
-    list_filter = ("device_type", "is_active", "created_at", "last_synced_at")
-    search_fields = ("user__email", "device_name", "device_type", "fitbit_device_id")
-    date_hierarchy = "created_at"
-    ordering = ("-created_at",)
-    readonly_fields = ("created_at",)
+    list_filter = ("is_active", "last_synced_at")
+    search_fields = ("user__email", "labfront_participant_id", "device_name")
+    ordering = ("user__email",)
     autocomplete_fields = ("user",)
 
 
 @admin.register(HeartRateSample)
 class HeartRateSampleAdmin(ReadableAdminMixin, admin.ModelAdmin):
-    list_display = ("sample_id", "device", "user_email", "timestamp", "bpm", "zone")
-    list_filter = ("zone", "timestamp")
-    search_fields = ("device__user__email", "device__device_name", "device__fitbit_device_id")
+    list_display = ("id", "user", "timestamp", "bpm", "source")
+    list_filter = ("source", "timestamp")
+    search_fields = ("user__email",)
     date_hierarchy = "timestamp"
     ordering = ("-timestamp",)
-    autocomplete_fields = ("device",)
-
-    @admin.display(description="User email", ordering="device__user__email")
-    def user_email(self, obj):
-        return obj.device.user.email
+    autocomplete_fields = ("user",)
 
 
-@admin.register(ActivitySummary)
-class ActivitySummaryAdmin(ReadableAdminMixin, admin.ModelAdmin):
-    list_display = (
-        "summary_id",
-        "device",
-        "user_email",
-        "date",
-        "steps",
-        "active_minutes",
-        "calories_burned",
-        "distance_km",
-    )
-    list_filter = ("date",)
-    search_fields = ("device__user__email", "device__device_name", "device__fitbit_device_id")
-    date_hierarchy = "date"
-    ordering = ("-date",)
-    autocomplete_fields = ("device",)
-
-    @admin.display(description="User email", ordering="device__user__email")
-    def user_email(self, obj):
-        return obj.device.user.email
+@admin.register(StressSample)
+class StressSampleAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    list_display = ("id", "user", "timestamp", "stress_score", "source")
+    list_filter = ("source", "timestamp")
+    search_fields = ("user__email",)
+    date_hierarchy = "timestamp"
+    ordering = ("-timestamp",)
+    autocomplete_fields = ("user",)
 
 
 @admin.register(EMA)
 class EMAAdmin(ReadableAdminMixin, admin.ModelAdmin):
     list_display = (
-        "ema_id",
+        "id",
         "user",
-        "timestamp",
+        "prompt_id",
+        "sent_at",
+        "responded_at",
+        "status",
         "mood",
         "energy",
         "stress",
-        "physical_activity",
-        "weight_lbs",
     )
-    list_filter = ("physical_activity", "timestamp")
-    search_fields = ("user__email", "user__first_name", "user__last_name", "notes")
-    date_hierarchy = "timestamp"
-    ordering = ("-timestamp",)
+    list_filter = ("status", "sent_at")
+    search_fields = ("user__email", "user__first_name", "user__last_name", "prompt_id")
+    date_hierarchy = "sent_at"
+    ordering = ("-sent_at",)
     autocomplete_fields = ("user",)
+    readonly_fields = ("sent_at",)
     fieldsets = (
         ("Respondent", {
-            "fields": ("user", "timestamp"),
+            "fields": ("user", "prompt_id", "sent_at", "responded_at", "status"),
         }),
         ("Response", {
-            "fields": ("mood", "energy", "stress", "physical_activity", "weight_lbs", "notes"),
+            "fields": ("mood", "energy", "stress"),
         }),
     )
-    readonly_fields = ("timestamp",)
 
 
 @admin.register(JITAILog)
 class JITAILogAdmin(ReadableAdminMixin, admin.ModelAdmin):
     list_display = (
-        "log_id",
+        "id",
         "user",
-        "timestamp",
-        "title",
+        "prompt_id",
+        "triggered_at",
         "trigger_reason",
-        "prompt_status",
-        "prompt_count",
+        "hr_at_trigger",
+        "stress_at_trigger",
+        "status",
     )
-    list_filter = ("prompt_status", "trigger_reason", "timestamp")
-    search_fields = ("user__email", "title", "message", "trigger_reason")
-    date_hierarchy = "timestamp"
-    ordering = ("-timestamp",)
+    list_filter = ("status", "trigger_reason", "triggered_at")
+    search_fields = ("user__email", "prompt_id", "trigger_reason")
+    date_hierarchy = "triggered_at"
+    ordering = ("-triggered_at",)
     autocomplete_fields = ("user",)
-    readonly_fields = ("timestamp",)
+    readonly_fields = ("triggered_at",)
     fieldsets = (
         ("Prompt", {
-            "fields": ("user", "timestamp", "title", "message"),
+            "fields": ("user", "prompt_id", "triggered_at", "status"),
         }),
         ("Trigger Context", {
-            "fields": ("trigger_reason", "volatility_score", "threshold_used"),
-        }),
-        ("Engagement", {
-            "fields": ("prompt_status", "prompt_count", "opened_at", "interacted_at"),
+            "fields": ("trigger_reason", "hr_at_trigger", "stress_at_trigger"),
         }),
     )
+
+
+
+@admin.register(PhoneTelemetry)
+class PhoneTelemetryAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    list_display = ("id", "user", "session_id", "event_type", "occurred_at", "game_clock_state", "screen_name")
+    list_filter = ("event_type", "game_clock_state", "occurred_at")
+    search_fields = ("user__email", "session_id")
+    date_hierarchy = "occurred_at"
+    ordering = ("-occurred_at",)
+    autocomplete_fields = ("user",)
+    readonly_fields = ("recorded_at",)
+
+
+@admin.register(EngagementLog)
+class EngagementLogAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    list_display = ("id", "user", "event_type", "occurred_at", "game_clock_state", "jitai_log")
+    list_filter = ("event_type", "game_clock_state", "occurred_at")
+    search_fields = ("user__email",)
+    date_hierarchy = "occurred_at"
+    ordering = ("-occurred_at",)
+    autocomplete_fields = ("user",)
+    readonly_fields = ("recorded_at",)

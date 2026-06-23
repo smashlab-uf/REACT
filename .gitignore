@@ -16,6 +16,7 @@ build/
 *.pyc
 __pycache__/
 .venv/
+venv/
 
 # Ignore environment variables
 .env
@@ -36,3 +37,4 @@ HealthyGatorSportsFanRN\constants\AppUrls.ts
 
 # Ignore FCM file
 HealthyGatorSportsFanRN\google-services.json
+REACT Volatility Detection Simulator.pdf

@@ -6,11 +6,11 @@ from rest_framework import status as http_status
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from app.models import User, UserData, NotificationData, WearableDevice, HeartRateSample, ActivitySummary, EMA, JITAILog
+from app.models import User, UserData, WearableDevice, HeartRateSample, StressSample, EMA, JITAILog
 from app.serializers import (
-    UserSerializer, UserDataSerializer, NotificationDataSerializer,
+    UserSerializer, UserDataSerializer,
     WearableDeviceSerializer, HeartRateSampleSerializer,
-    ActivitySummarySerializer, EMASerializer, JITAILogSerializer,
+    StressSampleSerializer, EMASerializer, JITAILogSerializer,
 )
 from app.utils import check_game_status, send_notification
 
@@ -24,15 +24,6 @@ def make_user(email='test@example.com', password='testpass123', **kwargs):
     user.set_password(password)
     user.save()
     return user
-
-
-def make_device(user, fitbit_device_id='DEV001', device_type='tracker', device_name='Charge 6'):
-    return WearableDevice.objects.create(
-        user=user,
-        fitbit_device_id=fitbit_device_id,
-        device_type=device_type,
-        device_name=device_name,
-    )
 
 
 def make_game(home_name, home_pts, away_name, away_pts, game_status):
@@ -262,6 +253,15 @@ class CreateUserViewTests(TestCase):
         user = User.objects.get(email='new@example.com')
         self.assertNotEqual(user.password, 'securepass123')
 
+    def test_new_user_is_not_enrolled_by_default(self):
+        self.client.post('/user/', {
+            'email': 'new@example.com',
+            'password': 'securepass123',
+        }, format='json')
+        user = User.objects.get(email='new@example.com')
+        self.assertFalse(user.is_enrolled)
+        self.assertIsNone(user.enrolled_at)
+
 
 # ---------------------------------------------------------------------------
 # API: PUT /user/<id>/ — UserUpdateView
@@ -387,19 +387,12 @@ class CreateUserDataViewTests(TestCase):
         self.user = make_user()
 
     def test_valid_payload_returns_201_with_data_id(self):
-        response = self.client.post(f'/userdata/{self.user.user_id}/', {
-            'goal_type': 'loseWeight',
-            'weight_value': '185.0',
-            'feel_better_value': 3,
-        }, format='json')
+        response = self.client.post(f'/userdata/{self.user.user_id}/', {}, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         self.assertIn('data_id', response.data)
 
     def test_entry_is_persisted_to_database(self):
-        self.client.post(f'/userdata/{self.user.user_id}/', {
-            'goal_type': 'loseWeight',
-            'weight_value': '185.0',
-        }, format='json')
+        self.client.post(f'/userdata/{self.user.user_id}/', {}, format='json')
         self.assertEqual(UserData.objects.filter(user=self.user).count(), 1)
 
 
@@ -415,75 +408,14 @@ class LatestUserDataViewTests(TestCase):
         self.user = make_user()
 
     def test_returns_most_recent_entry(self):
-        UserData.objects.create(user=self.user, goal_type='loseWeight', weight_value=200)
-        UserData.objects.create(user=self.user, goal_type='loseWeight', weight_value=185)
+        first = UserData.objects.create(user=self.user)
+        second = UserData.objects.create(user=self.user)
         response = self.client.get(f'/userdata/latest/{self.user.user_id}/')
         self.assertEqual(response.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(str(response.data['weight_value']), '185.0')
+        self.assertEqual(response.data['data_id'], second.data_id)
 
     def test_user_with_no_data_returns_404(self):
         response = self.client.get(f'/userdata/latest/{self.user.user_id}/')
-        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
-
-
-# ---------------------------------------------------------------------------
-# API: Notification endpoints
-# ---------------------------------------------------------------------------
-
-@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class NotificationViewTests(TestCase):
-
-    def setUp(self):
-        self.client = APIClient()
-        self.user = make_user()
-
-    def test_list_returns_all_notifications_for_user(self):
-        NotificationData.objects.create(user=self.user, notification_message='A')
-        NotificationData.objects.create(user=self.user, notification_message='B')
-        response = self.client.get(f'/notificationdata/{self.user.user_id}/')
-        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 2)
-
-    def test_list_does_not_return_other_users_notifications(self):
-        other = make_user(email='other@example.com')
-        NotificationData.objects.create(user=other, notification_message='Not mine')
-        response = self.client.get(f'/notificationdata/{self.user.user_id}/')
-        self.assertEqual(len(response.data), 0)
-
-    def test_create_notification_returns_201(self):
-        response = self.client.post('/notificationdata/', {
-            'user': self.user.user_id,
-            'notification_title': 'Score Update',
-            'notification_message': 'Florida is winning!',
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        self.assertTrue(NotificationData.objects.filter(user=self.user).exists())
-
-    def test_delete_notification_returns_204_and_removes_record(self):
-        notification = NotificationData.objects.create(
-            user=self.user, notification_message='Delete me'
-        )
-        response = self.client.delete(
-            f'/notificationdata/delete/{notification.notification_id}/'
-        )
-        self.assertEqual(response.status_code, http_status.HTTP_204_NO_CONTENT)
-        self.assertFalse(
-            NotificationData.objects.filter(pk=notification.notification_id).exists()
-        )
-
-    def test_delete_nonexistent_notification_returns_404(self):
-        response = self.client.delete('/notificationdata/delete/99999/')
-        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
-
-    def test_bulk_delete_removes_all_user_notifications_and_returns_200(self):
-        NotificationData.objects.create(user=self.user, notification_message='A')
-        NotificationData.objects.create(user=self.user, notification_message='B')
-        response = self.client.delete(f'/notificationdata/deleteall/{self.user.user_id}/')
-        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(NotificationData.objects.filter(user=self.user).count(), 0)
-
-    def test_bulk_delete_with_no_notifications_returns_404(self):
-        response = self.client.delete(f'/notificationdata/deleteall/{self.user.user_id}/')
         self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
 
 
@@ -569,32 +501,29 @@ class SendNotificationTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Model: Fitbit token fields
+# Model: User enrollment fields
 # ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class UserFitbitFieldTests(TestCase):
+class UserEnrollmentFieldTests(TestCase):
 
-    def test_user_stores_fitbit_credentials(self):
+    def test_is_enrolled_defaults_to_false(self):
         user = make_user()
-        expires = timezone.now()
-        user.fitbit_user_id = 'ABCD1234'
-        user.fitbit_access_token = 'access_token_value'
-        user.fitbit_refresh_token = 'refresh_token_value'
-        user.fitbit_token_expires = expires
+        self.assertFalse(user.is_enrolled)
+
+    def test_enrolled_at_defaults_to_null(self):
+        user = make_user()
+        self.assertIsNone(user.enrolled_at)
+
+    def test_can_set_enrollment(self):
+        user = make_user()
+        now = timezone.now()
+        user.is_enrolled = True
+        user.enrolled_at = now
         user.save()
         user.refresh_from_db()
-        self.assertEqual(user.fitbit_user_id, 'ABCD1234')
-        self.assertEqual(user.fitbit_access_token, 'access_token_value')
-        self.assertEqual(user.fitbit_refresh_token, 'refresh_token_value')
-        self.assertIsNotNone(user.fitbit_token_expires)
-
-    def test_fitbit_fields_are_nullable(self):
-        user = make_user()
-        self.assertIsNone(user.fitbit_user_id)
-        self.assertIsNone(user.fitbit_access_token)
-        self.assertIsNone(user.fitbit_refresh_token)
-        self.assertIsNone(user.fitbit_token_expires)
+        self.assertTrue(user.is_enrolled)
+        self.assertIsNotNone(user.enrolled_at)
 
 
 # ---------------------------------------------------------------------------
@@ -604,13 +533,11 @@ class UserFitbitFieldTests(TestCase):
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class WearableDeviceModelTests(TestCase):
 
-    def test_device_is_linked_to_user(self):
+    def test_device_is_linked_to_user_via_onetoone(self):
         user = make_user()
         device = WearableDevice.objects.create(
             user=user,
-            fitbit_device_id='ABCD1234',
-            device_type='tracker',
-            device_name='Charge 6',
+            labfront_participant_id='LABFRONT001',
         )
         self.assertEqual(device.user, user)
 
@@ -618,32 +545,38 @@ class WearableDeviceModelTests(TestCase):
         user = make_user()
         device = WearableDevice.objects.create(
             user=user,
-            fitbit_device_id='ABCD1234',
-            device_type='tracker',
-            device_name='Charge 6',
+            labfront_participant_id='LABFRONT001',
         )
         self.assertTrue(device.is_active)
 
-    def test_created_at_is_set_automatically(self):
+    def test_last_synced_at_is_nullable(self):
         user = make_user()
         device = WearableDevice.objects.create(
             user=user,
-            fitbit_device_id='ABCD1234',
-            device_type='tracker',
-            device_name='Charge 6',
+            labfront_participant_id='LABFRONT001',
         )
-        self.assertIsNotNone(device.created_at)
+        self.assertIsNone(device.last_synced_at)
 
     def test_deleting_user_deletes_device(self):
         user = make_user()
-        WearableDevice.objects.create(
-            user=user,
-            fitbit_device_id='ABCD1234',
-            device_type='tracker',
-            device_name='Charge 6',
-        )
+        WearableDevice.objects.create(user=user, labfront_participant_id='LABFRONT001')
         user.delete()
         self.assertEqual(WearableDevice.objects.count(), 0)
+
+    def test_labfront_participant_id_is_unique(self):
+        from django.db import IntegrityError
+        user1 = make_user(email='u1@example.com')
+        user2 = make_user(email='u2@example.com')
+        WearableDevice.objects.create(user=user1, labfront_participant_id='SAME_ID')
+        with self.assertRaises(IntegrityError):
+            WearableDevice.objects.create(user=user2, labfront_participant_id='SAME_ID')
+
+    def test_one_user_cannot_have_two_devices(self):
+        from django.db import IntegrityError
+        user = make_user()
+        WearableDevice.objects.create(user=user, labfront_participant_id='ID_A')
+        with self.assertRaises(IntegrityError):
+            WearableDevice.objects.create(user=user, labfront_participant_id='ID_B')
 
 
 # ---------------------------------------------------------------------------
@@ -653,57 +586,64 @@ class WearableDeviceModelTests(TestCase):
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class HeartRateSampleModelTests(TestCase):
 
-    def test_sample_links_to_device(self):
+    def test_sample_links_to_user(self):
         user = make_user()
-        device = make_device(user)
         sample = HeartRateSample.objects.create(
-            device=device,
+            user=user,
             timestamp=timezone.now(),
             bpm=72,
-            zone='fat_burn',
         )
-        self.assertEqual(sample.device, device)
+        self.assertEqual(sample.user, user)
         self.assertEqual(sample.bpm, 72)
-        self.assertEqual(sample.zone, 'fat_burn')
 
-    def test_deleting_device_deletes_samples(self):
+    def test_source_defaults_to_garmin_labfront(self):
         user = make_user()
-        device = make_device(user)
-        HeartRateSample.objects.create(
-            device=device, timestamp=timezone.now(), bpm=80, zone='cardio'
+        sample = HeartRateSample.objects.create(
+            user=user,
+            timestamp=timezone.now(),
+            bpm=80,
         )
-        device.delete()
+        self.assertEqual(sample.source, 'garmin_labfront')
+
+    def test_deleting_user_deletes_samples(self):
+        user = make_user()
+        HeartRateSample.objects.create(user=user, timestamp=timezone.now(), bpm=80)
+        user.delete()
         self.assertEqual(HeartRateSample.objects.count(), 0)
 
 
 # ---------------------------------------------------------------------------
-# Model: ActivitySummary
+# Model: StressSample
 # ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class ActivitySummaryModelTests(TestCase):
+class StressSampleModelTests(TestCase):
 
-    def test_summary_links_to_device(self):
+    def test_sample_links_to_user(self):
         user = make_user()
-        device = make_device(user)
-        summary = ActivitySummary.objects.create(
-            device=device,
-            date='2026-01-01',
-            steps=8000,
-            active_minutes=45,
-            calories_burned=350,
-            distance_km=6.500,
+        sample = StressSample.objects.create(
+            user=user,
+            timestamp=timezone.now(),
+            stress_score=55,
         )
-        self.assertEqual(summary.device, device)
-        self.assertEqual(summary.steps, 8000)
+        self.assertEqual(sample.user, user)
+        self.assertEqual(sample.stress_score, 55)
 
-    def test_duplicate_device_date_raises_error(self):
-        from django.db import IntegrityError
+    def test_source_defaults_to_garmin_labfront(self):
         user = make_user()
-        device = make_device(user)
-        ActivitySummary.objects.create(device=device, date='2026-01-01', steps=8000)
-        with self.assertRaises(IntegrityError):
-            ActivitySummary.objects.create(device=device, date='2026-01-01', steps=9000)
+        sample = StressSample.objects.create(
+            user=user,
+            timestamp=timezone.now(),
+            stress_score=40,
+        )
+        self.assertEqual(sample.source, 'garmin_labfront')
+
+    def test_deleting_user_deletes_stress_samples(self):
+        user = make_user()
+        StressSample.objects.create(user=user, timestamp=timezone.now(), stress_score=30)
+        user.delete()
+        self.assertEqual(StressSample.objects.count(), 0)
+
 
 
 # ---------------------------------------------------------------------------
@@ -717,46 +657,60 @@ class EMAModelTests(TestCase):
         user = make_user()
         ema = EMA.objects.create(
             user=user,
-            mood=7,
-            energy=5,
+            prompt_id='PROMPT_001',
+            mood=5,
+            energy=4,
             stress=3,
-            physical_activity='moderate',
         )
-        self.assertEqual(ema.mood, 7)
-        self.assertEqual(ema.energy, 5)
+        self.assertEqual(ema.mood, 5)
+        self.assertEqual(ema.energy, 4)
         self.assertEqual(ema.stress, 3)
-        self.assertEqual(ema.physical_activity, 'moderate')
+        self.assertEqual(ema.prompt_id, 'PROMPT_001')
 
-    def test_timestamp_is_set_automatically(self):
+    def test_sent_at_is_set_automatically(self):
         user = make_user()
-        ema = EMA.objects.create(user=user)
-        self.assertIsNotNone(ema.timestamp)
+        ema = EMA.objects.create(user=user, prompt_id='P1')
+        self.assertIsNotNone(ema.sent_at)
 
-    def test_all_fields_are_optional_except_user(self):
+    def test_status_defaults_to_pending(self):
         user = make_user()
-        ema = EMA.objects.create(user=user)
+        ema = EMA.objects.create(user=user, prompt_id='P1')
+        self.assertEqual(ema.status, 'pending')
+
+    def test_responded_at_is_nullable(self):
+        user = make_user()
+        ema = EMA.objects.create(user=user, prompt_id='P1')
+        self.assertIsNone(ema.responded_at)
+
+    def test_likert_fields_are_nullable(self):
+        user = make_user()
+        ema = EMA.objects.create(user=user, prompt_id='P1')
         self.assertIsNone(ema.mood)
         self.assertIsNone(ema.energy)
         self.assertIsNone(ema.stress)
-        self.assertIsNone(ema.physical_activity)
-        self.assertIsNone(ema.weight_lbs)
-        self.assertIsNone(ema.notes)
 
     def test_deleting_user_deletes_ema_records(self):
         user = make_user()
-        EMA.objects.create(user=user, mood=5)
+        EMA.objects.create(user=user, prompt_id='P1', mood=5)
         user.delete()
         self.assertEqual(EMA.objects.count(), 0)
 
     def test_mood_rejects_out_of_range_values(self):
         from django.core.exceptions import ValidationError
         user = make_user()
-        ema_low = EMA(user=user, mood=0)
+        ema_low = EMA(user=user, prompt_id='P1', mood=0)
         with self.assertRaises(ValidationError):
             ema_low.full_clean()
-        ema_high = EMA(user=user, mood=11)
+        ema_high = EMA(user=user, prompt_id='P1', mood=8)
         with self.assertRaises(ValidationError):
             ema_high.full_clean()
+
+    def test_mood_accepts_boundary_values(self):
+        user = make_user()
+        ema_min = EMA(user=user, prompt_id='P1', mood=1)
+        ema_min.full_clean()
+        ema_max = EMA(user=user, prompt_id='P1', mood=7)
+        ema_max.full_clean()
 
 
 # ---------------------------------------------------------------------------
@@ -770,58 +724,56 @@ class JITAILogModelTests(TestCase):
         user = make_user()
         log = JITAILog.objects.create(
             user=user,
-            title='Move more!',
-            message='You have been inactive for 2 hours.',
-            trigger_reason='low_steps',
-            volatility_score=0.720,
-            threshold_used=0.650,
-            prompt_count=3,
+            prompt_id='TEMPLATE_HR_HIGH',
+            trigger_reason='hr_elevated+stress_high',
+            hr_at_trigger=105,
+            stress_at_trigger=72,
         )
-        self.assertEqual(log.trigger_reason, 'low_steps')
-        self.assertEqual(log.title, 'Move more!')
-        self.assertEqual(log.prompt_count, 3)
-        self.assertIsNotNone(log.volatility_score)
-        self.assertIsNotNone(log.threshold_used)
+        self.assertEqual(log.prompt_id, 'TEMPLATE_HR_HIGH')
+        self.assertEqual(log.trigger_reason, 'hr_elevated+stress_high')
+        self.assertEqual(log.hr_at_trigger, 105)
+        self.assertEqual(log.stress_at_trigger, 72)
 
-    def test_prompt_status_defaults_to_sent(self):
+    def test_status_defaults_to_delivered(self):
         user = make_user()
         log = JITAILog.objects.create(
             user=user,
-            title='Move!',
-            message='Get up.',
-            trigger_reason='low_steps',
+            prompt_id='TEMPLATE_001',
+            trigger_reason='hr_elevated',
         )
-        self.assertEqual(log.prompt_status, 'sent')
+        self.assertEqual(log.status, 'delivered')
 
-    def test_opened_at_and_interacted_at_are_nullable(self):
+    def test_triggered_at_is_set_automatically(self):
         user = make_user()
         log = JITAILog.objects.create(
             user=user,
-            title='Move!',
-            message='Get up.',
-            trigger_reason='low_steps',
+            prompt_id='TEMPLATE_001',
+            trigger_reason='hr_elevated',
         )
-        self.assertIsNone(log.opened_at)
-        self.assertIsNone(log.interacted_at)
+        self.assertIsNotNone(log.triggered_at)
 
-    def test_timestamp_is_set_automatically(self):
+    def test_hr_and_stress_at_trigger_are_nullable(self):
         user = make_user()
         log = JITAILog.objects.create(
             user=user,
-            title='Move!',
-            message='Get up.',
-            trigger_reason='low_steps',
+            prompt_id='TEMPLATE_001',
+            trigger_reason='ema_low_mood',
         )
-        self.assertIsNotNone(log.timestamp)
+        self.assertIsNone(log.hr_at_trigger)
+        self.assertIsNone(log.stress_at_trigger)
 
     def test_deleting_user_deletes_jitai_logs(self):
         user = make_user()
         JITAILog.objects.create(
-            user=user, title='Hi', message='Go.', trigger_reason='low_steps'
+            user=user, prompt_id='TEMPLATE_001', trigger_reason='hr_elevated'
         )
         user.delete()
         self.assertEqual(JITAILog.objects.count(), 0)
 
+
+# ---------------------------------------------------------------------------
+# Serializer: WearableDevice
+# ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class WearableDeviceSerializerTests(TestCase):
@@ -830,51 +782,73 @@ class WearableDeviceSerializerTests(TestCase):
         user = make_user()
         data = {
             'user': user.user_id,
-            'fitbit_device_id': 'DEV001',
-            'device_type': 'tracker',
-            'device_name': 'Charge 6',
+            'labfront_participant_id': 'LABFRONT001',
+            'device_name': 'Garmin Vivoactive 6',
         }
         serializer = WearableDeviceSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
         device = serializer.save()
-        self.assertEqual(device.device_name, 'Charge 6')
+        self.assertEqual(device.labfront_participant_id, 'LABFRONT001')
 
+    def test_id_is_read_only(self):
+        user = make_user()
+        data = {
+            'id': 999,
+            'user': user.user_id,
+            'labfront_participant_id': 'LABFRONT002',
+        }
+        serializer = WearableDeviceSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        device = serializer.save()
+        self.assertNotEqual(device.id, 999)
+
+
+# ---------------------------------------------------------------------------
+# Serializer: HeartRateSample
+# ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class HeartRateSampleSerializerTests(TestCase):
 
     def test_serializer_creates_sample(self):
         user = make_user()
-        device = make_device(user)
         data = {
-            'device': device.device_id,
+            'user': user.user_id,
             'timestamp': '2026-01-01T10:00:00Z',
             'bpm': 72,
-            'zone': 'fat_burn',
         }
         serializer = HeartRateSampleSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
         sample = serializer.save()
         self.assertEqual(sample.bpm, 72)
+        self.assertEqual(sample.source, 'garmin_labfront')
 
+
+# ---------------------------------------------------------------------------
+# Serializer: StressSample
+# ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class ActivitySummarySerializerTests(TestCase):
+class StressSampleSerializerTests(TestCase):
 
-    def test_serializer_creates_summary(self):
+    def test_serializer_creates_stress_sample(self):
         user = make_user()
-        device = make_device(user)
         data = {
-            'device': device.device_id,
-            'date': '2026-01-01',
-            'steps': 8000,
-            'active_minutes': 45,
+            'user': user.user_id,
+            'timestamp': '2026-01-01T10:00:00Z',
+            'stress_score': 55,
         }
-        serializer = ActivitySummarySerializer(data=data)
+        serializer = StressSampleSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        summary = serializer.save()
-        self.assertEqual(summary.steps, 8000)
+        sample = serializer.save()
+        self.assertEqual(sample.stress_score, 55)
+        self.assertEqual(sample.source, 'garmin_labfront')
 
+
+
+# ---------------------------------------------------------------------------
+# Serializer: EMA
+# ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class EMASerializerTests(TestCase):
@@ -883,16 +857,33 @@ class EMASerializerTests(TestCase):
         user = make_user()
         data = {
             'user': user.user_id,
-            'mood': 7,
-            'energy': 5,
+            'prompt_id': 'PROMPT_001',
+            'mood': 5,
+            'energy': 4,
             'stress': 3,
-            'physical_activity': 'moderate',
         }
         serializer = EMASerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
         ema = serializer.save()
-        self.assertEqual(ema.mood, 7)
+        self.assertEqual(ema.mood, 5)
+        self.assertEqual(ema.status, 'pending')
 
+    def test_sent_at_is_read_only(self):
+        user = make_user()
+        data = {
+            'user': user.user_id,
+            'prompt_id': 'PROMPT_001',
+            'sent_at': '2020-01-01T00:00:00Z',
+        }
+        serializer = EMASerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        ema = serializer.save()
+        self.assertNotEqual(str(ema.sent_at.year), '2020')
+
+
+# ---------------------------------------------------------------------------
+# Serializer: JITAILog
+# ---------------------------------------------------------------------------
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class JITAILogSerializerTests(TestCase):
@@ -901,16 +892,29 @@ class JITAILogSerializerTests(TestCase):
         user = make_user()
         data = {
             'user': user.user_id,
-            'title': 'Move more!',
-            'message': 'You have been inactive for 2 hours.',
-            'trigger_reason': 'low_steps',
-            'prompt_count': 1,
+            'prompt_id': 'TEMPLATE_HR_HIGH',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'hr_at_trigger': 105,
+            'stress_at_trigger': 72,
         }
         serializer = JITAILogSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
         log = serializer.save()
-        self.assertEqual(log.trigger_reason, 'low_steps')
-        self.assertEqual(log.prompt_status, 'sent')
+        self.assertEqual(log.trigger_reason, 'hr_elevated+stress_high')
+        self.assertEqual(log.status, 'delivered')
+
+    def test_triggered_at_is_read_only(self):
+        user = make_user()
+        data = {
+            'user': user.user_id,
+            'prompt_id': 'TEMPLATE_001',
+            'trigger_reason': 'hr_elevated',
+            'triggered_at': '2020-01-01T00:00:00Z',
+        }
+        serializer = JITAILogSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        log = serializer.save()
+        self.assertNotEqual(str(log.triggered_at.year), '2020')
 
 
 # ---------------------------------------------------------------------------
@@ -928,46 +932,37 @@ class TelemetryIngestViewTests(TestCase):
         return {
             'user_id': self.user.user_id,
             'wearable_device': {
-                'fitbit_device_id': 'PHONE-001',
-                'device_type': 'phone',
-                'device_name': 'Matt POC Phone',
+                'labfront_participant_id': 'LABFRONT-001',
+                'device_name': 'Garmin Vivoactive 6',
                 'is_active': True,
             },
             'heart_rate_samples': [
                 {
                     'timestamp': '2026-06-12T14:00:00Z',
                     'bpm': 82,
-                    'zone': 'fat_burn',
                 }
             ],
-            'activity_summaries': [
+            'stress_samples': [
                 {
-                    'date': '2026-06-12',
-                    'steps': 8400,
-                    'active_minutes': 52,
-                    'calories_burned': 430,
-                    'distance_km': '6.250',
+                    'timestamp': '2026-06-12T14:03:00Z',
+                    'stress_score': 45,
                 }
             ],
             'emas': [
                 {
-                    'mood': 7,
+                    'prompt_id': 'EMA_TEMPLATE_01',
+                    'mood': 5,
                     'energy': 6,
                     'stress': 3,
-                    'physical_activity': 'moderate',
-                    'weight_lbs': '182.5',
-                    'notes': '',
+                    'status': 'completed',
                 }
             ],
             'jitai_logs': [
                 {
-                    'title': 'JITAI prompt',
-                    'message': 'Prompt issued',
-                    'trigger_reason': 'low_activity',
-                    'volatility_score': '0.720',
-                    'threshold_used': '0.650',
-                    'prompt_status': 'sent',
-                    'prompt_count': 1,
+                    'prompt_id': 'JITAI_TEMPLATE_01',
+                    'trigger_reason': 'hr_elevated+stress_high',
+                    'hr_at_trigger': 105,
+                    'stress_at_trigger': 72,
                 }
             ],
         }
@@ -978,10 +973,11 @@ class TelemetryIngestViewTests(TestCase):
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         self.assertEqual(WearableDevice.objects.filter(user=self.user).count(), 1)
         self.assertEqual(HeartRateSample.objects.count(), 1)
-        self.assertEqual(ActivitySummary.objects.count(), 1)
+        self.assertEqual(StressSample.objects.count(), 1)
         self.assertEqual(EMA.objects.count(), 1)
         self.assertEqual(JITAILog.objects.count(), 1)
         self.assertEqual(response.data['counts']['heart_rate_samples'], 1)
+        self.assertEqual(response.data['counts']['stress_samples'], 1)
 
     def test_missing_user_id_returns_400(self):
         payload = self._payload()
@@ -999,22 +995,820 @@ class TelemetryIngestViewTests(TestCase):
 
         self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
 
-    def test_invalid_heart_rate_zone_returns_400(self):
+    def test_bpm_out_of_range_returns_400(self):
         payload = self._payload()
-        payload['heart_rate_samples'][0]['zone'] = 'invalid_zone'
+        payload['heart_rate_samples'][0]['bpm'] = 999
 
         response = self.client.post('/telemetry/ingest/', payload, format='json')
 
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
         self.assertEqual(HeartRateSample.objects.count(), 0)
 
-    def test_repeated_activity_summary_updates_existing_record(self):
-        payload = self._payload()
-        self.client.post('/telemetry/ingest/', payload, format='json')
-        payload['activity_summaries'][0]['steps'] = 9000
-
-        response = self.client.post('/telemetry/ingest/', payload, format='json')
+    def test_repeated_device_upsert_does_not_duplicate(self):
+        self.client.post('/telemetry/ingest/', self._payload(), format='json')
+        response = self.client.post('/telemetry/ingest/', self._payload(), format='json')
 
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        self.assertEqual(ActivitySummary.objects.count(), 1)
-        self.assertEqual(ActivitySummary.objects.get().steps, 9000)
+        self.assertEqual(WearableDevice.objects.filter(user=self.user).count(), 1)
+
+
+# ---------------------------------------------------------------------------
+# Model: PhoneTelemetry
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class PhoneTelemetryModelTests(TestCase):
+
+    def test_creates_phone_telemetry_event(self):
+        from app.models import PhoneTelemetry
+        user = make_user()
+        event = PhoneTelemetry.objects.create(
+            user=user,
+            session_id='SESSION_ABC',
+            event_type='draft_started',
+            occurred_at=timezone.now(),
+            game_clock_state='live',
+        )
+        self.assertEqual(event.event_type, 'draft_started')
+        self.assertEqual(event.game_clock_state, 'live')
+        self.assertIsNotNone(event.recorded_at)
+
+    def test_metadata_is_nullable(self):
+        from app.models import PhoneTelemetry
+        user = make_user()
+        event = PhoneTelemetry.objects.create(
+            user=user,
+            session_id='SESSION_ABC',
+            event_type='session_start',
+            occurred_at=timezone.now(),
+        )
+        self.assertIsNone(event.metadata)
+
+    def test_irb_validator_rejects_long_string_in_metadata(self):
+        from django.core.exceptions import ValidationError
+        from app.models import PhoneTelemetry
+        user = make_user()
+        event = PhoneTelemetry(
+            user=user,
+            session_id='SESSION_ABC',
+            event_type='draft_submitted',
+            occurred_at=timezone.now(),
+            metadata={'text': 'x' * 51},
+        )
+        with self.assertRaises(ValidationError):
+            event.full_clean()
+
+    def test_irb_validator_accepts_short_string_in_metadata(self):
+        from app.models import PhoneTelemetry
+        user = make_user()
+        event = PhoneTelemetry(
+            user=user,
+            session_id='SESSION_ABC',
+            event_type='draft_submitted',
+            occurred_at=timezone.now(),
+            metadata={'label': 'submit'},
+        )
+        event.full_clean()
+
+    def test_irb_validator_accepts_integer_metadata_values(self):
+        from app.models import PhoneTelemetry
+        user = make_user()
+        event = PhoneTelemetry(
+            user=user,
+            session_id='SESSION_ABC',
+            event_type='draft_submitted',
+            occurred_at=timezone.now(),
+            metadata={'keystroke_count': 42, 'delete_count': 5},
+        )
+        event.full_clean()
+
+    def test_deleting_user_deletes_phone_telemetry(self):
+        from app.models import PhoneTelemetry
+        user = make_user()
+        PhoneTelemetry.objects.create(
+            user=user, session_id='S1', event_type='session_start', occurred_at=timezone.now()
+        )
+        user.delete()
+        self.assertEqual(PhoneTelemetry.objects.count(), 0)
+
+
+# ---------------------------------------------------------------------------
+# Model: EngagementLog
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EngagementLogModelTests(TestCase):
+
+    def test_creates_engagement_event(self):
+        from app.models import EngagementLog
+        user = make_user()
+        log = EngagementLog.objects.create(
+            user=user,
+            event_type='ema_completed',
+            occurred_at=timezone.now(),
+            game_clock_state='live',
+        )
+        self.assertEqual(log.event_type, 'ema_completed')
+        self.assertIsNone(log.jitai_log)
+        self.assertIsNotNone(log.recorded_at)
+
+    def test_jitai_log_is_nullable(self):
+        from app.models import EngagementLog
+        user = make_user()
+        log = EngagementLog.objects.create(
+            user=user, event_type='ema_opened', occurred_at=timezone.now()
+        )
+        self.assertIsNone(log.jitai_log)
+
+    def test_jitai_log_deletion_sets_null(self):
+        from app.models import EngagementLog
+        user = make_user()
+        jitai = JITAILog.objects.create(
+            user=user, prompt_id='T1', trigger_reason='hr_elevated'
+        )
+        log = EngagementLog.objects.create(
+            user=user,
+            jitai_log=jitai,
+            event_type='notification_tapped',
+            occurred_at=timezone.now(),
+        )
+        jitai.delete()
+        log.refresh_from_db()
+        self.assertIsNone(log.jitai_log)
+
+    def test_deleting_user_deletes_engagement_logs(self):
+        from app.models import EngagementLog
+        user = make_user()
+        EngagementLog.objects.create(
+            user=user, event_type='ema_completed', occurred_at=timezone.now()
+        )
+        user.delete()
+        self.assertEqual(EngagementLog.objects.count(), 0)
+
+
+# ---------------------------------------------------------------------------
+# Serializer: PhoneTelemetry
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class PhoneTelemetrySerializerTests(TestCase):
+
+    def _base_data(self, user):
+        return {
+            'user': user.user_id,
+            'session_id': 'SESSION_001',
+            'event_type': 'draft_submitted',
+            'occurred_at': '2026-09-01T15:00:00Z',
+            'metadata': {'keystroke_count': 42, 'delete_count': 5},
+        }
+
+    def test_serializer_creates_event_with_integer_metadata(self):
+        from app.serializers import PhoneTelemetrySerializer
+        user = make_user()
+        serializer = PhoneTelemetrySerializer(data=self._base_data(user))
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        event = serializer.save()
+        self.assertEqual(event.event_type, 'draft_submitted')
+        self.assertEqual(event.metadata['keystroke_count'], 42)
+
+    def test_irb_violation_long_string_returns_validation_error(self):
+        from app.serializers import PhoneTelemetrySerializer
+        user = make_user()
+        data = self._base_data(user)
+        data['metadata'] = {'text': 'x' * 51}
+        serializer = PhoneTelemetrySerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('metadata', serializer.errors)
+
+    def test_irb_allows_string_under_50_chars(self):
+        from app.serializers import PhoneTelemetrySerializer
+        user = make_user()
+        data = self._base_data(user)
+        data['metadata'] = {'label': 'submit'}
+        serializer = PhoneTelemetrySerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_recorded_at_is_read_only(self):
+        from app.serializers import PhoneTelemetrySerializer
+        user = make_user()
+        data = self._base_data(user)
+        data['recorded_at'] = '2020-01-01T00:00:00Z'
+        serializer = PhoneTelemetrySerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        event = serializer.save()
+        self.assertNotEqual(str(event.recorded_at.year), '2020')
+
+    def test_game_clock_state_is_read_only(self):
+        from app.serializers import PhoneTelemetrySerializer
+        user = make_user()
+        data = self._base_data(user)
+        data['game_clock_state'] = 'live'
+        serializer = PhoneTelemetrySerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        event = serializer.save()
+        self.assertEqual(event.game_clock_state, 'pre')
+
+
+# ---------------------------------------------------------------------------
+# Serializer: EngagementLog
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EngagementLogSerializerTests(TestCase):
+
+    def test_serializer_creates_engagement_event(self):
+        from app.serializers import EngagementLogSerializer
+        user = make_user()
+        data = {
+            'user': user.user_id,
+            'event_type': 'ema_completed',
+            'occurred_at': '2026-09-01T15:05:00Z',
+        }
+        serializer = EngagementLogSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        log = serializer.save()
+        self.assertEqual(log.event_type, 'ema_completed')
+        self.assertIsNone(log.jitai_log)
+
+    def test_serializer_accepts_nullable_jitai_log(self):
+        from app.serializers import EngagementLogSerializer
+        user = make_user()
+        jitai = JITAILog.objects.create(
+            user=user, prompt_id='T1', trigger_reason='hr_elevated'
+        )
+        data = {
+            'user': user.user_id,
+            'jitai_log': jitai.id,
+            'event_type': 'notification_tapped',
+            'occurred_at': '2026-09-01T15:05:00Z',
+        }
+        serializer = EngagementLogSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        log = serializer.save()
+        self.assertEqual(log.jitai_log, jitai)
+
+
+# ---------------------------------------------------------------------------
+# Serializer: JITAILog — verify new fields present
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class JITAILogSerializerFieldsTests(TestCase):
+
+    def test_serializer_includes_ema_observed_mssd_send_prompt(self):
+        user = make_user()
+        ema = EMA.objects.create(user=user, prompt_id='P1', mood=5, stress=3, energy=4)
+        data = {
+            'user': user.user_id,
+            'prompt_id': 'TEMPLATE_001',
+            'trigger_reason': 'hr_elevated',
+            'ema': ema.id,
+            'observed_mssd': 12.5,
+            'send_prompt': True,
+        }
+        serializer = JITAILogSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        log = serializer.save()
+        self.assertEqual(log.observed_mssd, 12.5)
+        self.assertTrue(log.send_prompt)
+
+
+# ---------------------------------------------------------------------------
+# API: POST /wearable/, GET /wearable/<id>/, PATCH /wearable/<id>/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class WearableEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='wearable@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_post_creates_device_and_returns_201(self):
+        response = self.client.post('/wearable/', {
+            'user': self.user.user_id,
+            'labfront_participant_id': 'LABFRONT_001',
+            'device_name': 'Garmin Vivoactive 6',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertTrue(WearableDevice.objects.filter(user=self.user).exists())
+
+    def test_post_without_auth_returns_401(self):
+        response = APIClient().post('/wearable/', {
+            'user': self.user.user_id,
+            'labfront_participant_id': 'LABFRONT_001',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_get_returns_device_for_enrolled_user(self):
+        WearableDevice.objects.create(
+            user=self.user, labfront_participant_id='LABFRONT_001'
+        )
+        response = self.client.get(f'/wearable/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(response.data['labfront_participant_id'], 'LABFRONT_001')
+
+    def test_get_returns_404_when_no_device(self):
+        response = self.client.get(f'/wearable/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
+
+    def test_patch_updates_device_name(self):
+        WearableDevice.objects.create(
+            user=self.user, labfront_participant_id='LABFRONT_001'
+        )
+        response = self.client.patch(
+            f'/wearable/{self.user.user_id}/',
+            {'device_name': 'Garmin Vivoactive 6 Pro'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        device = WearableDevice.objects.get(user=self.user)
+        self.assertEqual(device.device_name, 'Garmin Vivoactive 6 Pro')
+
+    def test_patch_nonexistent_device_returns_404(self):
+        response = self.client.patch(
+            f'/wearable/{self.user.user_id}/',
+            {'device_name': 'X'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
+
+
+# ---------------------------------------------------------------------------
+# API: POST /ema/, GET /ema/<user_id>/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMAEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='ema@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_post_creates_ema_and_returns_201(self):
+        response = self.client.post('/ema/', {
+            'user': self.user.user_id,
+            'prompt_id': 'EMA_TEMPLATE_01',
+            'mood': 5,
+            'stress': 3,
+            'energy': 6,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertTrue(EMA.objects.filter(user=self.user).exists())
+
+    def test_post_with_likert_responses_sets_completed_and_responded_at(self):
+        response = self.client.post('/ema/', {
+            'user': self.user.user_id,
+            'prompt_id': 'EMA_TEMPLATE_01',
+            'mood': 4,
+            'stress': 2,
+            'energy': 7,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        ema = EMA.objects.get(user=self.user)
+        self.assertEqual(ema.status, 'completed')
+        self.assertIsNotNone(ema.responded_at)
+
+    def test_post_without_likert_responses_leaves_status_pending(self):
+        response = self.client.post('/ema/', {
+            'user': self.user.user_id,
+            'prompt_id': 'EMA_TEMPLATE_01',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        ema = EMA.objects.get(user=self.user)
+        self.assertEqual(ema.status, 'pending')
+        self.assertIsNone(ema.responded_at)
+
+    def test_post_without_auth_returns_401(self):
+        response = APIClient().post('/ema/', {
+            'user': self.user.user_id,
+            'prompt_id': 'EMA_TEMPLATE_01',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_get_returns_ema_history_for_user(self):
+        EMA.objects.create(user=self.user, prompt_id='P1', mood=5, stress=3, energy=4)
+        EMA.objects.create(user=self.user, prompt_id='P2', mood=3, stress=6, energy=2)
+        response = self.client.get(f'/ema/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+    def test_get_returns_empty_list_for_user_with_no_emas(self):
+        response = self.client.get(f'/ema/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 0)
+
+
+# ---------------------------------------------------------------------------
+# API: POST /jitai/, GET /jitai/<user_id>/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class JITAIEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='jitai@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_post_creates_jitai_log_and_returns_201(self):
+        response = self.client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'TEMPLATE_HR_HIGH',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'hr_at_trigger': 110,
+            'stress_at_trigger': 75,
+            'observed_mssd': 18.4,
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertEqual(JITAILog.objects.count(), 1)
+
+    def test_post_without_auth_returns_401(self):
+        response = APIClient().post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_get_returns_jitai_history(self):
+        JITAILog.objects.create(
+            user=self.user, prompt_id='T1', trigger_reason='hr_elevated', send_prompt=True
+        )
+        JITAILog.objects.create(
+            user=self.user, prompt_id='T2', trigger_reason='ema_low_mood', send_prompt=False
+        )
+        response = self.client.get(f'/jitai/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+    def test_get_returns_empty_list_for_user_with_no_logs(self):
+        response = self.client.get(f'/jitai/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 0)
+
+    def test_send_prompt_false_is_stored(self):
+        self.client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'TEMPLATE_001',
+            'trigger_reason': 'cooldown',
+            'send_prompt': False,
+        }, format='json')
+        log = JITAILog.objects.get(user=self.user)
+        self.assertFalse(log.send_prompt)
+
+
+# ---------------------------------------------------------------------------
+# API: GET /telemetry/hr/<user_id>/, GET /telemetry/stress/<user_id>/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class TelemetryReadEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='telread@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_hr_returns_samples_for_user(self):
+        HeartRateSample.objects.create(user=self.user, timestamp=timezone.now(), bpm=72)
+        HeartRateSample.objects.create(user=self.user, timestamp=timezone.now(), bpm=85)
+        response = self.client.get(f'/telemetry/hr/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+    def test_hr_returns_empty_list_when_no_samples(self):
+        response = self.client.get(f'/telemetry/hr/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_hr_limit_param_caps_results(self):
+        for bpm in range(1, 6):
+            HeartRateSample.objects.create(user=self.user, timestamp=timezone.now(), bpm=bpm * 10)
+        response = self.client.get(f'/telemetry/hr/{self.user.user_id}/?limit=2')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+    def test_hr_requires_auth(self):
+        response = APIClient().get(f'/telemetry/hr/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_stress_returns_samples_for_user(self):
+        StressSample.objects.create(user=self.user, timestamp=timezone.now(), stress_score=55)
+        response = self.client.get(f'/telemetry/stress/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+    def test_stress_limit_param_caps_results(self):
+        for score in range(1, 6):
+            StressSample.objects.create(user=self.user, timestamp=timezone.now(), stress_score=score * 10)
+        response = self.client.get(f'/telemetry/stress/{self.user.user_id}/?limit=3')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 3)
+
+
+# ---------------------------------------------------------------------------
+# API: POST /telemetry/phone/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class PhoneTelemetryEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='phone@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def _payload(self):
+        return {
+            'user': self.user.user_id,
+            'session_id': 'SESSION_001',
+            'event_type': 'draft_submitted',
+            'occurred_at': '2026-09-01T15:00:00Z',
+            'metadata': {'keystroke_count': 42, 'delete_count': 5},
+        }
+
+    @patch('app.views.get_game_clock_state', return_value='live')
+    def test_post_creates_event_and_stamps_game_clock_state(self, mock_gcs):
+        from app.models import PhoneTelemetry
+        response = self.client.post('/telemetry/phone/', self._payload(), format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        event = PhoneTelemetry.objects.get(user=self.user)
+        self.assertEqual(event.game_clock_state, 'live')
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_irb_violation_long_string_metadata_returns_400(self, mock_gcs):
+        payload = self._payload()
+        payload['metadata'] = {'text': 'x' * 51}
+        response = self.client.post('/telemetry/phone/', payload, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_client_supplied_game_clock_state_is_ignored(self, mock_gcs):
+        from app.models import PhoneTelemetry
+        payload = self._payload()
+        payload['game_clock_state'] = 'live'
+        response = self.client.post('/telemetry/phone/', payload, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        event = PhoneTelemetry.objects.get(user=self.user)
+        self.assertEqual(event.game_clock_state, 'pre')
+
+    def test_post_without_auth_returns_401(self):
+        response = APIClient().post('/telemetry/phone/', self._payload(), format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_invalid_event_type_returns_400(self, mock_gcs):
+        payload = self._payload()
+        payload['event_type'] = 'not_a_real_event'
+        response = self.client.post('/telemetry/phone/', payload, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# API: POST /telemetry/engagement/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EngagementEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='engage@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    @patch('app.views.get_game_clock_state', return_value='live')
+    def test_post_creates_engagement_event_and_stamps_game_clock_state(self, mock_gcs):
+        from app.models import EngagementLog
+        response = self.client.post('/telemetry/engagement/', {
+            'user': self.user.user_id,
+            'event_type': 'ema_completed',
+            'occurred_at': '2026-09-01T15:10:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = EngagementLog.objects.get(user=self.user)
+        self.assertEqual(log.game_clock_state, 'live')
+        self.assertIsNone(log.jitai_log)
+
+    @patch('app.views.get_game_clock_state', return_value='live')
+    def test_post_with_jitai_log_links_correctly(self, mock_gcs):
+        from app.models import EngagementLog
+        jitai = JITAILog.objects.create(
+            user=self.user, prompt_id='T1', trigger_reason='hr_elevated'
+        )
+        response = self.client.post('/telemetry/engagement/', {
+            'user': self.user.user_id,
+            'jitai_log': jitai.id,
+            'event_type': 'notification_tapped',
+            'occurred_at': '2026-09-01T15:10:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = EngagementLog.objects.get(user=self.user)
+        self.assertEqual(log.jitai_log, jitai)
+
+    def test_post_without_auth_returns_401(self):
+        response = APIClient().post('/telemetry/engagement/', {
+            'user': self.user.user_id,
+            'event_type': 'ema_completed',
+            'occurred_at': '2026-09-01T15:10:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_invalid_event_type_returns_400(self, mock_gcs):
+        response = self.client.post('/telemetry/engagement/', {
+            'user': self.user.user_id,
+            'event_type': 'not_a_real_event',
+            'occurred_at': '2026-09-01T15:10:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_client_supplied_game_clock_state_is_ignored(self, mock_gcs):
+        from app.models import EngagementLog
+        response = self.client.post('/telemetry/engagement/', {
+            'user': self.user.user_id,
+            'event_type': 'ema_opened',
+            'occurred_at': '2026-09-01T15:10:00Z',
+            'game_clock_state': 'live',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = EngagementLog.objects.get(user=self.user)
+        self.assertEqual(log.game_clock_state, 'pre')
+
+
+# ---------------------------------------------------------------------------
+# IDOR: cross-user access blocked for WearableDevice
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class WearableEndpointIDORTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='wearable_idor@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_cannot_read_other_users_data(self):
+        other_user = make_user(email='other_wearable@ufl.edu')
+        WearableDevice.objects.create(user=other_user, labfront_participant_id='LABFRONT_OTHER')
+        response = self.client.get(f'/wearable/{other_user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+    def test_cannot_patch_other_users_data(self):
+        other_user = make_user(email='other_wearable2@ufl.edu')
+        WearableDevice.objects.create(user=other_user, labfront_participant_id='LABFRONT_OTHER2')
+        response = self.client.patch(
+            f'/wearable/{other_user.user_id}/',
+            {'device_name': 'Hacked'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+    def test_staff_can_read_any_users_data(self):
+        other_user = make_user(email='other_wearable3@ufl.edu')
+        WearableDevice.objects.create(user=other_user, labfront_participant_id='LABFRONT_OTHER3')
+        auth_user, _ = AuthUser.objects.get_or_create(
+            username=self.user.email,
+            defaults={'email': self.user.email},
+        )
+        auth_user.is_staff = True
+        auth_user.save()
+        response = self.client.get(f'/wearable/{other_user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# IDOR: cross-user access blocked for EMA
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMAEndpointIDORTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='ema_idor@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_cannot_read_other_users_data(self):
+        other_user = make_user(email='other_ema@ufl.edu')
+        EMA.objects.create(user=other_user, prompt_id='P1', mood=5, stress=3, energy=4)
+        response = self.client.get(f'/ema/{other_user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# IDOR: cross-user access blocked for JITAILog
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class JITAIEndpointIDORTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='jitai_idor@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_cannot_read_other_users_data(self):
+        other_user = make_user(email='other_jitai@ufl.edu')
+        JITAILog.objects.create(user=other_user, prompt_id='T1', trigger_reason='hr_elevated')
+        response = self.client.get(f'/jitai/{other_user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# IDOR: cross-user access blocked for telemetry reads
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class TelemetryReadIDORTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='telread_idor@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_cannot_read_other_users_hr_data(self):
+        from django.utils import timezone as tz
+        other_user = make_user(email='other_hr@ufl.edu')
+        HeartRateSample.objects.create(user=other_user, timestamp=tz.now(), bpm=72)
+        response = self.client.get(f'/telemetry/hr/{other_user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+    def test_cannot_read_other_users_stress_data(self):
+        from django.utils import timezone as tz
+        other_user = make_user(email='other_stress@ufl.edu')
+        StressSample.objects.create(user=other_user, timestamp=tz.now(), stress_score=55)
+        response = self.client.get(f'/telemetry/stress/{other_user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# Limit validation: non-integer limit returns 400
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class TelemetryLimitValidationTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='limit_test@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_hr_non_integer_limit_returns_400(self):
+        response = self.client.get(f'/telemetry/hr/{self.user.user_id}/?limit=abc')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+    def test_stress_non_integer_limit_returns_400(self):
+        response = self.client.get(f'/telemetry/stress/{self.user.user_id}/?limit=abc')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# Serializer: EMA Likert range validation
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMASerializerLikertValidationTests(TestCase):
+
+    def _base_data(self, user):
+        return {
+            'user': user.user_id,
+            'prompt_id': 'EMA_TEST',
+            'mood': 5,
+            'stress': 3,
+            'energy': 4,
+        }
+
+    def test_mood_below_1_returns_invalid(self):
+        user = make_user(email='ema_likert1@ufl.edu')
+        data = self._base_data(user)
+        data['mood'] = 0
+        serializer = EMASerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('mood', serializer.errors)
+
+    def test_mood_above_7_returns_invalid(self):
+        user = make_user(email='ema_likert2@ufl.edu')
+        data = self._base_data(user)
+        data['mood'] = 8
+        serializer = EMASerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('mood', serializer.errors)
+
+    def test_stress_below_1_returns_invalid(self):
+        user = make_user(email='ema_likert3@ufl.edu')
+        data = self._base_data(user)
+        data['stress'] = 0
+        serializer = EMASerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('stress', serializer.errors)
+
+    def test_energy_above_7_returns_invalid(self):
+        user = make_user(email='ema_likert4@ufl.edu')
+        data = self._base_data(user)
+        data['energy'] = 8
+        serializer = EMASerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('energy', serializer.errors)
+
+    def test_boundary_values_1_and_7_are_valid(self):
+        user = make_user(email='ema_likert5@ufl.edu')
+        data = self._base_data(user)
+        data['mood'] = 1
+        data['stress'] = 7
+        data['energy'] = 1
+        serializer = EMASerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
