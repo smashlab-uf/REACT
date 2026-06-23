@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from .models import (
     EMA, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
-    SleepSummary, StressSample, User, UserData, WearableDevice,
+    StressSample, User, UserData, WearableDevice,
 )
 from django.contrib.auth.hashers import make_password
 
@@ -54,33 +54,14 @@ class UserSerializer(serializers.ModelSerializer):
 class UserDataSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserData
-        fields = ['data_id', 'user', 'timestamp', 'goal_type', 'weight_value', 'feel_better_value']
+        fields = ['data_id', 'user', 'timestamp']
         read_only_fields = ('data_id', 'timestamp')
-        extra_kwargs = {
-            'goal_type': {'required': False},
-            'weight_value': {'required': False, 'default': 0.0},
-            'feel_better_value': {'required': False, 'default': 0.0}
-        }
-
-    def create(self, validated_data):
-        return UserData.objects.create(
-            goal_type=validated_data['goal_type'],
-            weight_value=validated_data['weight_value'],
-            feel_better_value=validated_data['feel_better_value'],
-        )
-
-    def update(self, instance, validated_data):
-        instance.goal_type = validated_data.get('goal_type', instance.goal_type)
-        instance.weight_value = validated_data.get('weight_value', instance.weight_value)
-        instance.feel_better_value = validated_data.get('feel_better_value', instance.feel_better_value)
-        instance.save()
-        return instance
 
 
 class WearableDeviceSerializer(serializers.ModelSerializer):
     class Meta:
         model = WearableDevice
-        fields = ['id', 'user', 'fitabase_participant_id', 'device_name', 'is_active', 'last_synced_at']
+        fields = ['id', 'user', 'labfront_participant_id', 'device_name', 'is_active', 'last_synced_at']
         read_only_fields = ('id',)
 
 
@@ -123,7 +104,7 @@ class JITAILogSerializer(serializers.ModelSerializer):
 
 
 class TelemetryWearableDeviceSerializer(serializers.Serializer):
-    fitabase_participant_id = serializers.CharField(max_length=64)
+    labfront_participant_id = serializers.CharField(max_length=64)
     device_name = serializers.CharField(max_length=100, required=False, allow_null=True)
     last_synced_at = serializers.DateTimeField(required=False, allow_null=True)
     is_active = serializers.BooleanField(required=False, default=True)
@@ -132,13 +113,13 @@ class TelemetryWearableDeviceSerializer(serializers.Serializer):
 class TelemetryHeartRateSampleSerializer(serializers.Serializer):
     timestamp = serializers.DateTimeField()
     bpm = serializers.IntegerField(min_value=1, max_value=300)
-    source = serializers.CharField(max_length=32, required=False, default='garmin_fitabase')
+    source = serializers.CharField(max_length=32, required=False, default='garmin_labfront')
 
 
 class TelemetryStressSampleSerializer(serializers.Serializer):
     timestamp = serializers.DateTimeField()
     stress_score = serializers.IntegerField(min_value=0, max_value=100)
-    source = serializers.CharField(max_length=32, required=False, default='garmin_fitabase')
+    source = serializers.CharField(max_length=32, required=False, default='garmin_labfront')
 
 
 class TelemetryEMASerializer(serializers.Serializer):
@@ -166,15 +147,6 @@ class TelemetryIngestSerializer(serializers.Serializer):
     emas = TelemetryEMASerializer(many=True, required=False, default=list)
     jitai_logs = TelemetryJITAILogSerializer(many=True, required=False, default=list)
 
-
-class SleepSummarySerializer(serializers.ModelSerializer):
-    class Meta:
-        model = SleepSummary
-        fields = [
-            'id', 'user', 'date', 'total_minutes', 'light_minutes',
-            'deep_minutes', 'rem_minutes', 'awake_minutes', 'sleep_score', 'source',
-        ]
-        read_only_fields = ('id', 'source')
 
 
 class PhoneTelemetrySerializer(serializers.ModelSerializer):

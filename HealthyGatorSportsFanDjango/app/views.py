@@ -370,7 +370,7 @@ class TelemetryIngestView(APIView):
             WearableDevice.objects.update_or_create(
                 user=user,
                 defaults={
-                    "fitabase_participant_id": device_payload["fitabase_participant_id"],
+                    "labfront_participant_id": device_payload["labfront_participant_id"],
                     "device_name": device_payload.get("device_name"),
                     "last_synced_at": device_payload.get("last_synced_at"),
                     "is_active": device_payload.get("is_active", True),

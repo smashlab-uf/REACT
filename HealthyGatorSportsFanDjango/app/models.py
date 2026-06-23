@@ -40,9 +40,6 @@ class UserData(models.Model):
     data_id = models.AutoField(primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     timestamp = models.DateTimeField(auto_now_add=True)
-    goal_type = models.CharField(max_length=20, choices=[('loseWeight', 'Lose Weight'), ('feelBetter', 'Feel Better'), ('both', 'Both')])
-    weight_value = models.DecimalField(max_digits=4, decimal_places=1, null=True, blank=True)
-    feel_better_value = models.IntegerField(null=True, blank=True)
 
     def __str__(self):
         return f"Data for {self.user.email} at {self.timestamp}"
@@ -50,20 +47,20 @@ class UserData(models.Model):
 
 class WearableDevice(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
-    fitabase_participant_id = models.CharField(max_length=64, unique=True)
+    labfront_participant_id = models.CharField(max_length=64, unique=True)
     device_name = models.CharField(max_length=100, blank=True, null=True)
     is_active = models.BooleanField(default=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
-        return f"{self.fitabase_participant_id} ({self.user.email})"
+        return f"{self.labfront_participant_id} ({self.user.email})"
 
 
 class HeartRateSample(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     timestamp = models.DateTimeField(db_index=True)
     bpm = models.PositiveSmallIntegerField()
-    source = models.CharField(max_length=32, default='garmin_fitabase')
+    source = models.CharField(max_length=32, default='garmin_labfront')
 
     class Meta:
         ordering = ['-timestamp']
@@ -77,7 +74,7 @@ class StressSample(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     timestamp = models.DateTimeField(db_index=True)
     stress_score = models.PositiveSmallIntegerField()
-    source = models.CharField(max_length=32, default='garmin_fitabase')
+    source = models.CharField(max_length=32, default='garmin_labfront')
 
     class Meta:
         ordering = ['-timestamp']
@@ -115,23 +112,6 @@ class EMA(models.Model):
     def __str__(self):
         return f"EMA for {self.user.email} at {self.sent_at}"
 
-
-class SleepSummary(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    date = models.DateField()
-    total_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
-    light_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
-    deep_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
-    rem_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
-    awake_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
-    sleep_score = models.PositiveSmallIntegerField(null=True, blank=True)
-    source = models.CharField(max_length=32, default='garmin_fitabase')
-
-    class Meta:
-        unique_together = ('user', 'date')
-
-    def __str__(self):
-        return f"Sleep for {self.user.email} on {self.date}"
 
 
 PHONE_EVENT_TYPES = (
@@ -226,3 +206,5 @@ class EngagementLog(models.Model):
 
     def __str__(self):
         return f"{self.event_type} for {self.user.email} at {self.occurred_at}"
+
+

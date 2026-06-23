@@ -387,19 +387,12 @@ class CreateUserDataViewTests(TestCase):
         self.user = make_user()
 
     def test_valid_payload_returns_201_with_data_id(self):
-        response = self.client.post(f'/userdata/{self.user.user_id}/', {
-            'goal_type': 'loseWeight',
-            'weight_value': '185.0',
-            'feel_better_value': 3,
-        }, format='json')
+        response = self.client.post(f'/userdata/{self.user.user_id}/', {}, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         self.assertIn('data_id', response.data)
 
     def test_entry_is_persisted_to_database(self):
-        self.client.post(f'/userdata/{self.user.user_id}/', {
-            'goal_type': 'loseWeight',
-            'weight_value': '185.0',
-        }, format='json')
+        self.client.post(f'/userdata/{self.user.user_id}/', {}, format='json')
         self.assertEqual(UserData.objects.filter(user=self.user).count(), 1)
 
 
@@ -415,11 +408,11 @@ class LatestUserDataViewTests(TestCase):
         self.user = make_user()
 
     def test_returns_most_recent_entry(self):
-        UserData.objects.create(user=self.user, goal_type='loseWeight', weight_value=200)
-        UserData.objects.create(user=self.user, goal_type='loseWeight', weight_value=185)
+        first = UserData.objects.create(user=self.user)
+        second = UserData.objects.create(user=self.user)
         response = self.client.get(f'/userdata/latest/{self.user.user_id}/')
         self.assertEqual(response.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(str(response.data['weight_value']), '185.0')
+        self.assertEqual(response.data['data_id'], second.data_id)
 
     def test_user_with_no_data_returns_404(self):
         response = self.client.get(f'/userdata/latest/{self.user.user_id}/')
@@ -544,7 +537,7 @@ class WearableDeviceModelTests(TestCase):
         user = make_user()
         device = WearableDevice.objects.create(
             user=user,
-            fitabase_participant_id='FITABASE001',
+            labfront_participant_id='LABFRONT001',
         )
         self.assertEqual(device.user, user)
 
@@ -552,7 +545,7 @@ class WearableDeviceModelTests(TestCase):
         user = make_user()
         device = WearableDevice.objects.create(
             user=user,
-            fitabase_participant_id='FITABASE001',
+            labfront_participant_id='LABFRONT001',
         )
         self.assertTrue(device.is_active)
 
@@ -560,30 +553,30 @@ class WearableDeviceModelTests(TestCase):
         user = make_user()
         device = WearableDevice.objects.create(
             user=user,
-            fitabase_participant_id='FITABASE001',
+            labfront_participant_id='LABFRONT001',
         )
         self.assertIsNone(device.last_synced_at)
 
     def test_deleting_user_deletes_device(self):
         user = make_user()
-        WearableDevice.objects.create(user=user, fitabase_participant_id='FITABASE001')
+        WearableDevice.objects.create(user=user, labfront_participant_id='LABFRONT001')
         user.delete()
         self.assertEqual(WearableDevice.objects.count(), 0)
 
-    def test_fitabase_participant_id_is_unique(self):
+    def test_labfront_participant_id_is_unique(self):
         from django.db import IntegrityError
         user1 = make_user(email='u1@example.com')
         user2 = make_user(email='u2@example.com')
-        WearableDevice.objects.create(user=user1, fitabase_participant_id='SAME_ID')
+        WearableDevice.objects.create(user=user1, labfront_participant_id='SAME_ID')
         with self.assertRaises(IntegrityError):
-            WearableDevice.objects.create(user=user2, fitabase_participant_id='SAME_ID')
+            WearableDevice.objects.create(user=user2, labfront_participant_id='SAME_ID')
 
     def test_one_user_cannot_have_two_devices(self):
         from django.db import IntegrityError
         user = make_user()
-        WearableDevice.objects.create(user=user, fitabase_participant_id='ID_A')
+        WearableDevice.objects.create(user=user, labfront_participant_id='ID_A')
         with self.assertRaises(IntegrityError):
-            WearableDevice.objects.create(user=user, fitabase_participant_id='ID_B')
+            WearableDevice.objects.create(user=user, labfront_participant_id='ID_B')
 
 
 # ---------------------------------------------------------------------------
@@ -603,14 +596,14 @@ class HeartRateSampleModelTests(TestCase):
         self.assertEqual(sample.user, user)
         self.assertEqual(sample.bpm, 72)
 
-    def test_source_defaults_to_garmin_fitabase(self):
+    def test_source_defaults_to_garmin_labfront(self):
         user = make_user()
         sample = HeartRateSample.objects.create(
             user=user,
             timestamp=timezone.now(),
             bpm=80,
         )
-        self.assertEqual(sample.source, 'garmin_fitabase')
+        self.assertEqual(sample.source, 'garmin_labfront')
 
     def test_deleting_user_deletes_samples(self):
         user = make_user()
@@ -636,14 +629,14 @@ class StressSampleModelTests(TestCase):
         self.assertEqual(sample.user, user)
         self.assertEqual(sample.stress_score, 55)
 
-    def test_source_defaults_to_garmin_fitabase(self):
+    def test_source_defaults_to_garmin_labfront(self):
         user = make_user()
         sample = StressSample.objects.create(
             user=user,
             timestamp=timezone.now(),
             stress_score=40,
         )
-        self.assertEqual(sample.source, 'garmin_fitabase')
+        self.assertEqual(sample.source, 'garmin_labfront')
 
     def test_deleting_user_deletes_stress_samples(self):
         user = make_user()
@@ -789,20 +782,20 @@ class WearableDeviceSerializerTests(TestCase):
         user = make_user()
         data = {
             'user': user.user_id,
-            'fitabase_participant_id': 'FITABASE001',
+            'labfront_participant_id': 'LABFRONT001',
             'device_name': 'Garmin Vivoactive 6',
         }
         serializer = WearableDeviceSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
         device = serializer.save()
-        self.assertEqual(device.fitabase_participant_id, 'FITABASE001')
+        self.assertEqual(device.labfront_participant_id, 'LABFRONT001')
 
     def test_id_is_read_only(self):
         user = make_user()
         data = {
             'id': 999,
             'user': user.user_id,
-            'fitabase_participant_id': 'FITABASE002',
+            'labfront_participant_id': 'LABFRONT002',
         }
         serializer = WearableDeviceSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
@@ -828,7 +821,7 @@ class HeartRateSampleSerializerTests(TestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
         sample = serializer.save()
         self.assertEqual(sample.bpm, 72)
-        self.assertEqual(sample.source, 'garmin_fitabase')
+        self.assertEqual(sample.source, 'garmin_labfront')
 
 
 # ---------------------------------------------------------------------------
@@ -849,7 +842,7 @@ class StressSampleSerializerTests(TestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
         sample = serializer.save()
         self.assertEqual(sample.stress_score, 55)
-        self.assertEqual(sample.source, 'garmin_fitabase')
+        self.assertEqual(sample.source, 'garmin_labfront')
 
 
 
@@ -939,7 +932,7 @@ class TelemetryIngestViewTests(TestCase):
         return {
             'user_id': self.user.user_id,
             'wearable_device': {
-                'fitabase_participant_id': 'FITABASE-001',
+                'labfront_participant_id': 'LABFRONT-001',
                 'device_name': 'Garmin Vivoactive 6',
                 'is_active': True,
             },
@@ -1017,54 +1010,6 @@ class TelemetryIngestViewTests(TestCase):
 
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         self.assertEqual(WearableDevice.objects.filter(user=self.user).count(), 1)
-
-
-# ---------------------------------------------------------------------------
-# Model: SleepSummary
-# ---------------------------------------------------------------------------
-
-@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class SleepSummaryModelTests(TestCase):
-
-    def test_creates_sleep_summary(self):
-        from app.models import SleepSummary
-        user = make_user()
-        summary = SleepSummary.objects.create(
-            user=user,
-            date='2026-08-31',
-            total_minutes=420,
-            deep_minutes=90,
-            sleep_score=78,
-        )
-        self.assertEqual(summary.total_minutes, 420)
-        self.assertEqual(summary.sleep_score, 78)
-        self.assertEqual(summary.source, 'garmin_fitabase')
-
-    def test_unique_together_user_date(self):
-        from django.db import IntegrityError
-        from app.models import SleepSummary
-        user = make_user()
-        SleepSummary.objects.create(user=user, date='2026-08-31', total_minutes=420)
-        with self.assertRaises(IntegrityError):
-            SleepSummary.objects.create(user=user, date='2026-08-31', total_minutes=380)
-
-    def test_all_minute_fields_are_nullable(self):
-        from app.models import SleepSummary
-        user = make_user()
-        summary = SleepSummary.objects.create(user=user, date='2026-09-01')
-        self.assertIsNone(summary.total_minutes)
-        self.assertIsNone(summary.light_minutes)
-        self.assertIsNone(summary.deep_minutes)
-        self.assertIsNone(summary.rem_minutes)
-        self.assertIsNone(summary.awake_minutes)
-        self.assertIsNone(summary.sleep_score)
-
-    def test_deleting_user_deletes_sleep_summaries(self):
-        from app.models import SleepSummary
-        user = make_user()
-        SleepSummary.objects.create(user=user, date='2026-08-31', total_minutes=420)
-        user.delete()
-        self.assertEqual(SleepSummary.objects.count(), 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1199,40 +1144,6 @@ class EngagementLogModelTests(TestCase):
         )
         user.delete()
         self.assertEqual(EngagementLog.objects.count(), 0)
-
-
-# ---------------------------------------------------------------------------
-# Serializer: SleepSummary
-# ---------------------------------------------------------------------------
-
-@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class SleepSummarySerializerTests(TestCase):
-
-    def test_serializer_creates_sleep_summary(self):
-        from app.models import SleepSummary
-        from app.serializers import SleepSummarySerializer
-        user = make_user()
-        data = {
-            'user': user.user_id,
-            'date': '2026-08-31',
-            'total_minutes': 420,
-            'deep_minutes': 90,
-            'sleep_score': 78,
-        }
-        serializer = SleepSummarySerializer(data=data)
-        self.assertTrue(serializer.is_valid(), serializer.errors)
-        summary = serializer.save()
-        self.assertEqual(summary.total_minutes, 420)
-        self.assertEqual(summary.source, 'garmin_fitabase')
-
-    def test_id_is_read_only(self):
-        from app.serializers import SleepSummarySerializer
-        user = make_user()
-        data = {'id': 999, 'user': user.user_id, 'date': '2026-09-01'}
-        serializer = SleepSummarySerializer(data=data)
-        self.assertTrue(serializer.is_valid(), serializer.errors)
-        summary = serializer.save()
-        self.assertNotEqual(summary.id, 999)
 
 
 # ---------------------------------------------------------------------------
@@ -1376,7 +1287,7 @@ class WearableEndpointTests(TestCase):
     def test_post_creates_device_and_returns_201(self):
         response = self.client.post('/wearable/', {
             'user': self.user.user_id,
-            'fitabase_participant_id': 'FITABASE_001',
+            'labfront_participant_id': 'LABFRONT_001',
             'device_name': 'Garmin Vivoactive 6',
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
@@ -1385,17 +1296,17 @@ class WearableEndpointTests(TestCase):
     def test_post_without_auth_returns_401(self):
         response = APIClient().post('/wearable/', {
             'user': self.user.user_id,
-            'fitabase_participant_id': 'FITABASE_001',
+            'labfront_participant_id': 'LABFRONT_001',
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
 
     def test_get_returns_device_for_enrolled_user(self):
         WearableDevice.objects.create(
-            user=self.user, fitabase_participant_id='FITABASE_001'
+            user=self.user, labfront_participant_id='LABFRONT_001'
         )
         response = self.client.get(f'/wearable/{self.user.user_id}/')
         self.assertEqual(response.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(response.data['fitabase_participant_id'], 'FITABASE_001')
+        self.assertEqual(response.data['labfront_participant_id'], 'LABFRONT_001')
 
     def test_get_returns_404_when_no_device(self):
         response = self.client.get(f'/wearable/{self.user.user_id}/')
@@ -1403,7 +1314,7 @@ class WearableEndpointTests(TestCase):
 
     def test_patch_updates_device_name(self):
         WearableDevice.objects.create(
-            user=self.user, fitabase_participant_id='FITABASE_001'
+            user=self.user, labfront_participant_id='LABFRONT_001'
         )
         response = self.client.patch(
             f'/wearable/{self.user.user_id}/',
@@ -1736,13 +1647,13 @@ class WearableEndpointIDORTests(TestCase):
 
     def test_cannot_read_other_users_data(self):
         other_user = make_user(email='other_wearable@ufl.edu')
-        WearableDevice.objects.create(user=other_user, fitabase_participant_id='FITABASE_OTHER')
+        WearableDevice.objects.create(user=other_user, labfront_participant_id='LABFRONT_OTHER')
         response = self.client.get(f'/wearable/{other_user.user_id}/')
         self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
 
     def test_cannot_patch_other_users_data(self):
         other_user = make_user(email='other_wearable2@ufl.edu')
-        WearableDevice.objects.create(user=other_user, fitabase_participant_id='FITABASE_OTHER2')
+        WearableDevice.objects.create(user=other_user, labfront_participant_id='LABFRONT_OTHER2')
         response = self.client.patch(
             f'/wearable/{other_user.user_id}/',
             {'device_name': 'Hacked'},
@@ -1752,7 +1663,7 @@ class WearableEndpointIDORTests(TestCase):
 
     def test_staff_can_read_any_users_data(self):
         other_user = make_user(email='other_wearable3@ufl.edu')
-        WearableDevice.objects.create(user=other_user, fitabase_participant_id='FITABASE_OTHER3')
+        WearableDevice.objects.create(user=other_user, labfront_participant_id='LABFRONT_OTHER3')
         auth_user, _ = AuthUser.objects.get_or_create(
             username=self.user.email,
             defaults={'email': self.user.email},

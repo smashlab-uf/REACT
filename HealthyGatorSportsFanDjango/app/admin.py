@@ -2,7 +2,7 @@ from django.contrib import admin
 
 from .models import (
     EMA, EngagementLog, HeartRateSample, JITAILog,
-    PhoneTelemetry, SleepSummary, StressSample, User, UserData, WearableDevice,
+    PhoneTelemetry, StressSample, User, UserData, WearableDevice,
 )
 
 
@@ -65,8 +65,8 @@ class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
 
 @admin.register(UserData)
 class UserDataAdmin(ReadableAdminMixin, admin.ModelAdmin):
-    list_display = ("data_id", "user", "timestamp", "goal_type", "weight_value", "feel_better_value")
-    list_filter = ("goal_type", "timestamp")
+    list_display = ("data_id", "user", "timestamp")
+    list_filter = ("timestamp",)
     search_fields = ("user__email", "user__first_name", "user__last_name")
     date_hierarchy = "timestamp"
     ordering = ("-timestamp",)
@@ -78,13 +78,13 @@ class UserDataAdmin(ReadableAdminMixin, admin.ModelAdmin):
 class WearableDeviceAdmin(ReadableAdminMixin, admin.ModelAdmin):
     list_display = (
         "user",
-        "fitabase_participant_id",
+        "labfront_participant_id",
         "device_name",
         "is_active",
         "last_synced_at",
     )
     list_filter = ("is_active", "last_synced_at")
-    search_fields = ("user__email", "fitabase_participant_id", "device_name")
+    search_fields = ("user__email", "labfront_participant_id", "device_name")
     ordering = ("user__email",)
     autocomplete_fields = ("user",)
 
@@ -165,15 +165,6 @@ class JITAILogAdmin(ReadableAdminMixin, admin.ModelAdmin):
         }),
     )
 
-
-@admin.register(SleepSummary)
-class SleepSummaryAdmin(ReadableAdminMixin, admin.ModelAdmin):
-    list_display = ("id", "user", "date", "total_minutes", "sleep_score", "source")
-    list_filter = ("source", "date")
-    search_fields = ("user__email",)
-    date_hierarchy = "date"
-    ordering = ("-date",)
-    autocomplete_fields = ("user",)
 
 
 @admin.register(PhoneTelemetry)
