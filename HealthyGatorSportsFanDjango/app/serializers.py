@@ -104,6 +104,11 @@ class EMASerializer(serializers.ModelSerializer):
         model = EMA
         fields = ['id', 'user', 'prompt_id', 'sent_at', 'responded_at', 'status', 'mood', 'stress', 'energy']
         read_only_fields = ('id', 'sent_at')
+        extra_kwargs = {
+            'mood':   {'min_value': 1, 'max_value': 7},
+            'stress': {'min_value': 1, 'max_value': 7},
+            'energy': {'min_value': 1, 'max_value': 7},
+        }
 
 
 class JITAILogSerializer(serializers.ModelSerializer):
@@ -169,7 +174,7 @@ class SleepSummarySerializer(serializers.ModelSerializer):
             'id', 'user', 'date', 'total_minutes', 'light_minutes',
             'deep_minutes', 'rem_minutes', 'awake_minutes', 'sleep_score', 'source',
         ]
-        read_only_fields = ('id',)
+        read_only_fields = ('id', 'source')
 
 
 class PhoneTelemetrySerializer(serializers.ModelSerializer):

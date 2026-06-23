@@ -1721,3 +1721,183 @@ class EngagementEndpointTests(TestCase):
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         log = EngagementLog.objects.get(user=self.user)
         self.assertEqual(log.game_clock_state, 'pre')
+
+
+# ---------------------------------------------------------------------------
+# IDOR: cross-user access blocked for WearableDevice
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class WearableEndpointIDORTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='wearable_idor@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_cannot_read_other_users_data(self):
+        other_user = make_user(email='other_wearable@ufl.edu')
+        WearableDevice.objects.create(user=other_user, fitabase_participant_id='FITABASE_OTHER')
+        response = self.client.get(f'/wearable/{other_user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+    def test_cannot_patch_other_users_data(self):
+        other_user = make_user(email='other_wearable2@ufl.edu')
+        WearableDevice.objects.create(user=other_user, fitabase_participant_id='FITABASE_OTHER2')
+        response = self.client.patch(
+            f'/wearable/{other_user.user_id}/',
+            {'device_name': 'Hacked'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+    def test_staff_can_read_any_users_data(self):
+        other_user = make_user(email='other_wearable3@ufl.edu')
+        WearableDevice.objects.create(user=other_user, fitabase_participant_id='FITABASE_OTHER3')
+        auth_user, _ = AuthUser.objects.get_or_create(
+            username=self.user.email,
+            defaults={'email': self.user.email},
+        )
+        auth_user.is_staff = True
+        auth_user.save()
+        response = self.client.get(f'/wearable/{other_user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# IDOR: cross-user access blocked for EMA
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMAEndpointIDORTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='ema_idor@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_cannot_read_other_users_data(self):
+        other_user = make_user(email='other_ema@ufl.edu')
+        EMA.objects.create(user=other_user, prompt_id='P1', mood=5, stress=3, energy=4)
+        response = self.client.get(f'/ema/{other_user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# IDOR: cross-user access blocked for JITAILog
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class JITAIEndpointIDORTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='jitai_idor@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_cannot_read_other_users_data(self):
+        other_user = make_user(email='other_jitai@ufl.edu')
+        JITAILog.objects.create(user=other_user, prompt_id='T1', trigger_reason='hr_elevated')
+        response = self.client.get(f'/jitai/{other_user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# IDOR: cross-user access blocked for telemetry reads
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class TelemetryReadIDORTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='telread_idor@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_cannot_read_other_users_hr_data(self):
+        from django.utils import timezone as tz
+        other_user = make_user(email='other_hr@ufl.edu')
+        HeartRateSample.objects.create(user=other_user, timestamp=tz.now(), bpm=72)
+        response = self.client.get(f'/telemetry/hr/{other_user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+    def test_cannot_read_other_users_stress_data(self):
+        from django.utils import timezone as tz
+        other_user = make_user(email='other_stress@ufl.edu')
+        StressSample.objects.create(user=other_user, timestamp=tz.now(), stress_score=55)
+        response = self.client.get(f'/telemetry/stress/{other_user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# Limit validation: non-integer limit returns 400
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class TelemetryLimitValidationTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='limit_test@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_hr_non_integer_limit_returns_400(self):
+        response = self.client.get(f'/telemetry/hr/{self.user.user_id}/?limit=abc')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+    def test_stress_non_integer_limit_returns_400(self):
+        response = self.client.get(f'/telemetry/stress/{self.user.user_id}/?limit=abc')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# Serializer: EMA Likert range validation
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMASerializerLikertValidationTests(TestCase):
+
+    def _base_data(self, user):
+        return {
+            'user': user.user_id,
+            'prompt_id': 'EMA_TEST',
+            'mood': 5,
+            'stress': 3,
+            'energy': 4,
+        }
+
+    def test_mood_below_1_returns_invalid(self):
+        user = make_user(email='ema_likert1@ufl.edu')
+        data = self._base_data(user)
+        data['mood'] = 0
+        serializer = EMASerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('mood', serializer.errors)
+
+    def test_mood_above_7_returns_invalid(self):
+        user = make_user(email='ema_likert2@ufl.edu')
+        data = self._base_data(user)
+        data['mood'] = 8
+        serializer = EMASerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('mood', serializer.errors)
+
+    def test_stress_below_1_returns_invalid(self):
+        user = make_user(email='ema_likert3@ufl.edu')
+        data = self._base_data(user)
+        data['stress'] = 0
+        serializer = EMASerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('stress', serializer.errors)
+
+    def test_energy_above_7_returns_invalid(self):
+        user = make_user(email='ema_likert4@ufl.edu')
+        data = self._base_data(user)
+        data['energy'] = 8
+        serializer = EMASerializer(data=data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('energy', serializer.errors)
+
+    def test_boundary_values_1_and_7_are_valid(self):
+        user = make_user(email='ema_likert5@ufl.edu')
+        data = self._base_data(user)
+        data['mood'] = 1
+        data['stress'] = 7
+        data['energy'] = 1
+        serializer = EMASerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)

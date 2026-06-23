@@ -2,9 +2,12 @@ from exponent_server_sdk import PushClient, PushMessage
 import os
 import cfbd
 import redis
+import logging
 from .models import User
 from .serializers import UserSerializer
 from django.core.cache import cache
+
+logger = logging.getLogger(__name__)
 
 def send_push_notification_next_game(header, users, message):
     sentTokens = set()
@@ -117,6 +120,7 @@ def get_game_clock_state():
     current_year = datetime.now(dt_timezone.utc).year
     games_list = cache.get(f'uf_football_games_{current_year}')
     if not games_list:
+        logger.warning('get_game_clock_state: game cache miss, defaulting to pre')
         return 'pre'
     now = datetime.now(dt_timezone.utc)
     for game in games_list:

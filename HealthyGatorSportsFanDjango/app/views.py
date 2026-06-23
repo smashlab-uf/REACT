@@ -52,6 +52,16 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes
 
 
+def _get_app_user(request):
+    email = getattr(request.user, 'email', None)
+    if not email:
+        return None
+    try:
+        return User.objects.get(email=email)
+    except User.DoesNotExist:
+        return None
+
+
 # Create your views here.
 
 # Best practice is one view per page
@@ -411,6 +421,10 @@ class WearableDeviceView(APIView):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     def get(self, request, user_id):
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
         try:
             device = WearableDevice.objects.get(user__user_id=user_id)
         except WearableDevice.DoesNotExist:
@@ -418,6 +432,10 @@ class WearableDeviceView(APIView):
         return Response(WearableDeviceSerializer(device).data)
 
     def patch(self, request, user_id):
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
         try:
             device = WearableDevice.objects.get(user__user_id=user_id)
         except WearableDevice.DoesNotExist:
@@ -551,9 +569,6 @@ def me_view(request):
         return Response({"detail": "App user not found"}, status=404)
 
 
-    print('hell yeah brother')
-    print(UserSerializer(app_user).data)
-
     return Response(UserSerializer(app_user).data, status=200)
 
 
@@ -572,6 +587,10 @@ class EMAView(APIView):
         return Response(EMASerializer(ema).data, status=status.HTTP_201_CREATED)
 
     def get(self, request, user_id):
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
         emas = EMA.objects.filter(user__user_id=user_id).order_by('-sent_at')
         return Response(EMASerializer(emas, many=True).data)
 
@@ -587,6 +606,10 @@ class JITAILogView(APIView):
         return Response(JITAILogSerializer(log).data, status=status.HTTP_201_CREATED)
 
     def get(self, request, user_id):
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
         logs = JITAILog.objects.filter(user__user_id=user_id).order_by('-triggered_at')
         return Response(JITAILogSerializer(logs, many=True).data)
 
@@ -595,7 +618,14 @@ class HeartRateListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, user_id):
-        limit = int(request.query_params.get('limit', 100))
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        try:
+            limit = max(1, min(int(request.query_params.get('limit', 100)), 1000))
+        except (ValueError, TypeError):
+            return Response({'error': 'limit must be a positive integer'}, status=status.HTTP_400_BAD_REQUEST)
         samples = HeartRateSample.objects.filter(
             user__user_id=user_id
         ).order_by('-timestamp')[:limit]
@@ -606,7 +636,14 @@ class StressListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, user_id):
-        limit = int(request.query_params.get('limit', 100))
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        try:
+            limit = max(1, min(int(request.query_params.get('limit', 100)), 1000))
+        except (ValueError, TypeError):
+            return Response({'error': 'limit must be a positive integer'}, status=status.HTTP_400_BAD_REQUEST)
         samples = StressSample.objects.filter(
             user__user_id=user_id
         ).order_by('-timestamp')[:limit]
@@ -620,9 +657,7 @@ class PhoneTelemetryView(APIView):
         serializer = PhoneTelemetrySerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        event = serializer.save()
-        event.game_clock_state = get_game_clock_state()
-        event.save(update_fields=['game_clock_state'])
+        event = serializer.save(game_clock_state=get_game_clock_state())
         return Response(PhoneTelemetrySerializer(event).data, status=status.HTTP_201_CREATED)
 
 
@@ -633,7 +668,5 @@ class EngagementLogView(APIView):
         serializer = EngagementLogSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        log = serializer.save()
-        log.game_clock_state = get_game_clock_state()
-        log.save(update_fields=['game_clock_state'])
+        log = serializer.save(game_clock_state=get_game_clock_state())
         return Response(EngagementLogSerializer(log).data, status=status.HTTP_201_CREATED)
