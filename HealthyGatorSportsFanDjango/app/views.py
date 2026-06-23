@@ -14,6 +14,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, generics
 from .serializers import (
+    EMASerializer,
     TelemetryIngestSerializer,
     UserDataSerializer,
     UserSerializer,
@@ -25,6 +26,7 @@ import certifi
 import pytz
 from django.http import JsonResponse
 from datetime import date, datetime, timezone, timedelta
+from django.utils import timezone as django_timezone
 from .utils import send_push_notification_next_game, check_game_status, send_notification, get_users_with_push_token
 from django.views.decorators.csrf import csrf_exempt
 from django.core.cache import cache
@@ -546,3 +548,22 @@ def me_view(request):
     print(UserSerializer(app_user).data)
 
     return Response(UserSerializer(app_user).data, status=200)
+
+
+class EMAView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = EMASerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        ema = serializer.save()
+        if ema.mood is not None and ema.stress is not None and ema.energy is not None:
+            ema.status = 'completed'
+            ema.responded_at = django_timezone.now()
+            ema.save(update_fields=['status', 'responded_at'])
+        return Response(EMASerializer(ema).data, status=status.HTTP_201_CREATED)
+
+    def get(self, request, user_id):
+        emas = EMA.objects.filter(user__user_id=user_id).order_by('-sent_at')
+        return Response(EMASerializer(emas, many=True).data)

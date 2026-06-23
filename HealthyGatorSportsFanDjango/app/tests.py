@@ -1421,3 +1421,68 @@ class WearableEndpointTests(TestCase):
             format='json',
         )
         self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
+
+
+# ---------------------------------------------------------------------------
+# API: POST /ema/, GET /ema/<user_id>/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMAEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='ema@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_post_creates_ema_and_returns_201(self):
+        response = self.client.post('/ema/', {
+            'user': self.user.user_id,
+            'prompt_id': 'EMA_TEMPLATE_01',
+            'mood': 5,
+            'stress': 3,
+            'energy': 6,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertTrue(EMA.objects.filter(user=self.user).exists())
+
+    def test_post_with_likert_responses_sets_completed_and_responded_at(self):
+        response = self.client.post('/ema/', {
+            'user': self.user.user_id,
+            'prompt_id': 'EMA_TEMPLATE_01',
+            'mood': 4,
+            'stress': 2,
+            'energy': 7,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        ema = EMA.objects.get(user=self.user)
+        self.assertEqual(ema.status, 'completed')
+        self.assertIsNotNone(ema.responded_at)
+
+    def test_post_without_likert_responses_leaves_status_pending(self):
+        response = self.client.post('/ema/', {
+            'user': self.user.user_id,
+            'prompt_id': 'EMA_TEMPLATE_01',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        ema = EMA.objects.get(user=self.user)
+        self.assertEqual(ema.status, 'pending')
+        self.assertIsNone(ema.responded_at)
+
+    def test_post_without_auth_returns_401(self):
+        response = APIClient().post('/ema/', {
+            'user': self.user.user_id,
+            'prompt_id': 'EMA_TEMPLATE_01',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_get_returns_ema_history_for_user(self):
+        EMA.objects.create(user=self.user, prompt_id='P1', mood=5, stress=3, energy=4)
+        EMA.objects.create(user=self.user, prompt_id='P2', mood=3, stress=6, energy=2)
+        response = self.client.get(f'/ema/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+    def test_get_returns_empty_list_for_user_with_no_emas(self):
+        response = self.client.get(f'/ema/{self.user.user_id}/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 0)
