@@ -1593,3 +1593,60 @@ class TelemetryReadEndpointTests(TestCase):
         response = self.client.get(f'/telemetry/stress/{self.user.user_id}/?limit=3')
         self.assertEqual(response.status_code, http_status.HTTP_200_OK)
         self.assertEqual(len(response.data), 3)
+
+
+# ---------------------------------------------------------------------------
+# API: POST /telemetry/phone/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class PhoneTelemetryEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='phone@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def _payload(self):
+        return {
+            'user': self.user.user_id,
+            'session_id': 'SESSION_001',
+            'event_type': 'draft_submitted',
+            'occurred_at': '2026-09-01T15:00:00Z',
+            'metadata': {'keystroke_count': 42, 'delete_count': 5},
+        }
+
+    @patch('app.views.get_game_clock_state', return_value='live')
+    def test_post_creates_event_and_stamps_game_clock_state(self, mock_gcs):
+        from app.models import PhoneTelemetry
+        response = self.client.post('/telemetry/phone/', self._payload(), format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        event = PhoneTelemetry.objects.get(user=self.user)
+        self.assertEqual(event.game_clock_state, 'live')
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_irb_violation_long_string_metadata_returns_400(self, mock_gcs):
+        payload = self._payload()
+        payload['metadata'] = {'text': 'x' * 51}
+        response = self.client.post('/telemetry/phone/', payload, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_client_supplied_game_clock_state_is_ignored(self, mock_gcs):
+        from app.models import PhoneTelemetry
+        payload = self._payload()
+        payload['game_clock_state'] = 'live'
+        response = self.client.post('/telemetry/phone/', payload, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        event = PhoneTelemetry.objects.get(user=self.user)
+        self.assertEqual(event.game_clock_state, 'pre')
+
+    def test_post_without_auth_returns_401(self):
+        response = APIClient().post('/telemetry/phone/', self._payload(), format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_invalid_event_type_returns_400(self, mock_gcs):
+        payload = self._payload()
+        payload['event_type'] = 'not_a_real_event'
+        response = self.client.post('/telemetry/phone/', payload, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)

@@ -3,8 +3,10 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
 from .models import (
     EMA,
+    EngagementLog,
     HeartRateSample,
     JITAILog,
+    PhoneTelemetry,
     StressSample,
     User,
     UserData,
@@ -15,8 +17,10 @@ from rest_framework.response import Response
 from rest_framework import status, generics
 from .serializers import (
     EMASerializer,
+    EngagementLogSerializer,
     HeartRateSampleSerializer,
     JITAILogSerializer,
+    PhoneTelemetrySerializer,
     StressSampleSerializer,
     TelemetryIngestSerializer,
     UserDataSerializer,
@@ -30,7 +34,7 @@ import pytz
 from django.http import JsonResponse
 from datetime import date, datetime, timezone, timedelta
 from django.utils import timezone as django_timezone
-from .utils import send_push_notification_next_game, check_game_status, send_notification, get_users_with_push_token
+from .utils import send_push_notification_next_game, check_game_status, send_notification, get_users_with_push_token, get_game_clock_state
 from django.views.decorators.csrf import csrf_exempt
 from django.core.cache import cache
 from .management.commands import poll_cfbd
@@ -607,3 +611,16 @@ class StressListView(APIView):
             user__user_id=user_id
         ).order_by('-timestamp')[:limit]
         return Response(StressSampleSerializer(samples, many=True).data)
+
+
+class PhoneTelemetryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = PhoneTelemetrySerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        event = serializer.save()
+        event.game_clock_state = get_game_clock_state()
+        event.save(update_fields=['game_clock_state'])
+        return Response(PhoneTelemetrySerializer(event).data, status=status.HTTP_201_CREATED)
