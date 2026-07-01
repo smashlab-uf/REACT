@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path
-from app.views import index, CreateUserView, poll_cfbd_view, home_tile_view, schedule_view, CreateUserDataView, UserLoginView, LatestUserDataView, UserUpdateView, CheckEmailView, me_view, TelemetryIngestView, WearableDeviceView, EMAView, JITAILogView, HeartRateListView, StressListView, PhoneTelemetryView, EngagementLogView
+from app.views import index, CreateUserView, CreateUserDataView, UserLoginView, LatestUserDataView, UserUpdateView, CheckEmailView, me_view, TelemetryIngestView, WearableDeviceView, EMAView, JITAILogView, HeartRateListView, StressListView, PhoneTelemetryView, EngagementLogView
 
 # Import drf-yasg components
 from drf_yasg.views import get_schema_view 
@@ -43,7 +43,6 @@ urlpatterns = [
     # API endpoints for auth
     path('auth/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-    path('auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/me/', me_view, name='auth_me'),
 
     # API endpoints for app
@@ -64,10 +63,7 @@ urlpatterns = [
     path('telemetry/stress/<int:user_id>/', StressListView.as_view(), name='telemetry-stress'),
     path('telemetry/phone/', PhoneTelemetryView.as_view(), name='telemetry-phone'),
     path('telemetry/engagement/', EngagementLogView.as_view(), name='telemetry-engagement'),
-    path('poll-cfbd/', poll_cfbd_view, name='poll_cfbd'),
-    path('home-tile/', home_tile_view, name='home_tile_view'),
-    path('schedule-tile/', schedule_view, name='schedule_tile'),
-    
+
     # API endpoint for Swagger
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
 ]

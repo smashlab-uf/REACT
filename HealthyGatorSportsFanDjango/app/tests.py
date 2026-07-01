@@ -416,6 +416,10 @@ class CreateUserDataViewTests(TestCase):
         self.client.post(f'/userdata/{self.user.user_id}/', {}, format='json')
         self.assertEqual(UserData.objects.filter(user=self.user).count(), 1)
 
+    def test_unknown_user_returns_404_not_500(self):
+        response = self.client.post('/userdata/99999/', {}, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
+
 
 # ---------------------------------------------------------------------------
 # API: GET /userdata/latest/<id>/ — LatestUserDataView
@@ -1965,3 +1969,29 @@ class TelemetryIngestAuthTests(TestCase):
             'user_id': user.user_id,
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+
+# ---------------------------------------------------------------------------
+# Legacy routes: verified absent after removal
+# ---------------------------------------------------------------------------
+
+class LegacyRouteTests(TestCase):
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_poll_cfbd_is_gone(self):
+        response = self.client.get('/poll-cfbd/')
+        self.assertEqual(response.status_code, 404)
+
+    def test_home_tile_is_gone(self):
+        response = self.client.get('/home-tile/')
+        self.assertEqual(response.status_code, 404)
+
+    def test_schedule_tile_is_gone(self):
+        response = self.client.get('/schedule-tile/')
+        self.assertEqual(response.status_code, 404)
+
+    def test_auth_refresh_alias_is_gone(self):
+        response = self.client.post('/auth/refresh/', {'refresh': 'token'}, format='json')
+        self.assertEqual(response.status_code, 404)
