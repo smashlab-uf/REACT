@@ -1,3 +1,4 @@
+from datetime import timedelta
 from unittest.mock import patch, MagicMock
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -1976,3 +1977,138 @@ class LegacyRouteTests(TestCase):
     def test_auth_refresh_alias_is_gone(self):
         response = self.client.post('/auth/refresh/', {'refresh': 'token'}, format='json')
         self.assertEqual(response.status_code, 404)
+
+
+# ---------------------------------------------------------------------------
+# Task: evaluate_jitai_triggers
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EvaluateJITAITriggersTests(TestCase):
+
+    def _make_enrolled_user(self, email='jitai_task@ufl.edu'):
+        user = make_user(email=email, push_token='ExponentPushToken[test123]')
+        user.is_enrolled = True
+        user.save()
+        WearableDevice.objects.create(user=user, labfront_participant_id=f'LF_{email}')
+        return user
+
+    def _make_ema(self, user, mood, stress, energy, offset_seconds=0):
+        ema = EMA.objects.create(
+            user=user,
+            prompt_id='P1',
+            mood=mood,
+            stress=stress,
+            energy=energy,
+            status='completed',
+            responded_at=timezone.now(),
+        )
+        t = timezone.now() - timedelta(seconds=3600) + timedelta(seconds=offset_seconds)
+        EMA.objects.filter(pk=ema.pk).update(sent_at=t)
+        ema.refresh_from_db()
+        return ema
+
+    def test_no_enrolled_users_creates_no_logs(self):
+        from app.tasks import evaluate_jitai_triggers
+        evaluate_jitai_triggers()
+        self.assertEqual(JITAILog.objects.count(), 0)
+
+    def test_enrolled_user_with_no_emas_creates_no_log(self):
+        from app.tasks import evaluate_jitai_triggers
+        self._make_enrolled_user()
+        evaluate_jitai_triggers()
+        self.assertEqual(JITAILog.objects.count(), 0)
+
+    def test_all_emas_already_evaluated_creates_no_new_log(self):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        ema = self._make_ema(user, 4, 4, 4, offset_seconds=0)
+        JITAILog.objects.create(user=user, prompt_id='P1', trigger_reason='prior', ema=ema)
+        evaluate_jitai_triggers()
+        self.assertEqual(JITAILog.objects.count(), 1)
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_insufficient_history_writes_log_with_send_prompt_false(self, mock_send):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._make_ema(user, 4, 4, 4, offset_seconds=0)
+        self._make_ema(user, 4, 4, 4, offset_seconds=60)
+        evaluate_jitai_triggers()
+        log = JITAILog.objects.get(user=user)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.trigger_reason, 'insufficient within-person history')
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_volatile_emas_trigger_prompt_and_call_expo(self, mock_send):
+        # 5 stable EMAs establish a baseline MSSD near 0.
+        # 1 volatile EMA (big drop in scores) pushes MSSD above the within-person
+        # threshold, triggering send_prompt=True.
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        for i in range(5):
+            self._make_ema(user, 4, 4, 4, offset_seconds=i * 60)
+        volatile = self._make_ema(user, 1, 1, 1, offset_seconds=300)
+        evaluate_jitai_triggers()
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.ema, volatile)
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.status, 'delivered')
+        mock_send.assert_called_once()
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_jitai_log_written_even_when_no_prompt_sent(self, mock_send):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._make_ema(user, 4, 4, 4, offset_seconds=0)
+        evaluate_jitai_triggers()
+        self.assertEqual(JITAILog.objects.filter(user=user).count(), 1)
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_hr_and_stress_snapshots_stored_on_log(self, mock_send):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        HeartRateSample.objects.create(user=user, timestamp=timezone.now(), bpm=92)
+        StressSample.objects.create(user=user, timestamp=timezone.now(), stress_score=68)
+        self._make_ema(user, 4, 4, 4, offset_seconds=0)
+        evaluate_jitai_triggers()
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.hr_at_trigger, 92)
+        self.assertEqual(log.stress_at_trigger, 68)
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_exception_in_one_user_does_not_stop_others(self, mock_send):
+        from app import tasks as tasks_module
+        from app.tasks import evaluate_jitai_triggers
+        user1 = self._make_enrolled_user(email='task_exc1@ufl.edu')
+        user2 = self._make_enrolled_user(email='task_exc2@ufl.edu')
+        self._make_ema(user1, 4, 4, 4, offset_seconds=0)
+        self._make_ema(user2, 4, 4, 4, offset_seconds=0)
+
+        original = tasks_module._evaluate_user
+
+        def raise_for_user1(user):
+            if user.user_id == user1.user_id:
+                raise RuntimeError("simulated failure")
+            original(user)
+
+        with patch('app.tasks._evaluate_user', side_effect=raise_for_user1):
+            evaluate_jitai_triggers()
+
+        self.assertFalse(JITAILog.objects.filter(user=user1).exists())
+        self.assertTrue(JITAILog.objects.filter(user=user2).exists())
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_prompt_id_set_on_log_when_send_prompt_true(self, mock_send):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        for i in range(5):
+            self._make_ema(user, 4, 4, 4, offset_seconds=i * 60)
+        self._make_ema(user, 1, 1, 1, offset_seconds=300)
+        evaluate_jitai_triggers()
+        log = JITAILog.objects.get(user=user)
+        if log.send_prompt:
+            self.assertNotEqual(log.prompt_id, '')
+        else:
+            self.assertEqual(log.prompt_id, '')

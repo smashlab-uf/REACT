@@ -238,9 +238,13 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'
 
 CELERY_BEAT_SCHEDULE = {
-    'poll-cfbd-every-10-seconds': {
-        'task': 'app.tasks.poll_cfbd_task',
-        'schedule': schedule(120.0),  # 10 seconds
+    'ingest-wearable-data': {
+        'task': 'app.tasks.ingest_wearable_data',
+        'schedule': schedule(180.0),
+    },
+    'evaluate-jitai-triggers': {
+        'task': 'app.tasks.evaluate_jitai_triggers',
+        'schedule': schedule(180.0),
     },
 }
 
