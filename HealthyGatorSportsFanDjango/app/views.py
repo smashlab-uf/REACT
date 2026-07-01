@@ -9,7 +9,6 @@ from .models import (
     PhoneTelemetry,
     StressSample,
     User,
-    UserData,
     WearableDevice,
 )
 from rest_framework.views import APIView
@@ -23,7 +22,6 @@ from .serializers import (
     PhoneTelemetrySerializer,
     StressSampleSerializer,
     TelemetryIngestSerializer,
-    UserDataSerializer,
     UserSerializer,
     WearableDeviceSerializer,
 )
@@ -71,14 +69,10 @@ class CreateUserView(APIView):
             request_body=UserSerializer
         )
     def post(self, request):
-        print("request.data for CreateUserView: ", request.data)
         serializer = UserSerializer(data=request.data)
         if serializer.is_valid():
-            user = serializer.save()
-            # Prepare the response data including the user_id
-            response_data = {'user_id': user.user_id}
-            response_data.update(serializer.data)
-            return Response(response_data, status=status.HTTP_201_CREATED)
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 class UserUpdateView(APIView):
@@ -86,18 +80,19 @@ class UserUpdateView(APIView):
 
     @swagger_auto_schema(operation_summary="Update user", operation_description="Update an existing user in the database", request_body=UserSerializer)
     def put(self, request, user_id):
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
         try:
             user = User.objects.get(user_id=user_id)
         except User.DoesNotExist:
             return Response(status=status.HTTP_404_NOT_FOUND)
-        print("request.data for UserUpdateView: ", request.data)
-        serializer = UserSerializer(user, data=request.data, partial=True)  # Allow partial updates
+        serializer = UserSerializer(user, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
-        else:
-            print(serializer.errors)  # Debugging line
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class CheckEmailView(APIView):
     permission_classes = [AllowAny]
@@ -111,53 +106,6 @@ class CheckEmailView(APIView):
         if User.objects.filter(email=email).exists():
             return Response({'exists': True}, status=status.HTTP_200_OK)
         return Response({'exists': False}, status=status.HTTP_200_OK)
-
-# API view to handle POST requests for user data creation
-class CreateUserDataView(APIView):
-    @swagger_auto_schema(operation_summary="Log user progress", operation_description="Create a new userData entry to add to the database. This is used to log a snapshot in time of progress toward the user's goal(s).", request_body=UserDataSerializer)
-    def post(self, request, user_id):
-        try:
-            user = User.objects.get(pk=user_id)
-        except User.DoesNotExist:
-            return Response(status=status.HTTP_404_NOT_FOUND)
-        user_data = UserData.objects.create(user=user)
-        # Update user data with new information
-        user_serializer = UserSerializer(user, data=request.data, partial=True)
-        if user_serializer.is_valid():
-            user_serializer.save()
-            user_data_serializer = UserDataSerializer(user_data, data=request.data, partial=True)
-            if user_data_serializer.is_valid():
-                userData = user_data_serializer.save()
-                response_data = {'data_id': userData.data_id}
-                response_data.update(user_data_serializer.data)
-                return Response(response_data, status=status.HTTP_201_CREATED)
-            return Response(user_data_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        return Response(user_data_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-class LatestUserDataView(APIView):
-    @swagger_auto_schema(
-        operation_summary="Get latest user progress", operation_description="Get the latest entry of user's progress from the userData table.",
-        manual_parameters=[
-            openapi.Parameter(
-                'user_id',  # Name of the parameter
-                openapi.IN_PATH,  # Location of the parameter
-                description="User ID for which we are getting the latest user data entry for",
-                type=openapi.TYPE_STRING,  # Type of the parameter
-                required=True  # Whether the parameter is required
-            )
-        ],
-        responses={200: UserDataSerializer(many=True)}  # Define response schema
-    )
-    def get(self, request, user_id):
-        try:
-            recent_data = UserData.objects.filter(user_id=user_id).order_by('-timestamp').first()
-            if recent_data:
-                serializer = UserDataSerializer(recent_data)
-                return Response(serializer.data, status=status.HTTP_200_OK)
-            else:
-                return Response({"message": "No data found for this user."}, status=status.HTTP_404_NOT_FOUND)
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # # API view to handle POST requests for data sent from the front-end (basicinfo.tsx)
 # class BasicInfoView(APIView):
@@ -335,7 +283,6 @@ class TelemetryIngestView(APIView):
                 user=user,
                 defaults={
                     "labfront_participant_id": device_payload["labfront_participant_id"],
-                    "device_name": device_payload.get("device_name"),
                     "last_synced_at": device_payload.get("last_synced_at"),
                     "is_active": device_payload.get("is_active", True),
                 },

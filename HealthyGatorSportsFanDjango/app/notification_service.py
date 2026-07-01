@@ -41,9 +41,11 @@ def send_jitai_prompt(user, jitai_log) -> bool:
 
     message = PushMessage(
         to=user.push_token,
-        data={'prompt_id': jitai_log.prompt_id},
-        # No title or body — silent push. Message text lives only in the app's
-        # local template store (IRB constraint).
+        data={
+            'type': 'ema_prompt',
+            'prompt_id': jitai_log.prompt_id,
+            'jitai_log_id': jitai_log.pk,
+        },
     )
     try:
         response = PushClient().publish(message)

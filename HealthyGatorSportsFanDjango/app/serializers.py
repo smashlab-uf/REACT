@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from .models import (
     EMA, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
-    StressSample, User, UserData, WearableDevice,
+    StressSample, User, WearableDevice,
 )
 from django.contrib.auth.hashers import make_password
 
@@ -44,17 +44,10 @@ class UserSerializer(serializers.ModelSerializer):
         return instance
 
 
-class UserDataSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = UserData
-        fields = ['data_id', 'user', 'timestamp']
-        read_only_fields = ('data_id', 'timestamp')
-
-
 class WearableDeviceSerializer(serializers.ModelSerializer):
     class Meta:
         model = WearableDevice
-        fields = ['id', 'user', 'labfront_participant_id', 'device_name', 'is_active', 'last_synced_at']
+        fields = ['id', 'user', 'labfront_participant_id', 'is_active', 'last_synced_at']
         read_only_fields = ('id',)
 
 
@@ -98,7 +91,6 @@ class JITAILogSerializer(serializers.ModelSerializer):
 
 class TelemetryWearableDeviceSerializer(serializers.Serializer):
     labfront_participant_id = serializers.CharField(max_length=64)
-    device_name = serializers.CharField(max_length=100, required=False, allow_null=True)
     last_synced_at = serializers.DateTimeField(required=False, allow_null=True)
     is_active = serializers.BooleanField(required=False, default=True)
 
