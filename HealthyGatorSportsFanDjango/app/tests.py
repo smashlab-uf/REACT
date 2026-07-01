@@ -75,6 +75,27 @@ class UserPasswordTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Model: legacy User fields removed
+# ---------------------------------------------------------------------------
+
+class UserLegacyFieldsTest(TestCase):
+
+    def test_no_legacy_health_fields_on_model(self):
+        field_names = {f.name for f in User._meta.get_fields()}
+        for legacy in ('height_feet', 'height_inches', 'goal_weight',
+                       'goal_to_lose_weight', 'goal_to_feel_better'):
+            self.assertNotIn(legacy, field_names,
+                             msg=f"Legacy field '{legacy}' still on User model")
+
+    def test_no_legacy_health_fields_on_serializer(self):
+        serializer_fields = set(UserSerializer().fields.keys())
+        for legacy in ('height_feet', 'height_inches', 'goal_weight',
+                       'goal_to_lose_weight', 'goal_to_feel_better'):
+            self.assertNotIn(legacy, serializer_fields,
+                             msg=f"Legacy field '{legacy}' still in UserSerializer")
+
+
+# ---------------------------------------------------------------------------
 # Utils: check_game_status
 #
 # NOTE: Tests for Florida as the HOME team (winning/losing while home) will
@@ -271,8 +292,8 @@ class CreateUserViewTests(TestCase):
 class UserUpdateViewTests(TestCase):
 
     def setUp(self):
-        self.client = APIClient()
         self.user = make_user()
+        self.client = authenticated_client(self.user)
 
     def test_update_first_name_returns_200_and_persists(self):
         response = self.client.put(
