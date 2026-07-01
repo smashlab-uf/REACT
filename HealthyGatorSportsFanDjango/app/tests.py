@@ -445,25 +445,6 @@ class LatestUserDataViewTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# API: GET /auth/me/ — me_view
-# ---------------------------------------------------------------------------
-
-@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class MeViewTests(TestCase):
-
-    def test_authenticated_request_returns_user_profile(self):
-        app_user = make_user(email='me@ufl.edu')
-        client = authenticated_client(app_user)
-        response = client.get('/auth/me/')
-        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(response.data['email'], 'me@ufl.edu')
-
-    def test_unauthenticated_request_returns_401(self):
-        response = APIClient().get('/auth/me/')
-        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
-
-
-# ---------------------------------------------------------------------------
 # Utils: send_notification — score deduplication via cache
 # ---------------------------------------------------------------------------
 

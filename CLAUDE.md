@@ -5,7 +5,7 @@
 REACT (working title) is a research-grade Just-In-Time Adaptive Intervention (JITAI) mHealth
 system built at the SMASH Research Lab, University of Florida, under PI Dr. Yonghwan Chang
 (Department of Sport Management). It extends the prior HealthyGatorSportsFan platform, which
-delivered push notifications to UF sports fans during games.
+delivered push notifications to study participants.
 
 REACT adds:
 - EMA (Ecological Momentary Assessment) in-app surveys
@@ -29,7 +29,7 @@ November/early December, ~12–14 weeks).
 | Deployment | Heroku |
 | Push Notifications | Expo Push Notification Service → Firebase/APNs |
 | Wearable Data Layer | Fitabase API (intermediary for Garmin Health API) |
-| Wearable Device | Garmin Vivoactive 6 |
+| Wearable Device | Garmin Venu 3 |
 
 ---
 
@@ -170,7 +170,7 @@ class JITAILog(models.Model):
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/user/` | Create user account |
-| GET | `/user/login/` | Authenticate user |
+| POST | `/user/login/` | Authenticate user |
 | PUT | `/user/{user_id}/` | Update user profile |
 | POST | `/user/checkemail/` | Check if email already exists |
 | GET | `/userdata/latest/{user_id}/` | Get latest user progress |
@@ -204,7 +204,7 @@ Django ORM inside Celery tasks — no public REST endpoints for ingest.
 REACT never communicates with Garmin directly. The data flow is:
 
 ```
-Garmin Vivoactive 6
+Garmin Venu 3
   → Garmin Health API (push on device sync)
     → Fitabase (buffers and re-exposes data)
       → REACT Celery ingestion task (polls Fitabase API)
@@ -221,14 +221,13 @@ Garmin Vivoactive 6
 | 15 min epochs | Steps, Heart rate, Distance, MET, Intensity, MeanMotion/MaxMotion |
 | 3 min | Stress score (primary real-time JITAI signal alongside HR) |
 | Per stage change | Sleep stage records |
-| 15 sec | Heart rate (primary HR ingest stream; ~720 rows/participant/3hr game) |
+| 15 sec | Heart rate (primary HR ingest stream; ~720 rows/participant/3hr session) |
 | Optional add-on | Beat-to-beat RR intervals (enhanced HRV; not default) |
 
 ### Fitabase API vs Batch Export
 - API access and automated batch exports are separate paid add-ons (not included by default)
 - REACT targets the Fitabase API for programmatic access via Celery periodic tasks
-- During game windows, the Celery task should poll at short intervals (every 2–3 min) to support
-  near-real-time JITAI triggering
+- The Celery task polls at short intervals (every 2–3 min) to support near-real-time JITAI triggering
 - The `fitabase_participant_id` in `WearableDevice` is the key used to query Fitabase per participant
 
 ---
@@ -242,8 +241,6 @@ Key tasks:
   HeartRateSample, StressSample, SleepSummary rows
 - `evaluate_jitai_triggers` — reads recent telemetry per participant, applies decision logic,
   fires Expo push notification and writes JITAILog if thresholds are met
-- Game-window awareness — tasks should run at higher frequency during active UF football
-  game windows and at low/no frequency outside game days
 
 ---
 
@@ -254,7 +251,7 @@ threshold values are a research design decision requiring PI (Prof. Chang) sign-
 implementation. Do not hardcode thresholds without confirmation.
 
 Candidate trigger signals:
-- `HeartRateSample.bpm` — elevated HR during game window suggests physiological arousal
+- `HeartRateSample.bpm` — elevated HR suggests physiological arousal
 - `StressSample.stress_score` — high stress score complements EMA self-report
 - `EMA.mood / EMA.stress / EMA.energy` — self-reported emotional state
 - `SleepSummary` — prior-night sleep context for next-day intervention decisions
@@ -334,8 +331,7 @@ auto-generated PKs and timestamps.
 - Fitabase API vs batch export — confirm with Prof. Chang (determine pricing/access)
 - JITAI trigger thresholds — numeric values require PI alignment before implementation
 - RA access scope — which fields are RAs permitted to see under IRB protocol
-- Garmin Vivoactive 6 Fitabase compatibility — verify all required data streams are
-  supported before finalizing the Fitabase contract
+- Garmin Venu 3 Fitabase compatibility — verify all required data streams are supported before finalizing the Fitabase contract
 - Beat-to-beat RR interval collection — confirm device support and IRB permission
 
 ---

@@ -38,7 +38,6 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.decorators import api_view, permission_classes
 
 
 def _get_app_user(request):
@@ -425,27 +424,6 @@ class WearableDeviceView(APIView):
 #             "to": data['user'].google_acct_id,
 #             "title": "Score Update",
 #             "body": data["Testing to see if this push notification works!"],
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def me_view(request):
-    """
-    Return the *app.User* profile that matches the authenticated Django user.
-    """
-    email = getattr(request.user, "email", None)
-    if not email:
-        return Response({"detail": "No email on auth user"}, status=400)
-
-    try:
-        app_user = User.objects.get(email=email)
-        if not app_user:
-            return Response({"detail": "App user not found"}, status=404)
-    except User.DoesNotExist:
-        return Response({"detail": "App user not found"}, status=404)
-
-
-    return Response(UserSerializer(app_user).data, status=200)
-
-
 class EMAView(APIView):
     permission_classes = [IsAuthenticated]
 
