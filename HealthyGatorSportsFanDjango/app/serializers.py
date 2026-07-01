@@ -129,7 +129,45 @@ class TelemetryJITAILogSerializer(serializers.Serializer):
     trigger_reason = serializers.CharField(max_length=128)
     hr_at_trigger = serializers.IntegerField(min_value=0, required=False, allow_null=True)
     stress_at_trigger = serializers.IntegerField(min_value=0, max_value=100, required=False, allow_null=True)
+    ema = serializers.IntegerField(required=False, allow_null=True)
+    observed_mssd = serializers.FloatField(required=False, allow_null=True)
+    send_prompt = serializers.BooleanField(required=False, default=True)
     status = serializers.ChoiceField(choices=JITAILog.STATUS_CHOICES, required=False, default='delivered')
+
+
+class TelemetryPhoneEventSerializer(serializers.Serializer):
+    session_id = serializers.CharField(max_length=64)
+    event_type = serializers.ChoiceField(choices=PhoneTelemetry._meta.get_field('event_type').choices)
+    occurred_at = serializers.DateTimeField()
+    game_clock_state = serializers.ChoiceField(
+        choices=PhoneTelemetry._meta.get_field('game_clock_state').choices,
+        required=False,
+        default='pre',
+    )
+    screen_name = serializers.CharField(max_length=64, required=False, allow_null=True, allow_blank=True)
+    latency_ms = serializers.IntegerField(required=False, allow_null=True)
+    metadata = serializers.JSONField(required=False, allow_null=True)
+
+    def validate_metadata(self, value):
+        if value is None:
+            return value
+        for item in value.values():
+            if isinstance(item, str) and len(item) > 50:
+                raise serializers.ValidationError(
+                    "metadata string values must not exceed 50 characters"
+                )
+        return value
+
+
+class TelemetryEngagementEventSerializer(serializers.Serializer):
+    jitai_log = serializers.IntegerField(required=False, allow_null=True)
+    event_type = serializers.ChoiceField(choices=EngagementLog._meta.get_field('event_type').choices)
+    occurred_at = serializers.DateTimeField()
+    game_clock_state = serializers.ChoiceField(
+        choices=EngagementLog._meta.get_field('game_clock_state').choices,
+        required=False,
+        default='pre',
+    )
 
 
 class TelemetryIngestSerializer(serializers.Serializer):
@@ -139,6 +177,8 @@ class TelemetryIngestSerializer(serializers.Serializer):
     stress_samples = TelemetryStressSampleSerializer(many=True, required=False, default=list)
     emas = TelemetryEMASerializer(many=True, required=False, default=list)
     jitai_logs = TelemetryJITAILogSerializer(many=True, required=False, default=list)
+    phone_events = TelemetryPhoneEventSerializer(many=True, required=False, default=list)
+    engagement_events = TelemetryEngagementEventSerializer(many=True, required=False, default=list)
 
 
 

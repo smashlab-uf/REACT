@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 # For accessing environment variables
 import os
 import dj_database_url
+import sentry_sdk
 
 # For accessing environment variables from your .env file
 from dotenv import load_dotenv
@@ -40,6 +41,15 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
+
+SENTRY_DSN = os.getenv('SENTRY_DSN')
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        send_default_pii=False,
+        traces_sample_rate=float(os.getenv('SENTRY_TRACES_SAMPLE_RATE', '0.1')),
+        environment=os.getenv('SENTRY_ENVIRONMENT', 'production' if not DEBUG else 'development'),
+    )
 
 ALLOWED_HOSTS = [
     'healthygatorsportsfan-84ee3c84673f.herokuapp.com',

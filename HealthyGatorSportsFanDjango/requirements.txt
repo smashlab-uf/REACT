@@ -30,3 +30,6 @@ redis==5.2.1
 drf-yasg==1.21.8
 django-redis==5.4.0
 pandas==2.2.3
+sentry-sdk==2.63.0
+dj-database-url==2.3.0
+whitenoise==6.8.2

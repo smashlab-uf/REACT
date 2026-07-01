@@ -346,6 +346,8 @@ class TelemetryIngestView(APIView):
             "stress_samples": 0,
             "emas": 0,
             "jitai_logs": 0,
+            "phone_events": 0,
+            "engagement_events": 0,
         }
 
         for sample in data.get("heart_rate_samples", []):
@@ -361,8 +363,34 @@ class TelemetryIngestView(APIView):
             created_counts["emas"] += 1
 
         for log in data.get("jitai_logs", []):
+            ema_id = log.pop("ema", None)
+            if ema_id is not None:
+                try:
+                    log["ema"] = EMA.objects.get(id=ema_id, user=user)
+                except EMA.DoesNotExist:
+                    return Response(
+                        {"error": f"EMA {ema_id} not found for user."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
             JITAILog.objects.create(user=user, **log)
             created_counts["jitai_logs"] += 1
+
+        for event in data.get("phone_events", []):
+            PhoneTelemetry.objects.create(user=user, **event)
+            created_counts["phone_events"] += 1
+
+        for event in data.get("engagement_events", []):
+            jitai_log_id = event.pop("jitai_log", None)
+            if jitai_log_id is not None:
+                try:
+                    event["jitai_log"] = JITAILog.objects.get(id=jitai_log_id, user=user)
+                except JITAILog.DoesNotExist:
+                    return Response(
+                        {"error": f"JITAI log {jitai_log_id} not found for user."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            EngagementLog.objects.create(user=user, **event)
+            created_counts["engagement_events"] += 1
 
         return Response(
             {

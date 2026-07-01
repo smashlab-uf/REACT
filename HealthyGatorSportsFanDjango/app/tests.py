@@ -7,7 +7,10 @@ from rest_framework import status as http_status
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from app.models import User, UserData, WearableDevice, HeartRateSample, StressSample, EMA, JITAILog
+from app.models import (
+    EMA, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
+    StressSample, User, UserData, WearableDevice,
+)
 from app.serializers import (
     UserSerializer, UserDataSerializer,
     WearableDeviceSerializer, HeartRateSampleSerializer,
@@ -968,6 +971,26 @@ class TelemetryIngestViewTests(TestCase):
                     'trigger_reason': 'hr_elevated+stress_high',
                     'hr_at_trigger': 105,
                     'stress_at_trigger': 72,
+                    'observed_mssd': 0.72,
+                    'send_prompt': True,
+                }
+            ],
+            'phone_events': [
+                {
+                    'session_id': 'SESSION_ABC',
+                    'event_type': 'draft_started',
+                    'occurred_at': '2026-06-12T14:04:00Z',
+                    'game_clock_state': 'live',
+                    'screen_name': 'game_thread',
+                    'latency_ms': 120,
+                    'metadata': {'source': 'demo'},
+                }
+            ],
+            'engagement_events': [
+                {
+                    'event_type': 'notification_tapped',
+                    'occurred_at': '2026-06-12T14:05:00Z',
+                    'game_clock_state': 'live',
                 }
             ],
         }
@@ -981,8 +1004,14 @@ class TelemetryIngestViewTests(TestCase):
         self.assertEqual(StressSample.objects.count(), 1)
         self.assertEqual(EMA.objects.count(), 1)
         self.assertEqual(JITAILog.objects.count(), 1)
+        self.assertEqual(PhoneTelemetry.objects.count(), 1)
+        self.assertEqual(EngagementLog.objects.count(), 1)
         self.assertEqual(response.data['counts']['heart_rate_samples'], 1)
         self.assertEqual(response.data['counts']['stress_samples'], 1)
+        self.assertEqual(response.data['counts']['phone_events'], 1)
+        self.assertEqual(response.data['counts']['engagement_events'], 1)
+        self.assertAlmostEqual(JITAILog.objects.get().observed_mssd, 0.72)
+        self.assertTrue(JITAILog.objects.get().send_prompt)
 
     def test_missing_user_id_returns_400(self):
         payload = self._payload()
