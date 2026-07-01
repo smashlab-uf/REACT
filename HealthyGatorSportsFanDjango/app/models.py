@@ -11,18 +11,13 @@ class User(models.Model):
     last_name = models.CharField(max_length=100, default="")
     birthdate = models.DateField()
     gender = models.CharField(max_length=10, choices=[('male', 'Male'), ('female', 'Female'), ('other', 'Other')])
-    height_feet = models.CharField(max_length=10, default="")
-    height_inches = models.CharField(max_length=10, default="")
-    goal_weight = models.DecimalField(max_digits=4, decimal_places=1, null=True, blank=True)
-    goal_to_lose_weight = models.BooleanField(default=False)
-    goal_to_feel_better = models.BooleanField(default=False)
     password = models.CharField(max_length=128, blank=True, null=True)
     push_token = models.CharField(max_length=128, blank=True, null=True)
     is_enrolled = models.BooleanField(default=False)
     enrolled_at = models.DateTimeField(null=True, blank=True)
 
     USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['user_id', 'first_name', 'last_name', 'birthdate', 'gender', 'height_feet', 'height_inches', 'goal_weight', 'goal_to_lose_weight', 'goal_to_feel_better', 'password']
+    REQUIRED_FIELDS = ['user_id', 'first_name', 'last_name', 'birthdate', 'gender', 'password']
 
     def __str__(self):
         return f"User ID: {self.user_id}, Email: {self.email}"

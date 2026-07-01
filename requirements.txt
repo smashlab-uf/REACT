@@ -12,6 +12,8 @@ git-filter-repo==2.45.0
 gunicorn==23.0.0
 idna==3.10
 packaging==24.2
+pandas==2.2.3
+prompt_toolkit==3.0.48
 psycopg-binary==3.2.13
 psycopg2==2.9.9
 pydantic==1.10.19

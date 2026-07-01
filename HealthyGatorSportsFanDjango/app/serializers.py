@@ -10,27 +10,20 @@ import logging
 
 class UserSerializer(serializers.ModelSerializer):
 
-    password = serializers.CharField(write_only=True, required=False, allow_blank=False, min_length=8)
+    password = serializers.CharField(write_only=True, required=True, allow_blank=False, min_length=8)
 
     class Meta:
         model = User
         fields = [
             'user_id', 'email', 'password', 'first_name', 'last_name',
-            'birthdate', 'gender', 'height_feet', 'height_inches',
-            'goal_weight', 'goal_to_lose_weight', 'goal_to_feel_better',
-            'push_token', 'is_enrolled', 'enrolled_at',
+            'birthdate', 'gender', 'push_token', 'is_enrolled', 'enrolled_at',
         ]
         read_only_fields = ('user_id',)
         extra_kwargs = {
-            'birthdate': {'required': False, 'default': "2000-01-01"},
-            'gender': {'required': False, 'default': "Other"},
+            'birthdate':  {'required': False, 'default': '2000-01-01'},
+            'gender':     {'required': False, 'default': 'other'},
             'first_name': {'required': False, 'default': ''},
-            'last_name': {'required': False, 'default': ''},
-            'height_feet': {'required': False, 'default': 0},
-            'height_inches': {'required': False, 'default': 0},
-            'goal_weight': {'required': False, 'default': 0.0},
-            'goal_to_lose_weight': {'required': False, 'default': 0.0},
-            'goal_to_feel_better': {'required': False, 'default': 0.0},
+            'last_name':  {'required': False, 'default': ''},
         }
 
     def create(self, validated_data):
@@ -84,7 +77,7 @@ class EMASerializer(serializers.ModelSerializer):
     class Meta:
         model = EMA
         fields = ['id', 'user', 'prompt_id', 'sent_at', 'responded_at', 'status', 'mood', 'stress', 'energy']
-        read_only_fields = ('id', 'sent_at')
+        read_only_fields = ('id', 'sent_at', 'user', 'responded_at', 'status')
         extra_kwargs = {
             'mood':   {'min_value': 1, 'max_value': 7},
             'stress': {'min_value': 1, 'max_value': 7},
@@ -196,7 +189,7 @@ class PhoneTelemetrySerializer(serializers.ModelSerializer):
             'id', 'user', 'session_id', 'event_type', 'occurred_at',
             'recorded_at', 'game_clock_state', 'screen_name', 'latency_ms', 'metadata',
         ]
-        read_only_fields = ('id', 'recorded_at', 'game_clock_state')
+        read_only_fields = ('id', 'recorded_at', 'game_clock_state', 'user')
 
     def validate_metadata(self, value):
         if value is None:
@@ -216,4 +209,4 @@ class EngagementLogSerializer(serializers.ModelSerializer):
             'id', 'user', 'jitai_log', 'event_type', 'occurred_at',
             'recorded_at', 'game_clock_state',
         ]
-        read_only_fields = ('id', 'recorded_at', 'game_clock_state')
+        read_only_fields = ('id', 'recorded_at', 'game_clock_state', 'user')
