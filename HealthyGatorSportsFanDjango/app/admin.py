@@ -2,7 +2,7 @@ from django.contrib import admin
 
 from .models import (
     EMA, EngagementLog, HeartRateSample, JITAILog,
-    PhoneTelemetry, StressSample, User, UserData, WearableDevice,
+    PhoneTelemetry, StressSample, User, WearableDevice,
 )
 
 
@@ -54,28 +54,16 @@ class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
         return bool(obj.push_token)
 
 
-@admin.register(UserData)
-class UserDataAdmin(ReadableAdminMixin, admin.ModelAdmin):
-    list_display = ("data_id", "user", "timestamp")
-    list_filter = ("timestamp",)
-    search_fields = ("user__email", "user__first_name", "user__last_name")
-    date_hierarchy = "timestamp"
-    ordering = ("-timestamp",)
-    autocomplete_fields = ("user",)
-
-
-
 @admin.register(WearableDevice)
 class WearableDeviceAdmin(ReadableAdminMixin, admin.ModelAdmin):
     list_display = (
         "user",
         "labfront_participant_id",
-        "device_name",
         "is_active",
         "last_synced_at",
     )
     list_filter = ("is_active", "last_synced_at")
-    search_fields = ("user__email", "labfront_participant_id", "device_name")
+    search_fields = ("user__email", "labfront_participant_id")
     ordering = ("user__email",)
     autocomplete_fields = ("user",)
 

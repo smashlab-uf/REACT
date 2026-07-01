@@ -9,10 +9,10 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from app.models import (
     EMA, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
-    StressSample, User, UserData, WearableDevice,
+    StressSample, User, WearableDevice,
 )
 from app.serializers import (
-    UserSerializer, UserDataSerializer,
+    UserSerializer,
     WearableDeviceSerializer, HeartRateSampleSerializer,
     StressSampleSerializer, EMASerializer, JITAILogSerializer,
 )
@@ -318,9 +318,20 @@ class UserUpdateViewTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password('newpassword99'))
 
-    def test_nonexistent_user_returns_404(self):
-        response = self.client.put('/user/99999/', {'first_name': 'Ghost'}, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
+    def test_cannot_update_other_users_profile_returns_403(self):
+        other = make_user(email='other@example.com')
+        response = self.client.put(f'/user/{other.user_id}/', {'first_name': 'Hacker'}, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+    def test_staff_can_update_any_profile(self):
+        other = make_user(email='target@example.com')
+        auth_user, _ = AuthUser.objects.get_or_create(
+            username=self.user.email, defaults={'email': self.user.email}
+        )
+        auth_user.is_staff = True
+        auth_user.save()
+        response = self.client.put(f'/user/{other.user_id}/', {'first_name': 'Admin'}, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------
@@ -398,54 +409,6 @@ class UserLoginViewTests(TestCase):
     def test_missing_password_returns_400(self):
         response = self.client.post('/user/login/', {'email': 'gator@ufl.edu'}, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
-
-
-# ---------------------------------------------------------------------------
-# API: POST /userdata/<id>/ — CreateUserDataView
-# ---------------------------------------------------------------------------
-
-@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class CreateUserDataViewTests(TestCase):
-
-    def setUp(self):
-        self.client = APIClient()
-        self.user = make_user()
-
-    def test_valid_payload_returns_201_with_data_id(self):
-        response = self.client.post(f'/userdata/{self.user.user_id}/', {}, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        self.assertIn('data_id', response.data)
-
-    def test_entry_is_persisted_to_database(self):
-        self.client.post(f'/userdata/{self.user.user_id}/', {}, format='json')
-        self.assertEqual(UserData.objects.filter(user=self.user).count(), 1)
-
-    def test_unknown_user_returns_404_not_500(self):
-        response = self.client.post('/userdata/99999/', {}, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
-
-
-# ---------------------------------------------------------------------------
-# API: GET /userdata/latest/<id>/ — LatestUserDataView
-# ---------------------------------------------------------------------------
-
-@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class LatestUserDataViewTests(TestCase):
-
-    def setUp(self):
-        self.client = APIClient()
-        self.user = make_user()
-
-    def test_returns_most_recent_entry(self):
-        first = UserData.objects.create(user=self.user)
-        second = UserData.objects.create(user=self.user)
-        response = self.client.get(f'/userdata/latest/{self.user.user_id}/')
-        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(response.data['data_id'], second.data_id)
-
-    def test_user_with_no_data_returns_404(self):
-        response = self.client.get(f'/userdata/latest/{self.user.user_id}/')
-        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
 
 
 # ---------------------------------------------------------------------------
@@ -793,7 +756,6 @@ class WearableDeviceSerializerTests(TestCase):
         data = {
             'user': user.user_id,
             'labfront_participant_id': 'LABFRONT001',
-            'device_name': 'Garmin Vivoactive 6',
         }
         serializer = WearableDeviceSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
@@ -941,7 +903,6 @@ class TelemetryIngestViewTests(TestCase):
             'user_id': self.user.user_id,
             'wearable_device': {
                 'labfront_participant_id': 'LABFRONT-001',
-                'device_name': 'Garmin Vivoactive 6',
                 'is_active': True,
             },
             'heart_rate_samples': [
@@ -1317,7 +1278,6 @@ class WearableEndpointTests(TestCase):
         response = self.client.post('/wearable/', {
             'user': self.user.user_id,
             'labfront_participant_id': 'LABFRONT_001',
-            'device_name': 'Garmin Vivoactive 6',
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         self.assertTrue(WearableDevice.objects.filter(user=self.user).exists())
@@ -1341,23 +1301,23 @@ class WearableEndpointTests(TestCase):
         response = self.client.get(f'/wearable/{self.user.user_id}/')
         self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
 
-    def test_patch_updates_device_name(self):
+    def test_patch_updates_is_active(self):
         WearableDevice.objects.create(
             user=self.user, labfront_participant_id='LABFRONT_001'
         )
         response = self.client.patch(
             f'/wearable/{self.user.user_id}/',
-            {'device_name': 'Garmin Vivoactive 6 Pro'},
+            {'is_active': False},
             format='json',
         )
         self.assertEqual(response.status_code, http_status.HTTP_200_OK)
         device = WearableDevice.objects.get(user=self.user)
-        self.assertEqual(device.device_name, 'Garmin Vivoactive 6 Pro')
+        self.assertFalse(device.is_active)
 
     def test_patch_nonexistent_device_returns_404(self):
         response = self.client.patch(
             f'/wearable/{self.user.user_id}/',
-            {'device_name': 'X'},
+            {'is_active': False},
             format='json',
         )
         self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
@@ -1685,7 +1645,7 @@ class WearableEndpointIDORTests(TestCase):
         WearableDevice.objects.create(user=other_user, labfront_participant_id='LABFRONT_OTHER2')
         response = self.client.patch(
             f'/wearable/{other_user.user_id}/',
-            {'device_name': 'Hacked'},
+            {'is_active': False},
             format='json',
         )
         self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
@@ -2141,3 +2101,88 @@ class EvaluateJITAITriggersTests(TestCase):
             self.assertNotEqual(log.prompt_id, '')
         else:
             self.assertEqual(log.prompt_id, '')
+
+
+# ---------------------------------------------------------------------------
+# Notification service: send_jitai_prompt
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class SendJITAIPromptTests(TestCase):
+
+    def _make_user_with_token(self, email='notify@ufl.edu'):
+        return make_user(email=email, push_token='ExponentPushToken[test123]')
+
+    def _make_log(self, user, prompt_id='TEMPLATE_001'):
+        return JITAILog.objects.create(
+            user=user,
+            prompt_id=prompt_id,
+            trigger_reason='prompt sent',
+        )
+
+    @patch('app.notification_service.PushClient')
+    def test_push_payload_includes_type_prompt_id_and_jitai_log_id(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        user = self._make_user_with_token()
+        log = self._make_log(user)
+        MockPushClient.return_value.publish.return_value = MagicMock()
+
+        send_jitai_prompt(user, log)
+
+        message = MockPushClient.return_value.publish.call_args[0][0]
+        self.assertEqual(message.data['type'], 'ema_prompt')
+        self.assertEqual(message.data['prompt_id'], log.prompt_id)
+        self.assertEqual(message.data['jitai_log_id'], log.pk)
+
+    @patch('app.notification_service.PushClient')
+    def test_no_push_token_returns_false_without_calling_expo(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        user = make_user(email='notoken@ufl.edu')
+        log = self._make_log(user)
+
+        result = send_jitai_prompt(user, log)
+
+        self.assertFalse(result)
+        MockPushClient.assert_not_called()
+
+    @patch('app.notification_service.PushClient')
+    def test_successful_push_returns_true(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        user = self._make_user_with_token()
+        log = self._make_log(user)
+        MockPushClient.return_value.publish.return_value = MagicMock()
+
+        result = send_jitai_prompt(user, log)
+
+        self.assertTrue(result)
+
+    @patch('app.notification_service.PushClient')
+    def test_device_not_registered_clears_push_token_and_marks_failed(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        from exponent_server_sdk import DeviceNotRegisteredError
+        user = self._make_user_with_token()
+        log = self._make_log(user)
+        mock_response = MagicMock()
+        mock_response.validate_response.side_effect = DeviceNotRegisteredError(MagicMock())
+        MockPushClient.return_value.publish.return_value = mock_response
+
+        result = send_jitai_prompt(user, log)
+
+        self.assertFalse(result)
+        user.refresh_from_db()
+        self.assertIsNone(user.push_token)
+        log.refresh_from_db()
+        self.assertEqual(log.status, 'failed')
+
+    @patch('app.notification_service.PushClient')
+    def test_push_error_marks_log_as_failed_and_returns_false(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        user = self._make_user_with_token()
+        log = self._make_log(user)
+        MockPushClient.return_value.publish.side_effect = Exception('network error')
+
+        result = send_jitai_prompt(user, log)
+
+        self.assertFalse(result)
+        log.refresh_from_db()
+        self.assertEqual(log.status, 'failed')
