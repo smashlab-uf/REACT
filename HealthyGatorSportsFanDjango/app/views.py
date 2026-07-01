@@ -125,6 +125,8 @@ class CreateUserView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 class UserUpdateView(APIView):
+    permission_classes = [IsAuthenticated]
+
     @swagger_auto_schema(operation_summary="Update user", operation_description="Update an existing user in the database", request_body=UserSerializer)
     def put(self, request, user_id):
         try:
@@ -346,6 +348,8 @@ class UserLoginView(APIView):
     
 
 class TelemetryIngestView(APIView):
+    permission_classes = [IsAuthenticated]
+
     @swagger_auto_schema(
         operation_summary="Ingest telemetry",
         operation_description=(
@@ -576,10 +580,13 @@ class EMAView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        app_user = _get_app_user(request)
+        if app_user is None:
+            return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
         serializer = EMASerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        ema = serializer.save()
+        ema = serializer.save(user=app_user)
         if ema.mood is not None and ema.stress is not None and ema.energy is not None:
             ema.status = 'completed'
             ema.responded_at = django_timezone.now()
@@ -654,10 +661,13 @@ class PhoneTelemetryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        app_user = _get_app_user(request)
+        if app_user is None:
+            return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
         serializer = PhoneTelemetrySerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        event = serializer.save(game_clock_state=get_game_clock_state())
+        event = serializer.save(user=app_user, game_clock_state=get_game_clock_state())
         return Response(PhoneTelemetrySerializer(event).data, status=status.HTTP_201_CREATED)
 
 
@@ -665,8 +675,11 @@ class EngagementLogView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        app_user = _get_app_user(request)
+        if app_user is None:
+            return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
         serializer = EngagementLogSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        log = serializer.save(game_clock_state=get_game_clock_state())
+        log = serializer.save(user=app_user, game_clock_state=get_game_clock_state())
         return Response(EngagementLogSerializer(log).data, status=status.HTTP_201_CREATED)

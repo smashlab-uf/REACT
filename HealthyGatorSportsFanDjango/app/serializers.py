@@ -77,7 +77,7 @@ class EMASerializer(serializers.ModelSerializer):
     class Meta:
         model = EMA
         fields = ['id', 'user', 'prompt_id', 'sent_at', 'responded_at', 'status', 'mood', 'stress', 'energy']
-        read_only_fields = ('id', 'sent_at')
+        read_only_fields = ('id', 'sent_at', 'user', 'responded_at', 'status')
         extra_kwargs = {
             'mood':   {'min_value': 1, 'max_value': 7},
             'stress': {'min_value': 1, 'max_value': 7},
@@ -149,7 +149,7 @@ class PhoneTelemetrySerializer(serializers.ModelSerializer):
             'id', 'user', 'session_id', 'event_type', 'occurred_at',
             'recorded_at', 'game_clock_state', 'screen_name', 'latency_ms', 'metadata',
         ]
-        read_only_fields = ('id', 'recorded_at', 'game_clock_state')
+        read_only_fields = ('id', 'recorded_at', 'game_clock_state', 'user')
 
     def validate_metadata(self, value):
         if value is None:
@@ -169,4 +169,4 @@ class EngagementLogSerializer(serializers.ModelSerializer):
             'id', 'user', 'jitai_log', 'event_type', 'occurred_at',
             'recorded_at', 'game_clock_state',
         ]
-        read_only_fields = ('id', 'recorded_at', 'game_clock_state')
+        read_only_fields = ('id', 'recorded_at', 'game_clock_state', 'user')

@@ -877,7 +877,6 @@ class EMASerializerTests(TestCase):
     def test_serializer_creates_ema(self):
         user = make_user()
         data = {
-            'user': user.user_id,
             'prompt_id': 'PROMPT_001',
             'mood': 5,
             'energy': 4,
@@ -885,20 +884,19 @@ class EMASerializerTests(TestCase):
         }
         serializer = EMASerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        ema = serializer.save()
+        ema = serializer.save(user=user)
         self.assertEqual(ema.mood, 5)
         self.assertEqual(ema.status, 'pending')
 
     def test_sent_at_is_read_only(self):
         user = make_user()
         data = {
-            'user': user.user_id,
             'prompt_id': 'PROMPT_001',
             'sent_at': '2020-01-01T00:00:00Z',
         }
         serializer = EMASerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        ema = serializer.save()
+        ema = serializer.save(user=user)
         self.assertNotEqual(str(ema.sent_at.year), '2020')
 
 
@@ -946,8 +944,8 @@ class JITAILogSerializerTests(TestCase):
 class TelemetryIngestViewTests(TestCase):
 
     def setUp(self):
-        self.client = APIClient()
         self.user = make_user(email='telemetry@example.com')
+        self.client = authenticated_client(self.user)
 
     def _payload(self):
         return {
@@ -1174,9 +1172,8 @@ class EngagementLogModelTests(TestCase):
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class PhoneTelemetrySerializerTests(TestCase):
 
-    def _base_data(self, user):
+    def _base_data(self):
         return {
-            'user': user.user_id,
             'session_id': 'SESSION_001',
             'event_type': 'draft_submitted',
             'occurred_at': '2026-09-01T15:00:00Z',
@@ -1186,16 +1183,15 @@ class PhoneTelemetrySerializerTests(TestCase):
     def test_serializer_creates_event_with_integer_metadata(self):
         from app.serializers import PhoneTelemetrySerializer
         user = make_user()
-        serializer = PhoneTelemetrySerializer(data=self._base_data(user))
+        serializer = PhoneTelemetrySerializer(data=self._base_data())
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        event = serializer.save()
+        event = serializer.save(user=user, game_clock_state='pre')
         self.assertEqual(event.event_type, 'draft_submitted')
         self.assertEqual(event.metadata['keystroke_count'], 42)
 
     def test_irb_violation_long_string_returns_validation_error(self):
         from app.serializers import PhoneTelemetrySerializer
-        user = make_user()
-        data = self._base_data(user)
+        data = self._base_data()
         data['metadata'] = {'text': 'x' * 51}
         serializer = PhoneTelemetrySerializer(data=data)
         self.assertFalse(serializer.is_valid())
@@ -1203,8 +1199,7 @@ class PhoneTelemetrySerializerTests(TestCase):
 
     def test_irb_allows_string_under_50_chars(self):
         from app.serializers import PhoneTelemetrySerializer
-        user = make_user()
-        data = self._base_data(user)
+        data = self._base_data()
         data['metadata'] = {'label': 'submit'}
         serializer = PhoneTelemetrySerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
@@ -1212,21 +1207,21 @@ class PhoneTelemetrySerializerTests(TestCase):
     def test_recorded_at_is_read_only(self):
         from app.serializers import PhoneTelemetrySerializer
         user = make_user()
-        data = self._base_data(user)
+        data = self._base_data()
         data['recorded_at'] = '2020-01-01T00:00:00Z'
         serializer = PhoneTelemetrySerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        event = serializer.save()
+        event = serializer.save(user=user, game_clock_state='pre')
         self.assertNotEqual(str(event.recorded_at.year), '2020')
 
     def test_game_clock_state_is_read_only(self):
         from app.serializers import PhoneTelemetrySerializer
         user = make_user()
-        data = self._base_data(user)
+        data = self._base_data()
         data['game_clock_state'] = 'live'
         serializer = PhoneTelemetrySerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        event = serializer.save()
+        event = serializer.save(user=user, game_clock_state='pre')
         self.assertEqual(event.game_clock_state, 'pre')
 
 
@@ -1241,13 +1236,12 @@ class EngagementLogSerializerTests(TestCase):
         from app.serializers import EngagementLogSerializer
         user = make_user()
         data = {
-            'user': user.user_id,
             'event_type': 'ema_completed',
             'occurred_at': '2026-09-01T15:05:00Z',
         }
         serializer = EngagementLogSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        log = serializer.save()
+        log = serializer.save(user=user, game_clock_state='pre')
         self.assertEqual(log.event_type, 'ema_completed')
         self.assertIsNone(log.jitai_log)
 
@@ -1258,14 +1252,13 @@ class EngagementLogSerializerTests(TestCase):
             user=user, prompt_id='T1', trigger_reason='hr_elevated'
         )
         data = {
-            'user': user.user_id,
             'jitai_log': jitai.id,
             'event_type': 'notification_tapped',
             'occurred_at': '2026-09-01T15:05:00Z',
         }
         serializer = EngagementLogSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        log = serializer.save()
+        log = serializer.save(user=user, game_clock_state='pre')
         self.assertEqual(log.jitai_log, jitai)
 
 
@@ -1833,3 +1826,142 @@ class EMASerializerLikertValidationTests(TestCase):
         data['energy'] = 1
         serializer = EMASerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
+
+
+# ---------------------------------------------------------------------------
+# Ownership: EMA user derived from JWT, not body
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMAOwnershipAndReadOnlyTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='ema_own@ufl.edu')
+        self.other = make_user(email='ema_other@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_user_derived_from_token_not_body(self):
+        response = self.client.post('/ema/', {
+            'user': self.other.user_id,
+            'prompt_id': 'ema_v1',
+            'mood': 5,
+            'stress': 3,
+            'energy': 6,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        ema = EMA.objects.get(id=response.data['id'])
+        self.assertEqual(ema.user, self.user)
+
+    def test_post_without_user_in_body_succeeds(self):
+        response = self.client.post('/ema/', {
+            'prompt_id': 'ema_v1',
+            'mood': 5,
+            'stress': 3,
+            'energy': 6,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertEqual(response.data['user'], self.user.user_id)
+
+    def test_cannot_override_status_via_body(self):
+        response = self.client.post('/ema/', {
+            'prompt_id': 'ema_v1',
+            'status': 'expired',
+            'mood': 5,
+            'stress': 3,
+            'energy': 4,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertEqual(response.data['status'], 'completed')
+
+    def test_cannot_override_responded_at_via_body(self):
+        response = self.client.post('/ema/', {
+            'prompt_id': 'ema_v1',
+            'responded_at': '2020-01-01T00:00:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertIsNone(response.data['responded_at'])
+
+
+# ---------------------------------------------------------------------------
+# Ownership: PhoneTelemetry user derived from JWT, not body
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class PhoneTelemetryOwnershipTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='phone_own@ufl.edu')
+        self.other = make_user(email='phone_other@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_user_derived_from_token_not_body(self, mock_gcs):
+        from app.models import PhoneTelemetry
+        response = self.client.post('/telemetry/phone/', {
+            'user': self.other.user_id,
+            'session_id': 'S1',
+            'event_type': 'session_start',
+            'occurred_at': '2025-09-06T20:00:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        event = PhoneTelemetry.objects.get(id=response.data['id'])
+        self.assertEqual(event.user, self.user)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_post_without_user_in_body_succeeds(self, mock_gcs):
+        response = self.client.post('/telemetry/phone/', {
+            'session_id': 'S2',
+            'event_type': 'session_end',
+            'occurred_at': '2025-09-06T20:01:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertEqual(response.data['user'], self.user.user_id)
+
+
+# ---------------------------------------------------------------------------
+# Ownership: EngagementLog user derived from JWT, not body
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EngagementLogOwnershipTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='engage_own@ufl.edu')
+        self.other = make_user(email='engage_other@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_user_derived_from_token_not_body(self, mock_gcs):
+        from app.models import EngagementLog
+        response = self.client.post('/telemetry/engagement/', {
+            'user': self.other.user_id,
+            'event_type': 'ema_opened',
+            'occurred_at': '2025-09-06T20:00:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = EngagementLog.objects.get(id=response.data['id'])
+        self.assertEqual(log.user, self.user)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_post_without_user_in_body_succeeds(self, mock_gcs):
+        response = self.client.post('/telemetry/engagement/', {
+            'event_type': 'ema_dismissed',
+            'occurred_at': '2025-09-06T20:01:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertEqual(response.data['user'], self.user.user_id)
+
+
+# ---------------------------------------------------------------------------
+# Auth: TelemetryIngestView requires authentication
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class TelemetryIngestAuthTests(TestCase):
+
+    def test_ingest_without_auth_returns_401(self):
+        user = make_user(email='ingest_anon@ufl.edu')
+        response = APIClient().post('/telemetry/ingest/', {
+            'user_id': user.user_id,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
