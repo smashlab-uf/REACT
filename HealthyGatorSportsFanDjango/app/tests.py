@@ -941,7 +941,6 @@ class TelemetryIngestViewTests(TestCase):
                     'session_id': 'SESSION_ABC',
                     'event_type': 'draft_started',
                     'occurred_at': '2026-06-12T14:04:00Z',
-                    'game_clock_state': 'live',
                     'screen_name': 'game_thread',
                     'latency_ms': 120,
                     'metadata': {'source': 'demo'},
@@ -951,7 +950,6 @@ class TelemetryIngestViewTests(TestCase):
                 {
                     'event_type': 'notification_tapped',
                     'occurred_at': '2026-06-12T14:05:00Z',
-                    'game_clock_state': 'live',
                 }
             ],
         }
@@ -1022,10 +1020,8 @@ class PhoneTelemetryModelTests(TestCase):
             session_id='SESSION_ABC',
             event_type='draft_started',
             occurred_at=timezone.now(),
-            game_clock_state='live',
         )
         self.assertEqual(event.event_type, 'draft_started')
-        self.assertEqual(event.game_clock_state, 'live')
         self.assertIsNotNone(event.recorded_at)
 
     def test_metadata_is_nullable(self):
@@ -1101,7 +1097,6 @@ class EngagementLogModelTests(TestCase):
             user=user,
             event_type='ema_completed',
             occurred_at=timezone.now(),
-            game_clock_state='live',
         )
         self.assertEqual(log.event_type, 'ema_completed')
         self.assertIsNone(log.jitai_log)
@@ -1161,7 +1156,7 @@ class PhoneTelemetrySerializerTests(TestCase):
         user = make_user()
         serializer = PhoneTelemetrySerializer(data=self._base_data())
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        event = serializer.save(user=user, game_clock_state='pre')
+        event = serializer.save(user=user)
         self.assertEqual(event.event_type, 'draft_submitted')
         self.assertEqual(event.metadata['keystroke_count'], 42)
 
@@ -1187,18 +1182,8 @@ class PhoneTelemetrySerializerTests(TestCase):
         data['recorded_at'] = '2020-01-01T00:00:00Z'
         serializer = PhoneTelemetrySerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        event = serializer.save(user=user, game_clock_state='pre')
+        event = serializer.save(user=user)
         self.assertNotEqual(str(event.recorded_at.year), '2020')
-
-    def test_game_clock_state_is_read_only(self):
-        from app.serializers import PhoneTelemetrySerializer
-        user = make_user()
-        data = self._base_data()
-        data['game_clock_state'] = 'live'
-        serializer = PhoneTelemetrySerializer(data=data)
-        self.assertTrue(serializer.is_valid(), serializer.errors)
-        event = serializer.save(user=user, game_clock_state='pre')
-        self.assertEqual(event.game_clock_state, 'pre')
 
 
 # ---------------------------------------------------------------------------
@@ -1217,7 +1202,7 @@ class EngagementLogSerializerTests(TestCase):
         }
         serializer = EngagementLogSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        log = serializer.save(user=user, game_clock_state='pre')
+        log = serializer.save(user=user)
         self.assertEqual(log.event_type, 'ema_completed')
         self.assertIsNone(log.jitai_log)
 
@@ -1234,7 +1219,7 @@ class EngagementLogSerializerTests(TestCase):
         }
         serializer = EngagementLogSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        log = serializer.save(user=user, game_clock_state='pre')
+        log = serializer.save(user=user)
         self.assertEqual(log.jitai_log, jitai)
 
 
@@ -1515,37 +1500,17 @@ class PhoneTelemetryEndpointTests(TestCase):
             'metadata': {'keystroke_count': 42, 'delete_count': 5},
         }
 
-    @patch('app.views.get_game_clock_state', return_value='live')
-    def test_post_creates_event_and_stamps_game_clock_state(self, mock_gcs):
-        from app.models import PhoneTelemetry
-        response = self.client.post('/telemetry/phone/', self._payload(), format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        event = PhoneTelemetry.objects.get(user=self.user)
-        self.assertEqual(event.game_clock_state, 'live')
-
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_irb_violation_long_string_metadata_returns_400(self, mock_gcs):
+    def test_irb_violation_long_string_metadata_returns_400(self):
         payload = self._payload()
         payload['metadata'] = {'text': 'x' * 51}
         response = self.client.post('/telemetry/phone/', payload, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_client_supplied_game_clock_state_is_ignored(self, mock_gcs):
-        from app.models import PhoneTelemetry
-        payload = self._payload()
-        payload['game_clock_state'] = 'live'
-        response = self.client.post('/telemetry/phone/', payload, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        event = PhoneTelemetry.objects.get(user=self.user)
-        self.assertEqual(event.game_clock_state, 'pre')
-
     def test_post_without_auth_returns_401(self):
         response = APIClient().post('/telemetry/phone/', self._payload(), format='json')
         self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_invalid_event_type_returns_400(self, mock_gcs):
+    def test_invalid_event_type_returns_400(self):
         payload = self._payload()
         payload['event_type'] = 'not_a_real_event'
         response = self.client.post('/telemetry/phone/', payload, format='json')
@@ -1563,21 +1528,7 @@ class EngagementEndpointTests(TestCase):
         self.user = make_user(email='engage@ufl.edu')
         self.client = authenticated_client(self.user)
 
-    @patch('app.views.get_game_clock_state', return_value='live')
-    def test_post_creates_engagement_event_and_stamps_game_clock_state(self, mock_gcs):
-        from app.models import EngagementLog
-        response = self.client.post('/telemetry/engagement/', {
-            'user': self.user.user_id,
-            'event_type': 'ema_completed',
-            'occurred_at': '2026-09-01T15:10:00Z',
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        log = EngagementLog.objects.get(user=self.user)
-        self.assertEqual(log.game_clock_state, 'live')
-        self.assertIsNone(log.jitai_log)
-
-    @patch('app.views.get_game_clock_state', return_value='live')
-    def test_post_with_jitai_log_links_correctly(self, mock_gcs):
+    def test_post_with_jitai_log_links_correctly(self):
         from app.models import EngagementLog
         jitai = JITAILog.objects.create(
             user=self.user, prompt_id='T1', trigger_reason='hr_elevated'
@@ -1600,27 +1551,13 @@ class EngagementEndpointTests(TestCase):
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_invalid_event_type_returns_400(self, mock_gcs):
+    def test_invalid_event_type_returns_400(self):
         response = self.client.post('/telemetry/engagement/', {
             'user': self.user.user_id,
             'event_type': 'not_a_real_event',
             'occurred_at': '2026-09-01T15:10:00Z',
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
-
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_client_supplied_game_clock_state_is_ignored(self, mock_gcs):
-        from app.models import EngagementLog
-        response = self.client.post('/telemetry/engagement/', {
-            'user': self.user.user_id,
-            'event_type': 'ema_opened',
-            'occurred_at': '2026-09-01T15:10:00Z',
-            'game_clock_state': 'live',
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        log = EngagementLog.objects.get(user=self.user)
-        self.assertEqual(log.game_clock_state, 'pre')
 
 
 # ---------------------------------------------------------------------------
@@ -1869,8 +1806,7 @@ class PhoneTelemetryOwnershipTests(TestCase):
         self.other = make_user(email='phone_other@ufl.edu')
         self.client = authenticated_client(self.user)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_user_derived_from_token_not_body(self, mock_gcs):
+    def test_user_derived_from_token_not_body(self):
         from app.models import PhoneTelemetry
         response = self.client.post('/telemetry/phone/', {
             'user': self.other.user_id,
@@ -1882,8 +1818,7 @@ class PhoneTelemetryOwnershipTests(TestCase):
         event = PhoneTelemetry.objects.get(id=response.data['id'])
         self.assertEqual(event.user, self.user)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_post_without_user_in_body_succeeds(self, mock_gcs):
+    def test_post_without_user_in_body_succeeds(self):
         response = self.client.post('/telemetry/phone/', {
             'session_id': 'S2',
             'event_type': 'session_end',
@@ -1905,8 +1840,7 @@ class EngagementLogOwnershipTests(TestCase):
         self.other = make_user(email='engage_other@ufl.edu')
         self.client = authenticated_client(self.user)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_user_derived_from_token_not_body(self, mock_gcs):
+    def test_user_derived_from_token_not_body(self):
         from app.models import EngagementLog
         response = self.client.post('/telemetry/engagement/', {
             'user': self.other.user_id,
@@ -1917,8 +1851,7 @@ class EngagementLogOwnershipTests(TestCase):
         log = EngagementLog.objects.get(id=response.data['id'])
         self.assertEqual(log.user, self.user)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_post_without_user_in_body_succeeds(self, mock_gcs):
+    def test_post_without_user_in_body_succeeds(self):
         response = self.client.post('/telemetry/engagement/', {
             'event_type': 'ema_dismissed',
             'occurred_at': '2025-09-06T20:01:00Z',
