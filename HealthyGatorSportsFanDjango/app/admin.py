@@ -148,8 +148,8 @@ class JITAILogAdmin(ReadableAdminMixin, admin.ModelAdmin):
 
 @admin.register(PhoneTelemetry)
 class PhoneTelemetryAdmin(ReadableAdminMixin, admin.ModelAdmin):
-    list_display = ("id", "user", "session_id", "event_type", "occurred_at", "game_clock_state", "screen_name")
-    list_filter = ("event_type", "game_clock_state", "occurred_at")
+    list_display = ("id", "user", "session_id", "event_type", "occurred_at", "screen_name")
+    list_filter = ("event_type", "occurred_at")
     search_fields = ("user__email", "session_id")
     date_hierarchy = "occurred_at"
     ordering = ("-occurred_at",)
@@ -159,8 +159,8 @@ class PhoneTelemetryAdmin(ReadableAdminMixin, admin.ModelAdmin):
 
 @admin.register(EngagementLog)
 class EngagementLogAdmin(ReadableAdminMixin, admin.ModelAdmin):
-    list_display = ("id", "user", "event_type", "occurred_at", "game_clock_state", "jitai_log")
-    list_filter = ("event_type", "game_clock_state", "occurred_at")
+    list_display = ("id", "user", "event_type", "occurred_at", "jitai_log")
+    list_filter = ("event_type", "occurred_at")
     search_fields = ("user__email",)
     date_hierarchy = "occurred_at"
     ordering = ("-occurred_at",)

@@ -115,13 +115,6 @@ ENGAGEMENT_EVENT_TYPES = (
     ('notification_dismissed', 'Notification Dismissed'),
 )
 
-GAME_CLOCK_STATES = (
-    ('pre', 'Pre-Game'),
-    ('live', 'Live'),
-    ('post', 'Post-Game'),
-)
-
-
 def validate_phone_metadata(value):
     if value is None:
         return
@@ -138,7 +131,6 @@ class PhoneTelemetry(models.Model):
     event_type = models.CharField(max_length=64, choices=PHONE_EVENT_TYPES)
     occurred_at = models.DateTimeField(db_index=True)
     recorded_at = models.DateTimeField(auto_now_add=True)
-    game_clock_state = models.CharField(max_length=16, choices=GAME_CLOCK_STATES, default='pre')
     screen_name = models.CharField(max_length=64, null=True, blank=True)
     latency_ms = models.IntegerField(null=True, blank=True)
     metadata = models.JSONField(null=True, blank=True, validators=[validate_phone_metadata])
@@ -183,7 +175,6 @@ class EngagementLog(models.Model):
     event_type = models.CharField(max_length=64, choices=ENGAGEMENT_EVENT_TYPES)
     occurred_at = models.DateTimeField(db_index=True)
     recorded_at = models.DateTimeField(auto_now_add=True)
-    game_clock_state = models.CharField(max_length=16, choices=GAME_CLOCK_STATES, default='pre')
 
     class Meta:
         ordering = ['-occurred_at']

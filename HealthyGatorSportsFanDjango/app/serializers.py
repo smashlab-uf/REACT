@@ -131,11 +131,6 @@ class TelemetryPhoneEventSerializer(serializers.Serializer):
     session_id = serializers.CharField(max_length=64)
     event_type = serializers.ChoiceField(choices=PhoneTelemetry._meta.get_field('event_type').choices)
     occurred_at = serializers.DateTimeField()
-    game_clock_state = serializers.ChoiceField(
-        choices=PhoneTelemetry._meta.get_field('game_clock_state').choices,
-        required=False,
-        default='pre',
-    )
     screen_name = serializers.CharField(max_length=64, required=False, allow_null=True, allow_blank=True)
     latency_ms = serializers.IntegerField(required=False, allow_null=True)
     metadata = serializers.JSONField(required=False, allow_null=True)
@@ -155,11 +150,6 @@ class TelemetryEngagementEventSerializer(serializers.Serializer):
     jitai_log = serializers.IntegerField(required=False, allow_null=True)
     event_type = serializers.ChoiceField(choices=EngagementLog._meta.get_field('event_type').choices)
     occurred_at = serializers.DateTimeField()
-    game_clock_state = serializers.ChoiceField(
-        choices=EngagementLog._meta.get_field('game_clock_state').choices,
-        required=False,
-        default='pre',
-    )
 
 
 class TelemetryIngestSerializer(serializers.Serializer):
