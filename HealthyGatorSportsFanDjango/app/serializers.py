@@ -169,9 +169,9 @@ class PhoneTelemetrySerializer(serializers.ModelSerializer):
         model = PhoneTelemetry
         fields = [
             'id', 'user', 'session_id', 'event_type', 'occurred_at',
-            'recorded_at', 'game_clock_state', 'screen_name', 'latency_ms', 'metadata',
+            'recorded_at', 'screen_name', 'latency_ms', 'metadata',
         ]
-        read_only_fields = ('id', 'recorded_at', 'game_clock_state', 'user')
+        read_only_fields = ('id', 'recorded_at', 'user')
 
     def validate_metadata(self, value):
         if value is None:
@@ -189,6 +189,6 @@ class EngagementLogSerializer(serializers.ModelSerializer):
         model = EngagementLog
         fields = [
             'id', 'user', 'jitai_log', 'event_type', 'occurred_at',
-            'recorded_at', 'game_clock_state',
+            'recorded_at',
         ]
-        read_only_fields = ('id', 'recorded_at', 'game_clock_state', 'user')
+        read_only_fields = ('id', 'recorded_at', 'user')
