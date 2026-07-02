@@ -357,25 +357,21 @@ class TelemetryIngestView(APIView):
     def post(self, request):
         serializer = TelemetryIngestSerializer(data=request.data)
         if not serializer.is_valid():
+            logger.warning(
+                "telemetry_ingest_invalid_payload",
+                extra={"errors": serializer.errors},
+            )
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         data = serializer.validated_data
         try:
             user = User.objects.get(user_id=data["user_id"])
         except User.DoesNotExist:
-            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        device_payload = data.get("wearable_device") or {}
-        if device_payload:
-            WearableDevice.objects.update_or_create(
-                user=user,
-                defaults={
-                    "labfront_participant_id": device_payload["labfront_participant_id"],
-                    "device_name": device_payload.get("device_name"),
-                    "last_synced_at": device_payload.get("last_synced_at"),
-                    "is_active": device_payload.get("is_active", True),
-                },
+            logger.warning(
+                "telemetry_ingest_unknown_user",
+                extra={"user_id": data.get("user_id")},
             )
+            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
         created_counts = {
             "heart_rate_samples": 0,
@@ -386,47 +382,79 @@ class TelemetryIngestView(APIView):
             "engagement_events": 0,
         }
 
-        for sample in data.get("heart_rate_samples", []):
-            HeartRateSample.objects.create(user=user, **sample)
-            created_counts["heart_rate_samples"] += 1
+        try:
+            device_payload = data.get("wearable_device") or {}
+            if device_payload:
+                WearableDevice.objects.update_or_create(
+                    user=user,
+                    defaults={
+                        "labfront_participant_id": device_payload["labfront_participant_id"],
+                        "device_name": device_payload.get("device_name"),
+                        "last_synced_at": device_payload.get("last_synced_at"),
+                        "is_active": device_payload.get("is_active", True),
+                    },
+                )
 
-        for sample in data.get("stress_samples", []):
-            StressSample.objects.create(user=user, **sample)
-            created_counts["stress_samples"] += 1
+            for sample in data.get("heart_rate_samples", []):
+                HeartRateSample.objects.create(user=user, **sample)
+                created_counts["heart_rate_samples"] += 1
 
-        for ema in data.get("emas", []):
-            EMA.objects.create(user=user, **ema)
-            created_counts["emas"] += 1
+            for sample in data.get("stress_samples", []):
+                StressSample.objects.create(user=user, **sample)
+                created_counts["stress_samples"] += 1
 
-        for log in data.get("jitai_logs", []):
-            ema_id = log.pop("ema", None)
-            if ema_id is not None:
-                try:
-                    log["ema"] = EMA.objects.get(id=ema_id, user=user)
-                except EMA.DoesNotExist:
-                    return Response(
-                        {"error": f"EMA {ema_id} not found for user."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-            JITAILog.objects.create(user=user, **log)
-            created_counts["jitai_logs"] += 1
+            for ema in data.get("emas", []):
+                EMA.objects.create(user=user, **ema)
+                created_counts["emas"] += 1
 
-        for event in data.get("phone_events", []):
-            PhoneTelemetry.objects.create(user=user, **event)
-            created_counts["phone_events"] += 1
+            for log in data.get("jitai_logs", []):
+                ema_id = log.pop("ema", None)
+                if ema_id is not None:
+                    try:
+                        log["ema"] = EMA.objects.get(id=ema_id, user=user)
+                    except EMA.DoesNotExist:
+                        logger.warning(
+                            "telemetry_ingest_unknown_ema",
+                            extra={"user_id": user.user_id, "ema_id": ema_id},
+                        )
+                        return Response(
+                            {"error": f"EMA {ema_id} not found for user."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                JITAILog.objects.create(user=user, **log)
+                created_counts["jitai_logs"] += 1
 
-        for event in data.get("engagement_events", []):
-            jitai_log_id = event.pop("jitai_log", None)
-            if jitai_log_id is not None:
-                try:
-                    event["jitai_log"] = JITAILog.objects.get(id=jitai_log_id, user=user)
-                except JITAILog.DoesNotExist:
-                    return Response(
-                        {"error": f"JITAI log {jitai_log_id} not found for user."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-            EngagementLog.objects.create(user=user, **event)
-            created_counts["engagement_events"] += 1
+            for event in data.get("phone_events", []):
+                PhoneTelemetry.objects.create(user=user, **event)
+                created_counts["phone_events"] += 1
+
+            for event in data.get("engagement_events", []):
+                jitai_log_id = event.pop("jitai_log", None)
+                if jitai_log_id is not None:
+                    try:
+                        event["jitai_log"] = JITAILog.objects.get(id=jitai_log_id, user=user)
+                    except JITAILog.DoesNotExist:
+                        logger.warning(
+                            "telemetry_ingest_unknown_jitai_log",
+                            extra={"user_id": user.user_id, "jitai_log_id": jitai_log_id},
+                        )
+                        return Response(
+                            {"error": f"JITAI log {jitai_log_id} not found for user."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                EngagementLog.objects.create(user=user, **event)
+                created_counts["engagement_events"] += 1
+        except Exception:
+            logger.exception(
+                "telemetry_ingest_failed",
+                extra={"user_id": user.user_id, "counts": created_counts},
+            )
+            raise
+
+        logger.info(
+            "telemetry_ingest_success",
+            extra={"user_id": user.user_id, "counts": created_counts},
+        )
 
         return Response(
             {
