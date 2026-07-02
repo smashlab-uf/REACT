@@ -118,7 +118,11 @@ def send_notification(game_status: str, home_team: str, home_score: int, away_te
 def get_game_clock_state():
     from datetime import datetime, timezone as dt_timezone, timedelta
     current_year = datetime.now(dt_timezone.utc).year
-    games_list = cache.get(f'uf_football_games_{current_year}')
+    try:
+        games_list = cache.get(f'uf_football_games_{current_year}')
+    except Exception:
+        logger.warning('get_game_clock_state: cache unavailable, defaulting to pre')
+        return 'pre'
     if not games_list:
         logger.warning('get_game_clock_state: game cache miss, defaulting to pre')
         return 'pre'
