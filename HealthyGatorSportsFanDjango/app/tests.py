@@ -2135,6 +2135,19 @@ class SendJITAIPromptTests(TestCase):
         self.assertEqual(message.data['jitai_log_id'], log.pk)
 
     @patch('app.notification_service.PushClient')
+    def test_push_payload_is_content_free(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        user = self._make_user_with_token()
+        log = self._make_log(user)
+        MockPushClient.return_value.publish.return_value = MagicMock()
+
+        send_jitai_prompt(user, log)
+
+        message = MockPushClient.return_value.publish.call_args[0][0]
+        self.assertIsNone(getattr(message, 'title', None))
+        self.assertIsNone(getattr(message, 'body', None))
+
+    @patch('app.notification_service.PushClient')
     def test_no_push_token_returns_false_without_calling_expo(self, MockPushClient):
         from app.notification_service import send_jitai_prompt
         user = make_user(email='notoken@ufl.edu')
@@ -2146,15 +2159,34 @@ class SendJITAIPromptTests(TestCase):
         MockPushClient.assert_not_called()
 
     @patch('app.notification_service.PushClient')
-    def test_successful_push_returns_true(self, MockPushClient):
+    def test_invalid_push_token_clears_token_marks_failed_and_does_not_call_expo(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        user = make_user(email='invalid-token@ufl.edu', push_token='not-an-expo-token')
+        log = self._make_log(user)
+
+        result = send_jitai_prompt(user, log)
+
+        self.assertFalse(result)
+        MockPushClient.assert_not_called()
+        user.refresh_from_db()
+        self.assertIsNone(user.push_token)
+        log.refresh_from_db()
+        self.assertEqual(log.status, 'failed')
+
+    @patch('app.notification_service.PushClient')
+    def test_successful_push_returns_true_and_marks_delivered(self, MockPushClient):
         from app.notification_service import send_jitai_prompt
         user = self._make_user_with_token()
         log = self._make_log(user)
+        log.status = 'failed'
+        log.save(update_fields=['status'])
         MockPushClient.return_value.publish.return_value = MagicMock()
 
         result = send_jitai_prompt(user, log)
 
         self.assertTrue(result)
+        log.refresh_from_db()
+        self.assertEqual(log.status, 'delivered')
 
     @patch('app.notification_service.PushClient')
     def test_device_not_registered_clears_push_token_and_marks_failed(self, MockPushClient):
