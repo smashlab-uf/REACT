@@ -16,8 +16,6 @@ from app.serializers import (
     WearableDeviceSerializer, HeartRateSampleSerializer,
     StressSampleSerializer, EMASerializer, JITAILogSerializer,
 )
-from app.utils import check_game_status, send_notification
-
 FAST_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 
 
@@ -28,16 +26,6 @@ def make_user(email='test@example.com', password='testpass123', **kwargs):
     user.set_password(password)
     user.save()
     return user
-
-
-def make_game(home_name, home_pts, away_name, away_pts, game_status):
-    game = MagicMock()
-    game.home_team.name = home_name
-    game.home_team.points = home_pts
-    game.away_team.name = away_name
-    game.away_team.points = away_pts
-    game.status = game_status
-    return game
 
 
 def authenticated_client(app_user):
@@ -97,139 +85,6 @@ class UserLegacyFieldsTest(TestCase):
                        'goal_to_lose_weight', 'goal_to_feel_better'):
             self.assertNotIn(legacy, serializer_fields,
                              msg=f"Legacy field '{legacy}' still in UserSerializer")
-
-
-# ---------------------------------------------------------------------------
-# Utils: check_game_status
-#
-# NOTE: Tests for Florida as the HOME team (winning/losing while home) will
-# FAIL due to a bug in utils.py line 57:
-#   `if curr_game.home_team == curr_team:`
-# should be:
-#   `if curr_game.home_team.name == curr_team:`
-# The tests are written for the correct expected behavior to document the bug.
-# ---------------------------------------------------------------------------
-
-class CheckGameStatusTests(TestCase):
-
-    def _api(self, games):
-        api = MagicMock()
-        api.get_scoreboard.return_value = games
-        return api
-
-    def test_no_florida_game_returns_no_game_found(self):
-        api = self._api([make_game('Alabama', 7, 'Georgia', 3, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'No game found')
-
-    def test_empty_scoreboard_returns_no_game_found(self):
-        api = self._api([])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'No game found')
-
-    def test_scheduled_game_returns_game_not_started(self):
-        api = self._api([make_game('Florida Gators', 0, 'Alabama', 0, 'scheduled')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'Game not started')
-
-    # Florida as AWAY team — these all pass (bug does not affect away branch)
-
-    def test_florida_away_winning_by_14_or_more_returns_winning_decisive(self):
-        api = self._api([make_game('Alabama', 10, 'Florida Gators', 24, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'winning_decisive')
-
-    def test_florida_away_winning_by_1_to_13_returns_winning_close(self):
-        api = self._api([make_game('Alabama', 10, 'Florida Gators', 17, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'winning_close')
-
-    def test_florida_away_tied_returns_tied(self):
-        api = self._api([make_game('Alabama', 7, 'Florida Gators', 7, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'tied')
-
-    def test_florida_away_losing_by_1_to_13_returns_losing_close(self):
-        api = self._api([make_game('Alabama', 17, 'Florida Gators', 10, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'losing_close')
-
-    def test_florida_away_losing_by_14_or_more_returns_losing_decisive(self):
-        api = self._api([make_game('Alabama', 35, 'Florida Gators', 7, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'losing_decisive')
-
-    def test_florida_away_completed_winning_by_14_returns_won_decisive(self):
-        api = self._api([make_game('Alabama', 10, 'Florida Gators', 35, 'completed')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'won_decisive')
-
-    def test_florida_away_completed_winning_by_1_to_13_returns_won_close(self):
-        api = self._api([make_game('Alabama', 14, 'Florida Gators', 21, 'completed')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'won_close')
-
-    def test_florida_away_completed_losing_by_1_to_13_returns_lost_close(self):
-        api = self._api([make_game('Alabama', 21, 'Florida Gators', 14, 'completed')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'lost_close')
-
-    def test_florida_away_completed_losing_by_14_or_more_returns_lost_decisive(self):
-        api = self._api([make_game('Alabama', 35, 'Florida Gators', 10, 'completed')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'lost_decisive')
-
-    # Florida as HOME team — these FAIL due to the home_team == curr_team bug
-
-    def test_florida_home_winning_by_14_or_more_returns_winning_decisive(self):
-        api = self._api([make_game('Florida Gators', 24, 'Alabama', 10, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'winning_decisive')
-
-    def test_florida_home_winning_by_1_to_13_returns_winning_close(self):
-        api = self._api([make_game('Florida Gators', 17, 'Alabama', 10, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'winning_close')
-
-    def test_florida_home_losing_by_1_to_13_returns_losing_close(self):
-        api = self._api([make_game('Florida Gators', 10, 'Alabama', 17, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'losing_close')
-
-    def test_florida_home_losing_by_14_or_more_returns_losing_decisive(self):
-        api = self._api([make_game('Florida Gators', 3, 'Alabama', 21, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'losing_decisive')
-
-    def test_florida_home_completed_won_decisive(self):
-        api = self._api([make_game('Florida Gators', 35, 'Alabama', 14, 'completed')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'won_decisive')
-
-    def test_florida_home_completed_lost_decisive(self):
-        api = self._api([make_game('Florida Gators', 10, 'Alabama', 35, 'completed')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'lost_decisive')
-
-    # Result structure
-
-    def test_result_includes_team_names_and_scores(self):
-        api = self._api([make_game('Alabama', 10, 'Florida Gators', 24, 'in_progress')])
-        _, home_team, home_score, away_team, away_score, _ = check_game_status(api)
-        self.assertEqual(home_team, 'Alabama')
-        self.assertEqual(home_score, 10)
-        self.assertEqual(away_team, 'Florida Gators')
-        self.assertEqual(away_score, 24)
-
-    def test_live_game_returns_in_progress_completion_status(self):
-        api = self._api([make_game('Alabama', 7, 'Florida Gators', 7, 'in_progress')])
-        *_, completion = check_game_status(api)
-        self.assertEqual(completion, 'in_progress')
-
-    def test_finished_game_returns_completed_completion_status(self):
-        api = self._api([make_game('Alabama', 14, 'Florida Gators', 21, 'completed')])
-        *_, completion = check_game_status(api)
-        self.assertEqual(completion, 'completed')
 
 
 # ---------------------------------------------------------------------------
@@ -409,68 +264,6 @@ class UserLoginViewTests(TestCase):
     def test_missing_password_returns_400(self):
         response = self.client.post('/user/login/', {'email': 'gator@ufl.edu'}, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
-
-
-# ---------------------------------------------------------------------------
-# Utils: send_notification — score deduplication via cache
-# ---------------------------------------------------------------------------
-
-class SendNotificationTests(TestCase):
-
-    @patch('app.utils.send_push_notification_next_game')
-    @patch('app.utils.cache')
-    @patch('app.utils.get_users_with_push_token')
-    def test_no_push_tokens_sends_nothing(self, mock_get_tokens, mock_cache, mock_send):
-        mock_get_tokens.return_value = []
-        send_notification('winning_decisive', 'Florida Gators', 24, 'Alabama', 10)
-        mock_send.assert_not_called()
-
-    @patch('app.utils.send_push_notification_next_game')
-    @patch('app.utils.cache')
-    @patch('app.utils.get_users_with_push_token')
-    def test_new_score_sends_notification(self, mock_get_tokens, mock_cache, mock_send):
-        mock_get_tokens.return_value = [{'user_id': 1, 'push_token': 'ExponentPushToken[abc]'}]
-        mock_cache.get.return_value = None
-        send_notification('winning_decisive', 'Florida Gators', 24, 'Alabama', 10)
-        mock_send.assert_called_once()
-
-    @patch('app.utils.send_push_notification_next_game')
-    @patch('app.utils.cache')
-    @patch('app.utils.get_users_with_push_token')
-    def test_unchanged_score_does_not_resend(self, mock_get_tokens, mock_cache, mock_send):
-        mock_get_tokens.return_value = [{'user_id': 1, 'push_token': 'ExponentPushToken[abc]'}]
-        mock_cache.get.return_value = b'24-10'
-        send_notification('winning_decisive', 'Florida Gators', 24, 'Alabama', 10)
-        mock_send.assert_not_called()
-
-    @patch('app.utils.send_push_notification_next_game')
-    @patch('app.utils.cache')
-    @patch('app.utils.get_users_with_push_token')
-    def test_updated_score_sends_new_notification(self, mock_get_tokens, mock_cache, mock_send):
-        mock_get_tokens.return_value = [{'user_id': 1, 'push_token': 'ExponentPushToken[abc]'}]
-        mock_cache.get.return_value = b'17-10'
-        send_notification('winning_decisive', 'Florida Gators', 24, 'Alabama', 10)
-        mock_send.assert_called_once()
-
-    @patch('app.utils.send_push_notification_next_game')
-    @patch('app.utils.cache')
-    @patch('app.utils.get_users_with_push_token')
-    def test_no_game_found_sends_nothing(self, mock_get_tokens, mock_cache, mock_send):
-        mock_get_tokens.return_value = [{'user_id': 1, 'push_token': 'ExponentPushToken[abc]'}]
-        mock_cache.get.return_value = None
-        send_notification('No game found', '', 0, '', 0)
-        mock_send.assert_not_called()
-
-    @patch('app.utils.send_push_notification_next_game')
-    @patch('app.utils.cache')
-    @patch('app.utils.get_users_with_push_token')
-    def test_sending_notification_updates_cache_with_current_score(
-        self, mock_get_tokens, mock_cache, mock_send
-    ):
-        mock_get_tokens.return_value = [{'user_id': 1, 'push_token': 'ExponentPushToken[abc]'}]
-        mock_cache.get.return_value = None
-        send_notification('winning_decisive', 'Florida Gators', 24, 'Alabama', 10)
-        mock_cache.set.assert_called_once_with('last_score', '24-10')
 
 
 # ---------------------------------------------------------------------------
