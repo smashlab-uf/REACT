@@ -16,13 +16,12 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path
-from app.views import index, CreateUserView, poll_cfbd_view, home_tile_view, schedule_view, CreateUserDataView, UserLoginView, LatestUserDataView, UserUpdateView, CheckEmailView, me_view, TelemetryIngestView, WearableDeviceView, EMAView, JITAILogView, HeartRateListView, StressListView, PhoneTelemetryView, EngagementLogView
+from app.views import index, CreateUserView, UserLoginView, UserUpdateView, CheckEmailView, TelemetryIngestView, WearableDeviceView, EMAView, JITAILogView, HeartRateListView, StressListView, PhoneTelemetryView, EngagementLogView
 
 # Import drf-yasg components
-from drf_yasg.views import get_schema_view 
+from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
 from rest_framework import permissions
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 schema_view = get_schema_view(
     openapi.Info( title="Healthy Gator Sports Fan API Viewer", default_version="v1",),
@@ -40,19 +39,11 @@ urlpatterns = [
     path('admin/', admin.site.urls), # Django Admin page (http://127.0.0.1:8000/admin)
     path('', index, name = "index"), # to see database contents for testing (http://127.0.0.1:8000/), see templates -> index.html
     
-    # API endpoints for auth
-    path('auth/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-    path('auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-    path('auth/me/', me_view, name='auth_me'),
-
     # API endpoints for app
     path('user/', CreateUserView.as_view(), name='user-create'), # endpoint for user creation screen
     path('user/<int:user_id>/', UserUpdateView.as_view(), name='update-user'),
     path('user/login/', UserLoginView.as_view(), name='user-login'),
     path('user/checkemail/', CheckEmailView.as_view(), name='check-user-email'),
-    path('userdata/<int:user_id>/', CreateUserDataView.as_view(), name='user-data-create'),
-    path('userdata/latest/<int:user_id>/', LatestUserDataView.as_view(), name='get-latest-user-data'),
     path('wearable/', WearableDeviceView.as_view(), name='wearable-create'),
     path('wearable/<int:user_id>/', WearableDeviceView.as_view(), name='wearable-detail'),
     path('ema/', EMAView.as_view(), name='ema-create'),
@@ -64,10 +55,7 @@ urlpatterns = [
     path('telemetry/stress/<int:user_id>/', StressListView.as_view(), name='telemetry-stress'),
     path('telemetry/phone/', PhoneTelemetryView.as_view(), name='telemetry-phone'),
     path('telemetry/engagement/', EngagementLogView.as_view(), name='telemetry-engagement'),
-    path('poll-cfbd/', poll_cfbd_view, name='poll_cfbd'),
-    path('home-tile/', home_tile_view, name='home_tile_view'),
-    path('schedule-tile/', schedule_view, name='schedule_tile'),
-    
+
     # API endpoint for Swagger
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
 ]

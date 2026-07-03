@@ -2,7 +2,7 @@ from django.contrib import admin
 
 from .models import (
     EMA, EngagementLog, HeartRateSample, JITAILog,
-    PhoneTelemetry, StressSample, User, UserData, WearableDevice,
+    PhoneTelemetry, StressSample, User, WearableDevice,
 )
 
 
@@ -26,25 +26,16 @@ class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
         "first_name",
         "last_name",
         "gender",
-        "goal_weight",
-        "goal_to_lose_weight",
-        "goal_to_feel_better",
         "is_enrolled",
         "has_push_token",
     )
-    list_filter = ("gender", "goal_to_lose_weight", "goal_to_feel_better", "is_enrolled")
+    list_filter = ("gender", "is_enrolled")
     search_fields = ("email", "first_name", "last_name")
     ordering = ("email",)
     readonly_fields = ("password", "enrolled_at")
     fieldsets = (
         ("Profile", {
             "fields": ("email", "first_name", "last_name", "birthdate", "gender"),
-        }),
-        ("Body Metrics", {
-            "fields": ("height_feet", "height_inches", "goal_weight"),
-        }),
-        ("Goals", {
-            "fields": ("goal_to_lose_weight", "goal_to_feel_better"),
         }),
         ("Enrollment", {
             "fields": ("is_enrolled", "enrolled_at"),
@@ -63,28 +54,16 @@ class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
         return bool(obj.push_token)
 
 
-@admin.register(UserData)
-class UserDataAdmin(ReadableAdminMixin, admin.ModelAdmin):
-    list_display = ("data_id", "user", "timestamp")
-    list_filter = ("timestamp",)
-    search_fields = ("user__email", "user__first_name", "user__last_name")
-    date_hierarchy = "timestamp"
-    ordering = ("-timestamp",)
-    autocomplete_fields = ("user",)
-
-
-
 @admin.register(WearableDevice)
 class WearableDeviceAdmin(ReadableAdminMixin, admin.ModelAdmin):
     list_display = (
         "user",
         "labfront_participant_id",
-        "device_name",
         "is_active",
         "last_synced_at",
     )
     list_filter = ("is_active", "last_synced_at")
-    search_fields = ("user__email", "labfront_participant_id", "device_name")
+    search_fields = ("user__email", "labfront_participant_id")
     ordering = ("user__email",)
     autocomplete_fields = ("user",)
 

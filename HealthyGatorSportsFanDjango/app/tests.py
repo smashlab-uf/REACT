@@ -1,3 +1,4 @@
+from datetime import timedelta
 from unittest.mock import patch, MagicMock
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -8,10 +9,10 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from app.models import (
     EMA, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
-    StressSample, User, UserData, WearableDevice,
+    StressSample, User, WearableDevice,
 )
 from app.serializers import (
-    UserSerializer, UserDataSerializer,
+    UserSerializer,
     WearableDeviceSerializer, HeartRateSampleSerializer,
     StressSampleSerializer, EMASerializer, JITAILogSerializer,
 )
@@ -75,6 +76,27 @@ class UserPasswordTests(TestCase):
     def test_no_password_set_returns_false(self):
         user = User(email='a@b.com', birthdate='2000-01-01', gender='male')
         self.assertFalse(user.check_password('anything'))
+
+
+# ---------------------------------------------------------------------------
+# Model: legacy User fields removed
+# ---------------------------------------------------------------------------
+
+class UserLegacyFieldsTest(TestCase):
+
+    def test_no_legacy_health_fields_on_model(self):
+        field_names = {f.name for f in User._meta.get_fields()}
+        for legacy in ('height_feet', 'height_inches', 'goal_weight',
+                       'goal_to_lose_weight', 'goal_to_feel_better'):
+            self.assertNotIn(legacy, field_names,
+                             msg=f"Legacy field '{legacy}' still on User model")
+
+    def test_no_legacy_health_fields_on_serializer(self):
+        serializer_fields = set(UserSerializer().fields.keys())
+        for legacy in ('height_feet', 'height_inches', 'goal_weight',
+                       'goal_to_lose_weight', 'goal_to_feel_better'):
+            self.assertNotIn(legacy, serializer_fields,
+                             msg=f"Legacy field '{legacy}' still in UserSerializer")
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +296,8 @@ class CreateUserViewTests(TestCase):
 class UserUpdateViewTests(TestCase):
 
     def setUp(self):
-        self.client = APIClient()
         self.user = make_user()
+        self.client = authenticated_client(self.user)
 
     def test_update_first_name_returns_200_and_persists(self):
         response = self.client.put(
@@ -296,9 +318,20 @@ class UserUpdateViewTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password('newpassword99'))
 
-    def test_nonexistent_user_returns_404(self):
-        response = self.client.put('/user/99999/', {'first_name': 'Ghost'}, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
+    def test_cannot_update_other_users_profile_returns_403(self):
+        other = make_user(email='other@example.com')
+        response = self.client.put(f'/user/{other.user_id}/', {'first_name': 'Hacker'}, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+    def test_staff_can_update_any_profile(self):
+        other = make_user(email='target@example.com')
+        auth_user, _ = AuthUser.objects.get_or_create(
+            username=self.user.email, defaults={'email': self.user.email}
+        )
+        auth_user.is_staff = True
+        auth_user.save()
+        response = self.client.put(f'/user/{other.user_id}/', {'first_name': 'Admin'}, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------
@@ -376,69 +409,6 @@ class UserLoginViewTests(TestCase):
     def test_missing_password_returns_400(self):
         response = self.client.post('/user/login/', {'email': 'gator@ufl.edu'}, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
-
-
-# ---------------------------------------------------------------------------
-# API: POST /userdata/<id>/ — CreateUserDataView
-# ---------------------------------------------------------------------------
-
-@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class CreateUserDataViewTests(TestCase):
-
-    def setUp(self):
-        self.client = APIClient()
-        self.user = make_user()
-
-    def test_valid_payload_returns_201_with_data_id(self):
-        response = self.client.post(f'/userdata/{self.user.user_id}/', {}, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        self.assertIn('data_id', response.data)
-
-    def test_entry_is_persisted_to_database(self):
-        self.client.post(f'/userdata/{self.user.user_id}/', {}, format='json')
-        self.assertEqual(UserData.objects.filter(user=self.user).count(), 1)
-
-
-# ---------------------------------------------------------------------------
-# API: GET /userdata/latest/<id>/ — LatestUserDataView
-# ---------------------------------------------------------------------------
-
-@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class LatestUserDataViewTests(TestCase):
-
-    def setUp(self):
-        self.client = APIClient()
-        self.user = make_user()
-
-    def test_returns_most_recent_entry(self):
-        first = UserData.objects.create(user=self.user)
-        second = UserData.objects.create(user=self.user)
-        response = self.client.get(f'/userdata/latest/{self.user.user_id}/')
-        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(response.data['data_id'], second.data_id)
-
-    def test_user_with_no_data_returns_404(self):
-        response = self.client.get(f'/userdata/latest/{self.user.user_id}/')
-        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
-
-
-# ---------------------------------------------------------------------------
-# API: GET /auth/me/ — me_view
-# ---------------------------------------------------------------------------
-
-@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class MeViewTests(TestCase):
-
-    def test_authenticated_request_returns_user_profile(self):
-        app_user = make_user(email='me@ufl.edu')
-        client = authenticated_client(app_user)
-        response = client.get('/auth/me/')
-        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
-        self.assertEqual(response.data['email'], 'me@ufl.edu')
-
-    def test_unauthenticated_request_returns_401(self):
-        response = APIClient().get('/auth/me/')
-        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
 
 
 # ---------------------------------------------------------------------------
@@ -786,7 +756,6 @@ class WearableDeviceSerializerTests(TestCase):
         data = {
             'user': user.user_id,
             'labfront_participant_id': 'LABFRONT001',
-            'device_name': 'Garmin Vivoactive 6',
         }
         serializer = WearableDeviceSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
@@ -859,7 +828,6 @@ class EMASerializerTests(TestCase):
     def test_serializer_creates_ema(self):
         user = make_user()
         data = {
-            'user': user.user_id,
             'prompt_id': 'PROMPT_001',
             'mood': 5,
             'energy': 4,
@@ -867,20 +835,19 @@ class EMASerializerTests(TestCase):
         }
         serializer = EMASerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        ema = serializer.save()
+        ema = serializer.save(user=user)
         self.assertEqual(ema.mood, 5)
         self.assertEqual(ema.status, 'pending')
 
     def test_sent_at_is_read_only(self):
         user = make_user()
         data = {
-            'user': user.user_id,
             'prompt_id': 'PROMPT_001',
             'sent_at': '2020-01-01T00:00:00Z',
         }
         serializer = EMASerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        ema = serializer.save()
+        ema = serializer.save(user=user)
         self.assertNotEqual(str(ema.sent_at.year), '2020')
 
 
@@ -928,15 +895,14 @@ class JITAILogSerializerTests(TestCase):
 class TelemetryIngestViewTests(TestCase):
 
     def setUp(self):
-        self.client = APIClient()
         self.user = make_user(email='telemetry@example.com')
+        self.client = authenticated_client(self.user)
 
     def _payload(self):
         return {
             'user_id': self.user.user_id,
             'wearable_device': {
                 'labfront_participant_id': 'LABFRONT-001',
-                'device_name': 'Garmin Vivoactive 6',
                 'is_active': True,
             },
             'heart_rate_samples': [
@@ -1182,9 +1148,8 @@ class EngagementLogModelTests(TestCase):
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class PhoneTelemetrySerializerTests(TestCase):
 
-    def _base_data(self, user):
+    def _base_data(self):
         return {
-            'user': user.user_id,
             'session_id': 'SESSION_001',
             'event_type': 'draft_submitted',
             'occurred_at': '2026-09-01T15:00:00Z',
@@ -1194,16 +1159,15 @@ class PhoneTelemetrySerializerTests(TestCase):
     def test_serializer_creates_event_with_integer_metadata(self):
         from app.serializers import PhoneTelemetrySerializer
         user = make_user()
-        serializer = PhoneTelemetrySerializer(data=self._base_data(user))
+        serializer = PhoneTelemetrySerializer(data=self._base_data())
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        event = serializer.save()
+        event = serializer.save(user=user, game_clock_state='pre')
         self.assertEqual(event.event_type, 'draft_submitted')
         self.assertEqual(event.metadata['keystroke_count'], 42)
 
     def test_irb_violation_long_string_returns_validation_error(self):
         from app.serializers import PhoneTelemetrySerializer
-        user = make_user()
-        data = self._base_data(user)
+        data = self._base_data()
         data['metadata'] = {'text': 'x' * 51}
         serializer = PhoneTelemetrySerializer(data=data)
         self.assertFalse(serializer.is_valid())
@@ -1211,8 +1175,7 @@ class PhoneTelemetrySerializerTests(TestCase):
 
     def test_irb_allows_string_under_50_chars(self):
         from app.serializers import PhoneTelemetrySerializer
-        user = make_user()
-        data = self._base_data(user)
+        data = self._base_data()
         data['metadata'] = {'label': 'submit'}
         serializer = PhoneTelemetrySerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
@@ -1220,21 +1183,21 @@ class PhoneTelemetrySerializerTests(TestCase):
     def test_recorded_at_is_read_only(self):
         from app.serializers import PhoneTelemetrySerializer
         user = make_user()
-        data = self._base_data(user)
+        data = self._base_data()
         data['recorded_at'] = '2020-01-01T00:00:00Z'
         serializer = PhoneTelemetrySerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        event = serializer.save()
+        event = serializer.save(user=user, game_clock_state='pre')
         self.assertNotEqual(str(event.recorded_at.year), '2020')
 
     def test_game_clock_state_is_read_only(self):
         from app.serializers import PhoneTelemetrySerializer
         user = make_user()
-        data = self._base_data(user)
+        data = self._base_data()
         data['game_clock_state'] = 'live'
         serializer = PhoneTelemetrySerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        event = serializer.save()
+        event = serializer.save(user=user, game_clock_state='pre')
         self.assertEqual(event.game_clock_state, 'pre')
 
 
@@ -1249,13 +1212,12 @@ class EngagementLogSerializerTests(TestCase):
         from app.serializers import EngagementLogSerializer
         user = make_user()
         data = {
-            'user': user.user_id,
             'event_type': 'ema_completed',
             'occurred_at': '2026-09-01T15:05:00Z',
         }
         serializer = EngagementLogSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        log = serializer.save()
+        log = serializer.save(user=user, game_clock_state='pre')
         self.assertEqual(log.event_type, 'ema_completed')
         self.assertIsNone(log.jitai_log)
 
@@ -1266,14 +1228,13 @@ class EngagementLogSerializerTests(TestCase):
             user=user, prompt_id='T1', trigger_reason='hr_elevated'
         )
         data = {
-            'user': user.user_id,
             'jitai_log': jitai.id,
             'event_type': 'notification_tapped',
             'occurred_at': '2026-09-01T15:05:00Z',
         }
         serializer = EngagementLogSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        log = serializer.save()
+        log = serializer.save(user=user, game_clock_state='pre')
         self.assertEqual(log.jitai_log, jitai)
 
 
@@ -1317,7 +1278,6 @@ class WearableEndpointTests(TestCase):
         response = self.client.post('/wearable/', {
             'user': self.user.user_id,
             'labfront_participant_id': 'LABFRONT_001',
-            'device_name': 'Garmin Vivoactive 6',
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         self.assertTrue(WearableDevice.objects.filter(user=self.user).exists())
@@ -1341,23 +1301,23 @@ class WearableEndpointTests(TestCase):
         response = self.client.get(f'/wearable/{self.user.user_id}/')
         self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
 
-    def test_patch_updates_device_name(self):
+    def test_patch_updates_is_active(self):
         WearableDevice.objects.create(
             user=self.user, labfront_participant_id='LABFRONT_001'
         )
         response = self.client.patch(
             f'/wearable/{self.user.user_id}/',
-            {'device_name': 'Garmin Vivoactive 6 Pro'},
+            {'is_active': False},
             format='json',
         )
         self.assertEqual(response.status_code, http_status.HTTP_200_OK)
         device = WearableDevice.objects.get(user=self.user)
-        self.assertEqual(device.device_name, 'Garmin Vivoactive 6 Pro')
+        self.assertFalse(device.is_active)
 
     def test_patch_nonexistent_device_returns_404(self):
         response = self.client.patch(
             f'/wearable/{self.user.user_id}/',
-            {'device_name': 'X'},
+            {'is_active': False},
             format='json',
         )
         self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
@@ -1685,7 +1645,7 @@ class WearableEndpointIDORTests(TestCase):
         WearableDevice.objects.create(user=other_user, labfront_participant_id='LABFRONT_OTHER2')
         response = self.client.patch(
             f'/wearable/{other_user.user_id}/',
-            {'device_name': 'Hacked'},
+            {'is_active': False},
             format='json',
         )
         self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
@@ -1841,3 +1801,388 @@ class EMASerializerLikertValidationTests(TestCase):
         data['energy'] = 1
         serializer = EMASerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
+
+
+# ---------------------------------------------------------------------------
+# Ownership: EMA user derived from JWT, not body
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMAOwnershipAndReadOnlyTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='ema_own@ufl.edu')
+        self.other = make_user(email='ema_other@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    def test_user_derived_from_token_not_body(self):
+        response = self.client.post('/ema/', {
+            'user': self.other.user_id,
+            'prompt_id': 'ema_v1',
+            'mood': 5,
+            'stress': 3,
+            'energy': 6,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        ema = EMA.objects.get(id=response.data['id'])
+        self.assertEqual(ema.user, self.user)
+
+    def test_post_without_user_in_body_succeeds(self):
+        response = self.client.post('/ema/', {
+            'prompt_id': 'ema_v1',
+            'mood': 5,
+            'stress': 3,
+            'energy': 6,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertEqual(response.data['user'], self.user.user_id)
+
+    def test_cannot_override_status_via_body(self):
+        response = self.client.post('/ema/', {
+            'prompt_id': 'ema_v1',
+            'status': 'expired',
+            'mood': 5,
+            'stress': 3,
+            'energy': 4,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertEqual(response.data['status'], 'completed')
+
+    def test_cannot_override_responded_at_via_body(self):
+        response = self.client.post('/ema/', {
+            'prompt_id': 'ema_v1',
+            'responded_at': '2020-01-01T00:00:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertIsNone(response.data['responded_at'])
+
+
+# ---------------------------------------------------------------------------
+# Ownership: PhoneTelemetry user derived from JWT, not body
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class PhoneTelemetryOwnershipTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='phone_own@ufl.edu')
+        self.other = make_user(email='phone_other@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_user_derived_from_token_not_body(self, mock_gcs):
+        from app.models import PhoneTelemetry
+        response = self.client.post('/telemetry/phone/', {
+            'user': self.other.user_id,
+            'session_id': 'S1',
+            'event_type': 'session_start',
+            'occurred_at': '2025-09-06T20:00:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        event = PhoneTelemetry.objects.get(id=response.data['id'])
+        self.assertEqual(event.user, self.user)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_post_without_user_in_body_succeeds(self, mock_gcs):
+        response = self.client.post('/telemetry/phone/', {
+            'session_id': 'S2',
+            'event_type': 'session_end',
+            'occurred_at': '2025-09-06T20:01:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertEqual(response.data['user'], self.user.user_id)
+
+
+# ---------------------------------------------------------------------------
+# Ownership: EngagementLog user derived from JWT, not body
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EngagementLogOwnershipTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='engage_own@ufl.edu')
+        self.other = make_user(email='engage_other@ufl.edu')
+        self.client = authenticated_client(self.user)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_user_derived_from_token_not_body(self, mock_gcs):
+        from app.models import EngagementLog
+        response = self.client.post('/telemetry/engagement/', {
+            'user': self.other.user_id,
+            'event_type': 'ema_opened',
+            'occurred_at': '2025-09-06T20:00:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = EngagementLog.objects.get(id=response.data['id'])
+        self.assertEqual(log.user, self.user)
+
+    @patch('app.views.get_game_clock_state', return_value='pre')
+    def test_post_without_user_in_body_succeeds(self, mock_gcs):
+        response = self.client.post('/telemetry/engagement/', {
+            'event_type': 'ema_dismissed',
+            'occurred_at': '2025-09-06T20:01:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertEqual(response.data['user'], self.user.user_id)
+
+
+# ---------------------------------------------------------------------------
+# Auth: TelemetryIngestView requires authentication
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class TelemetryIngestAuthTests(TestCase):
+
+    def test_ingest_without_auth_returns_401(self):
+        user = make_user(email='ingest_anon@ufl.edu')
+        response = APIClient().post('/telemetry/ingest/', {
+            'user_id': user.user_id,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+
+# ---------------------------------------------------------------------------
+# Legacy routes: verified absent after removal
+# ---------------------------------------------------------------------------
+
+class LegacyRouteTests(TestCase):
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_poll_cfbd_is_gone(self):
+        response = self.client.get('/poll-cfbd/')
+        self.assertEqual(response.status_code, 404)
+
+    def test_home_tile_is_gone(self):
+        response = self.client.get('/home-tile/')
+        self.assertEqual(response.status_code, 404)
+
+    def test_schedule_tile_is_gone(self):
+        response = self.client.get('/schedule-tile/')
+        self.assertEqual(response.status_code, 404)
+
+    def test_auth_refresh_alias_is_gone(self):
+        response = self.client.post('/auth/refresh/', {'refresh': 'token'}, format='json')
+        self.assertEqual(response.status_code, 404)
+
+
+# ---------------------------------------------------------------------------
+# Task: evaluate_jitai_triggers
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EvaluateJITAITriggersTests(TestCase):
+
+    def _make_enrolled_user(self, email='jitai_task@ufl.edu'):
+        user = make_user(email=email, push_token='ExponentPushToken[test123]')
+        user.is_enrolled = True
+        user.save()
+        WearableDevice.objects.create(user=user, labfront_participant_id=f'LF_{email}')
+        return user
+
+    def _make_ema(self, user, mood, stress, energy, offset_seconds=0):
+        ema = EMA.objects.create(
+            user=user,
+            prompt_id='P1',
+            mood=mood,
+            stress=stress,
+            energy=energy,
+            status='completed',
+            responded_at=timezone.now(),
+        )
+        t = timezone.now() - timedelta(seconds=3600) + timedelta(seconds=offset_seconds)
+        EMA.objects.filter(pk=ema.pk).update(sent_at=t)
+        ema.refresh_from_db()
+        return ema
+
+    def test_no_enrolled_users_creates_no_logs(self):
+        from app.tasks import evaluate_jitai_triggers
+        evaluate_jitai_triggers()
+        self.assertEqual(JITAILog.objects.count(), 0)
+
+    def test_enrolled_user_with_no_emas_creates_no_log(self):
+        from app.tasks import evaluate_jitai_triggers
+        self._make_enrolled_user()
+        evaluate_jitai_triggers()
+        self.assertEqual(JITAILog.objects.count(), 0)
+
+    def test_all_emas_already_evaluated_creates_no_new_log(self):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        ema = self._make_ema(user, 4, 4, 4, offset_seconds=0)
+        JITAILog.objects.create(user=user, prompt_id='P1', trigger_reason='prior', ema=ema)
+        evaluate_jitai_triggers()
+        self.assertEqual(JITAILog.objects.count(), 1)
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_insufficient_history_writes_log_with_send_prompt_false(self, mock_send):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._make_ema(user, 4, 4, 4, offset_seconds=0)
+        self._make_ema(user, 4, 4, 4, offset_seconds=60)
+        evaluate_jitai_triggers()
+        log = JITAILog.objects.get(user=user)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.trigger_reason, 'insufficient within-person history')
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_volatile_emas_trigger_prompt_and_call_expo(self, mock_send):
+        # 5 stable EMAs establish a baseline MSSD near 0.
+        # 1 volatile EMA (big drop in scores) pushes MSSD above the within-person
+        # threshold, triggering send_prompt=True.
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        for i in range(5):
+            self._make_ema(user, 4, 4, 4, offset_seconds=i * 60)
+        volatile = self._make_ema(user, 1, 1, 1, offset_seconds=300)
+        evaluate_jitai_triggers()
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.ema, volatile)
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.status, 'delivered')
+        mock_send.assert_called_once()
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_jitai_log_written_even_when_no_prompt_sent(self, mock_send):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._make_ema(user, 4, 4, 4, offset_seconds=0)
+        evaluate_jitai_triggers()
+        self.assertEqual(JITAILog.objects.filter(user=user).count(), 1)
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_hr_and_stress_snapshots_stored_on_log(self, mock_send):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        HeartRateSample.objects.create(user=user, timestamp=timezone.now(), bpm=92)
+        StressSample.objects.create(user=user, timestamp=timezone.now(), stress_score=68)
+        self._make_ema(user, 4, 4, 4, offset_seconds=0)
+        evaluate_jitai_triggers()
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.hr_at_trigger, 92)
+        self.assertEqual(log.stress_at_trigger, 68)
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_exception_in_one_user_does_not_stop_others(self, mock_send):
+        from app import tasks as tasks_module
+        from app.tasks import evaluate_jitai_triggers
+        user1 = self._make_enrolled_user(email='task_exc1@ufl.edu')
+        user2 = self._make_enrolled_user(email='task_exc2@ufl.edu')
+        self._make_ema(user1, 4, 4, 4, offset_seconds=0)
+        self._make_ema(user2, 4, 4, 4, offset_seconds=0)
+
+        original = tasks_module._evaluate_user
+
+        def raise_for_user1(user):
+            if user.user_id == user1.user_id:
+                raise RuntimeError("simulated failure")
+            original(user)
+
+        with patch('app.tasks._evaluate_user', side_effect=raise_for_user1):
+            evaluate_jitai_triggers()
+
+        self.assertFalse(JITAILog.objects.filter(user=user1).exists())
+        self.assertTrue(JITAILog.objects.filter(user=user2).exists())
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_prompt_id_set_on_log_when_send_prompt_true(self, mock_send):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        for i in range(5):
+            self._make_ema(user, 4, 4, 4, offset_seconds=i * 60)
+        self._make_ema(user, 1, 1, 1, offset_seconds=300)
+        evaluate_jitai_triggers()
+        log = JITAILog.objects.get(user=user)
+        if log.send_prompt:
+            self.assertNotEqual(log.prompt_id, '')
+        else:
+            self.assertEqual(log.prompt_id, '')
+
+
+# ---------------------------------------------------------------------------
+# Notification service: send_jitai_prompt
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class SendJITAIPromptTests(TestCase):
+
+    def _make_user_with_token(self, email='notify@ufl.edu'):
+        return make_user(email=email, push_token='ExponentPushToken[test123]')
+
+    def _make_log(self, user, prompt_id='TEMPLATE_001'):
+        return JITAILog.objects.create(
+            user=user,
+            prompt_id=prompt_id,
+            trigger_reason='prompt sent',
+        )
+
+    @patch('app.notification_service.PushClient')
+    def test_push_payload_includes_type_prompt_id_and_jitai_log_id(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        user = self._make_user_with_token()
+        log = self._make_log(user)
+        MockPushClient.return_value.publish.return_value = MagicMock()
+
+        send_jitai_prompt(user, log)
+
+        message = MockPushClient.return_value.publish.call_args[0][0]
+        self.assertEqual(message.data['type'], 'ema_prompt')
+        self.assertEqual(message.data['prompt_id'], log.prompt_id)
+        self.assertEqual(message.data['jitai_log_id'], log.pk)
+
+    @patch('app.notification_service.PushClient')
+    def test_no_push_token_returns_false_without_calling_expo(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        user = make_user(email='notoken@ufl.edu')
+        log = self._make_log(user)
+
+        result = send_jitai_prompt(user, log)
+
+        self.assertFalse(result)
+        MockPushClient.assert_not_called()
+
+    @patch('app.notification_service.PushClient')
+    def test_successful_push_returns_true(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        user = self._make_user_with_token()
+        log = self._make_log(user)
+        MockPushClient.return_value.publish.return_value = MagicMock()
+
+        result = send_jitai_prompt(user, log)
+
+        self.assertTrue(result)
+
+    @patch('app.notification_service.PushClient')
+    def test_device_not_registered_clears_push_token_and_marks_failed(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        from exponent_server_sdk import DeviceNotRegisteredError
+        user = self._make_user_with_token()
+        log = self._make_log(user)
+        mock_response = MagicMock()
+        mock_response.validate_response.side_effect = DeviceNotRegisteredError(MagicMock())
+        MockPushClient.return_value.publish.return_value = mock_response
+
+        result = send_jitai_prompt(user, log)
+
+        self.assertFalse(result)
+        user.refresh_from_db()
+        self.assertIsNone(user.push_token)
+        log.refresh_from_db()
+        self.assertEqual(log.status, 'failed')
+
+    @patch('app.notification_service.PushClient')
+    def test_push_error_marks_log_as_failed_and_returns_false(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        user = self._make_user_with_token()
+        log = self._make_log(user)
+        MockPushClient.return_value.publish.side_effect = Exception('network error')
+
+        result = send_jitai_prompt(user, log)
+
+        self.assertFalse(result)
+        log.refresh_from_db()
+        self.assertEqual(log.status, 'failed')

@@ -9,7 +9,6 @@ from .models import (
     PhoneTelemetry,
     StressSample,
     User,
-    UserData,
     WearableDevice,
 )
 from rest_framework.views import APIView
@@ -23,33 +22,20 @@ from .serializers import (
     PhoneTelemetrySerializer,
     StressSampleSerializer,
     TelemetryIngestSerializer,
-    UserDataSerializer,
     UserSerializer,
     WearableDeviceSerializer,
 )
-import os
-import cfbd
-import certifi
-import pytz
-from django.http import JsonResponse
-from datetime import date, datetime, timezone, timedelta
 from django.utils import timezone as django_timezone
-from .utils import send_push_notification_next_game, check_game_status, send_notification, get_users_with_push_token, get_game_clock_state
-from django.views.decorators.csrf import csrf_exempt
-from django.core.cache import cache
-from .management.commands import poll_cfbd
-from .management.commands.poll_cfbd import Command
+from .utils import get_game_clock_state
 from django.conf import settings
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
-from django.utils.decorators import method_decorator
-from django.views.decorators.csrf import csrf_exempt
+
 
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.decorators import api_view, permission_classes
 
 
 def _get_app_user(request):
@@ -74,73 +60,43 @@ def _get_app_user(request):
 def index(request):
     return render(request, "index.html")
 
-def get_cached_uf_games():
-    configuration = cfbd.Configuration(
-        host="https://apinext.collegefootballdata.com",
-        access_token=os.getenv('COLLEGE_FOOTBALL_API_KEY'),
-        ssl_ca_cert=certifi.where()
-    )
-    apiInstance = cfbd.GamesApi(cfbd.ApiClient(configuration))
-    current_year = date.today().year
-
-    CACHE_KEY = f'uf_football_games_{current_year}'
-    CACHE_TTL = 60 * 60 * 24  # 24 hours in seconds
-
-    games_list = cache.get(CACHE_KEY)
-    
-    if games_list is not None:
-        logger.info("Cache hit: Returning cached UF games.")
-        return games_list
-
-    logger.info("Cache miss: Fetching UF games from API.")
-    _key = os.getenv('COLLEGE_FOOTBALL_API_KEY')
-    logger.info(f"CFBD key loaded: {bool(_key)}, length: {len(_key) if _key else 0}")
-    try:
-        games = apiInstance.get_games(year=current_year, team='Florida', conference='SEC')
-        games_list = [game.to_dict() for game in games]
-        
-        cache.set(CACHE_KEY, games_list, timeout=CACHE_TTL)
-        
-        return games_list
-    except Exception as e:
-        logger.error(f"Error fetching UF games from CFBD API: {e}")
-        return None 
-
 # API view to handle POST requests for user creation
 class CreateUserView(APIView):
+    permission_classes = [AllowAny]
     @swagger_auto_schema(
             operation_summary="Add user",
             operation_description="Create a new user to add to the database.",
             request_body=UserSerializer
         )
     def post(self, request):
-        print("request.data for CreateUserView: ", request.data)
         serializer = UserSerializer(data=request.data)
         if serializer.is_valid():
-            user = serializer.save()
-            # Prepare the response data including the user_id
-            response_data = {'user_id': user.user_id}
-            response_data.update(serializer.data)
-            return Response(response_data, status=status.HTTP_201_CREATED)
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 class UserUpdateView(APIView):
+    permission_classes = [IsAuthenticated]
+
     @swagger_auto_schema(operation_summary="Update user", operation_description="Update an existing user in the database", request_body=UserSerializer)
     def put(self, request, user_id):
+        if not request.user.is_staff:
+            app_user = _get_app_user(request)
+            if app_user is None or app_user.user_id != user_id:
+                return Response(status=status.HTTP_403_FORBIDDEN)
         try:
             user = User.objects.get(user_id=user_id)
         except User.DoesNotExist:
             return Response(status=status.HTTP_404_NOT_FOUND)
-        print("request.data for UserUpdateView: ", request.data)
-        serializer = UserSerializer(user, data=request.data, partial=True)  # Allow partial updates
+        serializer = UserSerializer(user, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
-        else:
-            print(serializer.errors)  # Debugging line
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class CheckEmailView(APIView):
+    permission_classes = [AllowAny]
+
     @swagger_auto_schema(
         operation_summary="Check if email is already used", operation_description="Checks all users in the database to determine whether an email is already in user.",
         responses={200: UserSerializer(many=False)}  # Define response schema
@@ -150,51 +106,6 @@ class CheckEmailView(APIView):
         if User.objects.filter(email=email).exists():
             return Response({'exists': True}, status=status.HTTP_200_OK)
         return Response({'exists': False}, status=status.HTTP_200_OK)
-
-# API view to handle POST requests for user data creation
-class CreateUserDataView(APIView):
-    @swagger_auto_schema(operation_summary="Log user progress", operation_description="Create a new userData entry to add to the database. This is used to log a snapshot in time of progress toward the user's goal(s).", request_body=UserDataSerializer)
-    def post(self, request, user_id):
-        # Retrieve the user by ID
-        user = User.objects.get(pk=user_id) # pk is primary key
-        user_data = UserData.objects.create(user=user)
-        # Update user data with new information
-        user_serializer = UserSerializer(user, data=request.data, partial=True)
-        if user_serializer.is_valid():
-            user_serializer.save()
-            user_data_serializer = UserDataSerializer(user_data, data=request.data, partial=True)
-            if user_data_serializer.is_valid():
-                userData = user_data_serializer.save()
-                response_data = {'data_id': userData.data_id}
-                response_data.update(user_data_serializer.data)
-                return Response(response_data, status=status.HTTP_201_CREATED)
-            return Response(user_data_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        return Response(user_data_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-class LatestUserDataView(APIView):
-    @swagger_auto_schema(
-        operation_summary="Get latest user progress", operation_description="Get the latest entry of user's progress from the userData table.",
-        manual_parameters=[
-            openapi.Parameter(
-                'user_id',  # Name of the parameter
-                openapi.IN_PATH,  # Location of the parameter
-                description="User ID for which we are getting the latest user data entry for",
-                type=openapi.TYPE_STRING,  # Type of the parameter
-                required=True  # Whether the parameter is required
-            )
-        ],
-        responses={200: UserDataSerializer(many=True)}  # Define response schema
-    )
-    def get(self, request, user_id):
-        try:
-            recent_data = UserData.objects.filter(user_id=user_id).order_by('-timestamp').first()
-            if recent_data:
-                serializer = UserDataSerializer(recent_data)
-                return Response(serializer.data, status=status.HTTP_200_OK)
-            else:
-                return Response({"message": "No data found for this user."}, status=status.HTTP_404_NOT_FOUND)
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # # API view to handle POST requests for data sent from the front-end (basicinfo.tsx)
 # class BasicInfoView(APIView):
@@ -239,7 +150,6 @@ class LatestUserDataView(APIView):
 #                 }, status=status.HTTP_200_OK)
 #             return Response(user_data_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 #         return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-@method_decorator(csrf_exempt, name="dispatch")
 class UserLoginView(APIView):
     permission_classes = (AllowAny,)
     @swagger_auto_schema(
@@ -346,6 +256,8 @@ class UserLoginView(APIView):
     
 
 class TelemetryIngestView(APIView):
+    permission_classes = [IsAuthenticated]
+
     @swagger_auto_schema(
         operation_summary="Ingest telemetry",
         operation_description=(
@@ -370,6 +282,17 @@ class TelemetryIngestView(APIView):
             logger.warning(
                 "telemetry_ingest_unknown_user",
                 extra={"user_id": data.get("user_id")},
+            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        device_payload = data.get("wearable_device") or {}
+        if device_payload:
+            WearableDevice.objects.update_or_create(
+                user=user,
+                defaults={
+                    "labfront_participant_id": device_payload["labfront_participant_id"],
+                    "last_synced_at": device_payload.get("last_synced_at"),
+                    "is_active": device_payload.get("is_active", True),
+                },
             )
             return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -516,126 +439,17 @@ class WearableDeviceView(APIView):
 #             "to": data['user'].google_acct_id,
 #             "title": "Score Update",
 #             "body": data["Testing to see if this push notification works!"],
-#         }
-#
-@csrf_exempt
-def poll_cfbd_view(request):
-    games = get_cached_uf_games()
-    configuration = cfbd.Configuration(
-        host="https://apinext.collegefootballdata.com",
-        access_token=os.getenv('COLLEGE_FOOTBALL_API_KEY'),
-        ssl_ca_cert=certifi.where()
-    )
-    apiInstance = cfbd.GamesApi(cfbd.ApiClient(configuration))
-    CACHE_KEY = "completed_game"
-    CACHE_TTL = 60 * 60 * 4 #4 hours -> there won't be more than 1 game/day or /week so this should be fine
-
-    if games is None:
-        logger.error("poll_cfbd_view: failed to retrieve games, skipping poll")
-        return
-
-    for game in games:
-        start_date = game['startDate']
-
-        if start_date - timedelta(hours=0, minutes=30) <= datetime.now(timezone.utc) <= start_date + timedelta(hours=4, minutes=0): #30 minutes before game start -> 4 hours after game end
-            print(f"Game {game} is within the 4 hour window")
-            
-            game_status, home_team, home_score, away_team, away_score, game_completion_status = check_game_status(apiInstance)
-            send_notification(game_status, home_team, home_score, away_team, away_score)
-
-            if game_completion_status == "completed":
-                existingGame = cache.get(CACHE_KEY)
-                if existingGame is None:
-                    pushTokens = get_users_with_push_token()
-                    message = "Finished the game? Help the HealthyGator community by going to the app home page and taking a post-game survey!"
-                    send_push_notification_next_game('Post-Game Survey', pushTokens, message)
-                    cache.set(CACHE_KEY, "", CACHE_TTL)
-
-            return
-
-    print("No games are inside window")
-
-@csrf_exempt
-def home_tile_view(request):
-    # Fetch all games using the new cached helper
-    all_games = get_cached_uf_games()
-    
-    if all_games is None:
-        return JsonResponse({"message": "Could not retrieve upcoming games."}, status=500)
-
-    # Logic to find the next game (uses the cached list)
-    today = datetime.combine(date.today(), datetime.min.time(), tzinfo=pytz.UTC)
-    
-    future_games = []
-    for game in all_games:
-        game_start_date = game['startDate'].astimezone(pytz.UTC)
-        if game_start_date > today:
-            future_games.append((game_start_date, game))
-
-    next_game_tuple = min(future_games, key=lambda x: x[0]) if future_games else None
-
-    if next_game_tuple:
-        next_game = next_game_tuple[1] 
-        game_time_utc = next_game_tuple[0] 
-
-        logger.info(f"Home Team: {next_game['homeTeam']}, Away Team: {next_game['awayTeam']}")
-
-        user_tz = pytz.timezone('America/New_York')
-        game_time = game_time_utc.astimezone(user_tz)
-        
-        response = {
-            "home_team": next_game['homeTeam'],
-            "away_team": next_game['awayTeam'],
-            "date": game_time.strftime('%m-%d-%Y %I:%M %p')
-        }
-    else:
-        response = {"message": "No upcoming games found."}
-    
-    return JsonResponse(response)
-
-
-@csrf_exempt
-def schedule_view(request):
-    # Fetch all games using the new cached helper
-    games_list = get_cached_uf_games()
-
-    if games_list is None:
-         return JsonResponse(
-            {"error": f"Could not retrieve UF games for {date.today().year}"},
-            status=500
-        )
-        
-    return JsonResponse({"data": games_list})
-    
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def me_view(request):
-    """
-    Return the *app.User* profile that matches the authenticated Django user.
-    """
-    email = getattr(request.user, "email", None)
-    if not email:
-        return Response({"detail": "No email on auth user"}, status=400)
-
-    try:
-        app_user = User.objects.get(email=email)
-        if not app_user:
-            return Response({"detail": "App user not found"}, status=404)
-    except User.DoesNotExist:
-        return Response({"detail": "App user not found"}, status=404)
-
-
-    return Response(UserSerializer(app_user).data, status=200)
-
-
 class EMAView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        app_user = _get_app_user(request)
+        if app_user is None:
+            return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
         serializer = EMASerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        ema = serializer.save()
+        ema = serializer.save(user=app_user)
         if ema.mood is not None and ema.stress is not None and ema.energy is not None:
             ema.status = 'completed'
             ema.responded_at = django_timezone.now()
@@ -710,10 +524,13 @@ class PhoneTelemetryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        app_user = _get_app_user(request)
+        if app_user is None:
+            return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
         serializer = PhoneTelemetrySerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        event = serializer.save(game_clock_state=get_game_clock_state())
+        event = serializer.save(user=app_user, game_clock_state=get_game_clock_state())
         return Response(PhoneTelemetrySerializer(event).data, status=status.HTTP_201_CREATED)
 
 
@@ -721,8 +538,11 @@ class EngagementLogView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        app_user = _get_app_user(request)
+        if app_user is None:
+            return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
         serializer = EngagementLogSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        log = serializer.save(game_clock_state=get_game_clock_state())
+        log = serializer.save(user=app_user, game_clock_state=get_game_clock_state())
         return Response(EngagementLogSerializer(log).data, status=status.HTTP_201_CREATED)

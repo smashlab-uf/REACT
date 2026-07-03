@@ -11,18 +11,13 @@ class User(models.Model):
     last_name = models.CharField(max_length=100, default="")
     birthdate = models.DateField()
     gender = models.CharField(max_length=10, choices=[('male', 'Male'), ('female', 'Female'), ('other', 'Other')])
-    height_feet = models.CharField(max_length=10, default="")
-    height_inches = models.CharField(max_length=10, default="")
-    goal_weight = models.DecimalField(max_digits=4, decimal_places=1, null=True, blank=True)
-    goal_to_lose_weight = models.BooleanField(default=False)
-    goal_to_feel_better = models.BooleanField(default=False)
     password = models.CharField(max_length=128, blank=True, null=True)
     push_token = models.CharField(max_length=128, blank=True, null=True)
     is_enrolled = models.BooleanField(default=False)
     enrolled_at = models.DateTimeField(null=True, blank=True)
 
     USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['user_id', 'first_name', 'last_name', 'birthdate', 'gender', 'height_feet', 'height_inches', 'goal_weight', 'goal_to_lose_weight', 'goal_to_feel_better', 'password']
+    REQUIRED_FIELDS = ['user_id', 'first_name', 'last_name', 'birthdate', 'gender', 'password']
 
     def __str__(self):
         return f"User ID: {self.user_id}, Email: {self.email}"
@@ -36,19 +31,9 @@ class User(models.Model):
         return django_check_password(raw_password, self.password)
 
 
-class UserData(models.Model):
-    data_id = models.AutoField(primary_key=True)
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    timestamp = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return f"Data for {self.user.email} at {self.timestamp}"
-
-
 class WearableDevice(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     labfront_participant_id = models.CharField(max_length=64, unique=True)
-    device_name = models.CharField(max_length=100, blank=True, null=True)
     is_active = models.BooleanField(default=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
 

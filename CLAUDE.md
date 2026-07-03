@@ -5,7 +5,7 @@
 REACT (working title) is a research-grade Just-In-Time Adaptive Intervention (JITAI) mHealth
 system built at the SMASH Research Lab, University of Florida, under PI Dr. Yonghwan Chang
 (Department of Sport Management). It extends the prior HealthyGatorSportsFan platform, which
-delivered push notifications to UF sports fans during games.
+delivered push notifications to study participants.
 
 REACT adds:
 - EMA (Ecological Momentary Assessment) in-app surveys
@@ -28,8 +28,8 @@ November/early December, ~12–14 weeks).
 | Frontend | React Native (Expo) |
 | Deployment | Heroku |
 | Push Notifications | Expo Push Notification Service → Firebase/APNs |
-| Wearable Data Layer | Fitabase API (intermediary for Garmin Health API) |
-| Wearable Device | Garmin Vivoactive 6 |
+| Wearable Data Layer | Labfront API (intermediary for Garmin Health API) |
+| Wearable Device | Garmin Venu 3 |
 
 ---
 
@@ -66,32 +66,12 @@ class User(models.Model):
     last_name = models.CharField(max_length=100, default="")
     birthdate = models.DateField()
     gender = models.CharField(max_length=10, choices=[('male','Male'),('female','Female'),('other','Other')])
-    height_feet = models.CharField(max_length=10, default="")
-    height_inches = models.CharField(max_length=10, default="")
-    goal_weight = models.DecimalField(max_digits=4, decimal_places=1, null=True, blank=True)
-    goal_to_lose_weight = models.BooleanField(default=False)
-    goal_to_feel_better = models.BooleanField(default=False)
     password = models.CharField(max_length=128, blank=True, null=True)
     push_token = models.CharField(max_length=128, blank=True, null=True)
     # REACT additions:
     is_enrolled = models.BooleanField(default=False)
     enrolled_at = models.DateTimeField(null=True, blank=True)
-    # DO NOT add any Fitbit token fields — Fitabase owns OAuth entirely
-
-class UserData(models.Model):
-    data_id = models.AutoField(primary_key=True)
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    timestamp = models.DateTimeField(auto_now_add=True)
-    goal_type = models.CharField(max_length=20, choices=[...])
-    weight_value = models.DecimalField(...)
-    feel_better_value = models.IntegerField(...)
-
-class NotificationData(models.Model):
-    notification_id = models.AutoField(primary_key=True)
-    notification_message = models.CharField(max_length=255)
-    timestamp = models.DateTimeField(auto_now_add=True)
-    read_status = models.BooleanField(default=False)
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    # DO NOT add any Fitbit token fields — Labfront owns OAuth entirely
 ```
 
 ### New Models (REACT)
@@ -99,8 +79,7 @@ class NotificationData(models.Model):
 ```python
 class WearableDevice(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
-    fitabase_participant_id = models.CharField(max_length=64, unique=True)
-    device_name = models.CharField(max_length=100, blank=True, null=True)
+    labfront_participant_id = models.CharField(max_length=64, unique=True)
     is_active = models.BooleanField(default=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
 
@@ -108,7 +87,7 @@ class HeartRateSample(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     timestamp = models.DateTimeField(db_index=True)
     bpm = models.PositiveSmallIntegerField()
-    source = models.CharField(max_length=32, default='garmin_fitabase')
+    source = models.CharField(max_length=32, default='garmin_labfront')
     class Meta:
         ordering = ['-timestamp']
         indexes = [models.Index(fields=['user', 'timestamp'])]
@@ -117,23 +96,10 @@ class StressSample(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     timestamp = models.DateTimeField(db_index=True)
     stress_score = models.PositiveSmallIntegerField()  # 0–100 Garmin scale
-    source = models.CharField(max_length=32, default='garmin_fitabase')
+    source = models.CharField(max_length=32, default='garmin_labfront')
     class Meta:
         ordering = ['-timestamp']
         indexes = [models.Index(fields=['user', 'timestamp'])]
-
-class SleepSummary(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    date = models.DateField()
-    total_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
-    light_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
-    deep_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
-    rem_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
-    awake_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
-    sleep_score = models.PositiveSmallIntegerField(null=True, blank=True)
-    source = models.CharField(max_length=32, default='garmin_fitabase')
-    class Meta:
-        unique_together = ('user', 'date')
 
 class EMA(models.Model):
     STATUS_CHOICES = [('pending','Pending'),('completed','Completed'),('expired','Expired')]
@@ -156,6 +122,9 @@ class JITAILog(models.Model):
     trigger_reason = models.CharField(max_length=128) # e.g. "hr_elevated+stress_high"
     hr_at_trigger = models.PositiveSmallIntegerField(null=True, blank=True)
     stress_at_trigger = models.PositiveSmallIntegerField(null=True, blank=True)
+    ema = models.ForeignKey(EMA, on_delete=models.SET_NULL, null=True, blank=True)
+    observed_mssd = models.FloatField(null=True, blank=True)
+    send_prompt = models.BooleanField(default=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='delivered')
     class Meta:
         ordering = ['-triggered_at']
@@ -165,26 +134,15 @@ class JITAILog(models.Model):
 
 ## API Endpoints
 
-### Existing (HealthyGator — do not break)
+### Active endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/user/` | Create user account |
-| GET | `/user/login/` | Authenticate user |
-| PUT | `/user/{user_id}/` | Update user profile |
+| POST | `/user/login/` | Authenticate user |
+| PUT | `/user/{user_id}/` | Update user profile (owner or staff only) |
 | POST | `/user/checkemail/` | Check if email already exists |
-| GET | `/userdata/latest/{user_id}/` | Get latest user progress |
-| POST | `/userdata/{user_id}/` | Log user progress |
-| GET | `/notificationdata/{user_id}/` | List notifications for user |
-| POST | `/notificationdata/` | Create notification record |
-| DELETE | `/notificationdata/delete/{notification_id}/` | Delete one notification |
-| DELETE | `/notificationdata/deleteall/{user_id}/` | Delete all notifications for user |
-
-### New (REACT)
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/wearable/` | Register Fitabase participant ID on enrollment |
+| POST | `/wearable/` | Register Labfront participant ID on enrollment |
 | GET | `/wearable/{user_id}/` | Get device record |
 | PATCH | `/wearable/{user_id}/` | Update device record (e.g. last_synced_at) |
 | POST | `/ema/` | Submit EMA response from mobile app |
@@ -193,9 +151,11 @@ class JITAILog(models.Model):
 | GET | `/jitai/{user_id}/` | Fetch JITAI history (dashboard/admin use) |
 | GET | `/telemetry/hr/{user_id}/` | Fetch recent HR samples (dashboard use) |
 | GET | `/telemetry/stress/{user_id}/` | Fetch recent stress samples (dashboard use) |
+| POST | `/telemetry/phone/` | Ingest compose surface event from mobile app |
+| POST | `/telemetry/engagement/` | Ingest EMA/notification engagement event from mobile app |
+| POST | `/telemetry/ingest/` | Internal — Celery bulk-ingest wearable data |
 
-Telemetry ingest (HeartRateSample, StressSample, SleepSummary) is written directly via the
-Django ORM inside Celery tasks — no public REST endpoints for ingest.
+Telemetry ingest (HeartRateSample, StressSample) flows through `/telemetry/ingest/` (Celery internal — not a mobile app endpoint).
 
 ---
 
@@ -204,11 +164,11 @@ Django ORM inside Celery tasks — no public REST endpoints for ingest.
 REACT never communicates with Garmin directly. The data flow is:
 
 ```
-Garmin Vivoactive 6
+Garmin Venu 3
   → Garmin Health API (push on device sync)
     → Fitabase (buffers and re-exposes data)
-      → REACT Celery ingestion task (polls Fitabase API)
-        → PostgreSQL (HeartRateSample, StressSample, SleepSummary)
+      → REACT Celery ingestion task (polls Labfront API)
+        → PostgreSQL (HeartRateSample, StressSample)
           → JITAI decision logic
             → Expo Push Notification → participant device
 ```
@@ -221,15 +181,14 @@ Garmin Vivoactive 6
 | 15 min epochs | Steps, Heart rate, Distance, MET, Intensity, MeanMotion/MaxMotion |
 | 3 min | Stress score (primary real-time JITAI signal alongside HR) |
 | Per stage change | Sleep stage records |
-| 15 sec | Heart rate (primary HR ingest stream; ~720 rows/participant/3hr game) |
+| 15 sec | Heart rate (primary HR ingest stream; ~720 rows/participant/3hr session) |
 | Optional add-on | Beat-to-beat RR intervals (enhanced HRV; not default) |
 
 ### Fitabase API vs Batch Export
 - API access and automated batch exports are separate paid add-ons (not included by default)
-- REACT targets the Fitabase API for programmatic access via Celery periodic tasks
-- During game windows, the Celery task should poll at short intervals (every 2–3 min) to support
-  near-real-time JITAI triggering
-- The `fitabase_participant_id` in `WearableDevice` is the key used to query Fitabase per participant
+- REACT targets the Labfront API for programmatic access via Celery periodic tasks
+- The Celery task polls at short intervals (every 2–3 min) to support near-real-time JITAI triggering
+- The `labfront_participant_id` in `WearableDevice` is the key used to query Labfront per participant
 
 ---
 
@@ -238,12 +197,10 @@ Garmin Vivoactive 6
 Celery Beat schedules periodic tasks. Redis is the message broker.
 
 Key tasks:
-- `ingest_wearable_data` — polls Fitabase API for all enrolled participants, writes new
-  HeartRateSample, StressSample, SleepSummary rows
-- `evaluate_jitai_triggers` — reads recent telemetry per participant, applies decision logic,
+- `ingest_wearable_data` — polls Labfront API for all enrolled participants, writes new
+  HeartRateSample and StressSample rows
+- `evaluate_jitai_triggers` — reads recent EMA and telemetry per participant, computes MSSD,
   fires Expo push notification and writes JITAILog if thresholds are met
-- Game-window awareness — tasks should run at higher frequency during active UF football
-  game windows and at low/no frequency outside game days
 
 ---
 
@@ -254,10 +211,9 @@ threshold values are a research design decision requiring PI (Prof. Chang) sign-
 implementation. Do not hardcode thresholds without confirmation.
 
 Candidate trigger signals:
-- `HeartRateSample.bpm` — elevated HR during game window suggests physiological arousal
+- `HeartRateSample.bpm` — elevated HR suggests physiological arousal
 - `StressSample.stress_score` — high stress score complements EMA self-report
-- `EMA.mood / EMA.stress / EMA.energy` — self-reported emotional state
-- `SleepSummary` — prior-night sleep context for next-day intervention decisions
+- `EMA.mood / EMA.stress / EMA.energy` — self-reported emotional state (MSSD computed across recent EMAs)
 
 Trigger reason string format (for `JITAILog.trigger_reason`): concatenate active signals,
 e.g. `"hr_elevated+stress_high"` or `"ema_low_mood+hr_elevated"`.
@@ -320,8 +276,8 @@ auto-generated PKs and timestamps.
   Do not reintroduce any Fitbit-specific code.
 - **No free-text storage** — EMA `notes` fields and notification message body must not be
   stored in the database. IRB constraint.
-- **Fitabase owns OAuth** — REACT never holds Garmin OAuth tokens. The only Fitabase
-  identifier stored per participant is `fitabase_participant_id`.
+- **Labfront owns OAuth** — REACT never holds Garmin OAuth tokens. The only Labfront
+  identifier stored per participant is `labfront_participant_id`.
 - **JITAI thresholds need PI sign-off** — do not implement numeric trigger thresholds
   without confirmation from Prof. Chang.
 - **Fitabase Engage is deferred** — REACT builds its own JITAI and EMA delivery layer.
@@ -334,8 +290,7 @@ auto-generated PKs and timestamps.
 - Fitabase API vs batch export — confirm with Prof. Chang (determine pricing/access)
 - JITAI trigger thresholds — numeric values require PI alignment before implementation
 - RA access scope — which fields are RAs permitted to see under IRB protocol
-- Garmin Vivoactive 6 Fitabase compatibility — verify all required data streams are
-  supported before finalizing the Fitabase contract
+- Garmin Venu 3 Fitabase compatibility — verify all required data streams are supported before finalizing the Fitabase contract
 - Beat-to-beat RR interval collection — confirm device support and IRB permission
 
 ---
