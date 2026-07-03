@@ -48,6 +48,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Run decision engine scenario tests
+        run: python -m unittest discover -s . -p "test_decision_engine_scenarios.py" -v
+
       - name: Run migrations
         run: python manage.py migrate --noinput
 
