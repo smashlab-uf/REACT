@@ -500,14 +500,14 @@ class JITAILogModelTests(TestCase):
         self.assertEqual(log.hr_at_trigger, 105)
         self.assertEqual(log.stress_at_trigger, 72)
 
-    def test_status_defaults_to_delivered(self):
+    def test_status_defaults_to_pending(self):
         user = make_user()
         log = JITAILog.objects.create(
             user=user,
             prompt_id='TEMPLATE_001',
             trigger_reason='hr_elevated',
         )
-        self.assertEqual(log.status, 'delivered')
+        self.assertEqual(log.status, 'pending')
 
     def test_triggered_at_is_set_automatically(self):
         user = make_user()
@@ -664,7 +664,7 @@ class JITAILogSerializerTests(TestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
         log = serializer.save()
         self.assertEqual(log.trigger_reason, 'hr_elevated+stress_high')
-        self.assertEqual(log.status, 'delivered')
+        self.assertEqual(log.status, 'pending')
 
     def test_triggered_at_is_read_only(self):
         user = make_user()
@@ -1912,3 +1912,61 @@ class SendJITAIPromptTests(TestCase):
         self.assertFalse(result)
         log.refresh_from_db()
         self.assertEqual(log.status, 'failed')
+
+
+# ---------------------------------------------------------------------------
+# Model: JITAILog MRT schema — new fields and status choices
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class JITAILogMRTSchemaTests(TestCase):
+
+    def _make_log(self, **kwargs):
+        user = make_user(email='mrtschema@test.com')
+        defaults = {
+            'user': user,
+            'prompt_id': 'default',
+            'trigger_reason': 'test',
+        }
+        defaults.update(kwargs)
+        return JITAILog.objects.create(**defaults)
+
+    def test_decision_point_id_is_nullable(self):
+        log = self._make_log()
+        self.assertIsNone(log.decision_point_id)
+
+    def test_decision_point_id_unique_constraint(self):
+        self._make_log(decision_point_id='ema_1')
+        with self.assertRaises(Exception):
+            self._make_log(decision_point_id='ema_1')
+
+    def test_multiple_null_decision_point_ids_allowed(self):
+        self._make_log(decision_point_id=None)
+        make_user(email='mrtschema2@test.com')
+        log2 = JITAILog.objects.create(
+            user=make_user(email='mrtschema3@test.com'),
+            prompt_id='default',
+            trigger_reason='test',
+            decision_point_id=None,
+        )
+        self.assertIsNone(log2.decision_point_id)
+
+    def test_randomization_probability_nullable(self):
+        log = self._make_log(randomization_probability=None)
+        self.assertIsNone(log.randomization_probability)
+
+    def test_randomization_draw_nullable(self):
+        log = self._make_log(randomization_draw=None)
+        self.assertIsNone(log.randomization_draw)
+
+    def test_status_pending_is_valid(self):
+        log = self._make_log(status='pending')
+        self.assertEqual(log.status, 'pending')
+
+    def test_status_not_sent_is_valid(self):
+        log = self._make_log(status='not_sent')
+        self.assertEqual(log.status, 'not_sent')
+
+    def test_status_default_is_pending(self):
+        log = self._make_log()
+        self.assertEqual(log.status, 'pending')

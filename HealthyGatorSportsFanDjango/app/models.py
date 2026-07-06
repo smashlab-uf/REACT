@@ -145,10 +145,12 @@ class PhoneTelemetry(models.Model):
 
 class JITAILog(models.Model):
     STATUS_CHOICES = [
+        ('pending', 'Pending'),
         ('delivered', 'Delivered'),
         ('opened', 'Opened'),
         ('interacted', 'Interacted'),
         ('failed', 'Failed'),
+        ('not_sent', 'Not Sent'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -159,8 +161,11 @@ class JITAILog(models.Model):
     stress_at_trigger = models.PositiveSmallIntegerField(null=True, blank=True)
     ema = models.ForeignKey(EMA, on_delete=models.SET_NULL, null=True, blank=True)
     observed_mssd = models.FloatField(null=True, blank=True)
+    decision_point_id = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    randomization_probability = models.FloatField(null=True, blank=True)
+    randomization_draw = models.FloatField(null=True, blank=True)
     send_prompt = models.BooleanField(default=True)
-    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='delivered')
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='pending')
 
     class Meta:
         ordering = ['-triggered_at']
