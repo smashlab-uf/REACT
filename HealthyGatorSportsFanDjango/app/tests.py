@@ -2175,3 +2175,77 @@ class DecisionEngineEligibilityTests(TestCase):
         result = apply_decision_rules(df)
         expected = result['decision_reason'] == 'prompt sent'
         self.assertTrue((result['eligible'] == expected).all())
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class JITAILogSerializerMRTFieldsTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='jitaiser@test.com')
+
+    def _make_log(self, **kwargs):
+        defaults = {
+            'user': self.user,
+            'prompt_id': 'default',
+            'trigger_reason': 'test',
+            'decision_point_id': 'ema_99',
+            'randomization_probability': 0.5,
+            'randomization_draw': 0.3,
+            'send_prompt': True,
+            'status': 'pending',
+        }
+        defaults.update(kwargs)
+        return JITAILog.objects.create(**defaults)
+
+    def test_jitai_log_serializer_includes_decision_point_id(self):
+        from app.serializers import JITAILogSerializer
+        log = self._make_log()
+        data = JITAILogSerializer(log).data
+        self.assertIn('decision_point_id', data)
+        self.assertEqual(data['decision_point_id'], 'ema_99')
+
+    def test_jitai_log_serializer_includes_randomization_probability(self):
+        from app.serializers import JITAILogSerializer
+        log = self._make_log()
+        data = JITAILogSerializer(log).data
+        self.assertIn('randomization_probability', data)
+        self.assertAlmostEqual(float(data['randomization_probability']), 0.5)
+
+    def test_jitai_log_serializer_includes_randomization_draw(self):
+        from app.serializers import JITAILogSerializer
+        log = self._make_log()
+        data = JITAILogSerializer(log).data
+        self.assertIn('randomization_draw', data)
+        self.assertAlmostEqual(float(data['randomization_draw']), 0.3)
+
+    def test_telemetry_jitai_serializer_accepts_new_fields(self):
+        from app.serializers import TelemetryJITAILogSerializer
+        data = {
+            'prompt_id': 'default',
+            'trigger_reason': 'test',
+            'decision_point_id': 'ema_42',
+            'randomization_probability': 0.5,
+            'randomization_draw': 0.2,
+        }
+        ser = TelemetryJITAILogSerializer(data=data)
+        self.assertTrue(ser.is_valid(), ser.errors)
+
+    def test_telemetry_jitai_serializer_new_fields_are_optional(self):
+        from app.serializers import TelemetryJITAILogSerializer
+        data = {
+            'prompt_id': 'default',
+            'trigger_reason': 'test',
+        }
+        ser = TelemetryJITAILogSerializer(data=data)
+        self.assertTrue(ser.is_valid(), ser.errors)
+
+    def test_telemetry_jitai_serializer_probability_range_validation(self):
+        from app.serializers import TelemetryJITAILogSerializer
+        data = {
+            'prompt_id': 'default',
+            'trigger_reason': 'test',
+            'randomization_probability': 1.5,
+        }
+        ser = TelemetryJITAILogSerializer(data=data)
+        self.assertFalse(ser.is_valid())
+        self.assertIn('randomization_probability', ser.errors)

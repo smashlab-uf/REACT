@@ -84,6 +84,7 @@ class JITAILogSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'user', 'prompt_id', 'triggered_at', 'trigger_reason',
             'hr_at_trigger', 'stress_at_trigger', 'ema', 'observed_mssd',
+            'decision_point_id', 'randomization_probability', 'randomization_draw',
             'send_prompt', 'status',
         ]
         read_only_fields = ('id', 'triggered_at')
@@ -123,8 +124,11 @@ class TelemetryJITAILogSerializer(serializers.Serializer):
     stress_at_trigger = serializers.IntegerField(min_value=0, max_value=100, required=False, allow_null=True)
     ema = serializers.IntegerField(required=False, allow_null=True)
     observed_mssd = serializers.FloatField(required=False, allow_null=True)
+    decision_point_id = serializers.CharField(max_length=64, required=False, allow_null=True)
+    randomization_probability = serializers.FloatField(min_value=0.0, max_value=1.0, required=False, allow_null=True)
+    randomization_draw = serializers.FloatField(min_value=0.0, max_value=1.0, required=False, allow_null=True)
     send_prompt = serializers.BooleanField(required=False, default=True)
-    status = serializers.ChoiceField(choices=JITAILog.STATUS_CHOICES, required=False, default='delivered')
+    status = serializers.ChoiceField(choices=JITAILog.STATUS_CHOICES, required=False, default='pending')
 
 
 class TelemetryPhoneEventSerializer(serializers.Serializer):
