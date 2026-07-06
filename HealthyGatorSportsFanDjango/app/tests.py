@@ -1970,3 +1970,50 @@ class JITAILogMRTSchemaTests(TestCase):
     def test_status_default_is_pending(self):
         log = self._make_log()
         self.assertEqual(log.status, 'pending')
+
+
+class DecisionEngineEligibilityTests(TestCase):
+
+    def _make_df(self):
+        import pandas as pd
+        from datetime import datetime, timedelta
+        base = datetime(2026, 1, 1, 12, 0, 0)
+        rows = [
+            {
+                'user_id': 1,
+                'timestamp': pd.Timestamp(base + timedelta(hours=i * 2)),
+                'ema': float((i * 3 % 6) + 1),
+            }
+            for i in range(8)
+        ]
+        return pd.DataFrame(rows)
+
+    def test_output_has_eligible_column_not_send_prompt(self):
+        from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
+        df = self._make_df()
+        df = calculate_mssd(df, window=3)
+        result = apply_decision_rules(df)
+        self.assertIn('eligible', result.columns)
+        self.assertNotIn('send_prompt', result.columns)
+
+    def test_output_has_decision_reason_column(self):
+        from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
+        df = self._make_df()
+        df = calculate_mssd(df, window=3)
+        result = apply_decision_rules(df)
+        self.assertIn('decision_reason', result.columns)
+
+    def test_eligible_column_is_boolean(self):
+        from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
+        df = self._make_df()
+        df = calculate_mssd(df, window=3)
+        result = apply_decision_rules(df)
+        self.assertTrue(result['eligible'].isin([True, False]).all())
+
+    def test_eligible_true_iff_decision_reason_is_prompt_sent(self):
+        from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
+        df = self._make_df()
+        df = calculate_mssd(df, window=3)
+        result = apply_decision_rules(df)
+        expected = result['decision_reason'] == 'prompt sent'
+        self.assertTrue((result['eligible'] == expected).all())

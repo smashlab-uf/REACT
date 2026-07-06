@@ -70,7 +70,7 @@ def _evaluate_user(user):
         return
 
     row = match.iloc[0]
-    send_prompt = bool(row['send_prompt'])
+    eligible = bool(row['eligible'])
     raw_mssd = row['observed_mssd']
     observed_mssd = None if pd.isna(raw_mssd) else float(raw_mssd)
     trigger_reason = str(row['decision_reason'])
@@ -80,15 +80,15 @@ def _evaluate_user(user):
 
     jitai_log = JITAILog.objects.create(
         user=user,
-        prompt_id=get_prompt_id(trigger_reason) if send_prompt else '',
+        prompt_id=get_prompt_id(trigger_reason) if eligible else '',
         trigger_reason=trigger_reason,
         hr_at_trigger=recent_hr.bpm if recent_hr else None,
         stress_at_trigger=recent_stress.stress_score if recent_stress else None,
         ema=latest_new_ema,
         observed_mssd=observed_mssd,
-        send_prompt=send_prompt,
-        status='delivered' if send_prompt else 'failed',
+        send_prompt=eligible,
+        status='delivered' if eligible else 'failed',
     )
 
-    if send_prompt and user.push_token:
+    if eligible and user.push_token:
         send_jitai_prompt(user, jitai_log)

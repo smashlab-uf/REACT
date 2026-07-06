@@ -50,7 +50,7 @@ def apply_decision_rules(
 
     df = add_within_person_threshold(df, threshold_quantile)
 
-    df["send_prompt"] = False
+    df["eligible"] = False
     df["decision_reason"] = "below within-person threshold"
 
     for user_id in df["user_id"].unique():
@@ -88,7 +88,7 @@ def apply_decision_rules(
                     last_prompt_time = row["timestamp"]
                     prompts_by_day[day] += 1
 
-    df["send_prompt"] = df["decision_reason"] == "prompt sent"
+    df["eligible"] = df["decision_reason"] == "prompt sent"
 
     return df
 
