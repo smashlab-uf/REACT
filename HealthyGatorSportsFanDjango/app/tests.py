@@ -1,3 +1,4 @@
+import os
 from datetime import timedelta
 from unittest.mock import patch, MagicMock
 from django.test import TestCase, override_settings
@@ -1754,11 +1755,13 @@ class EvaluateJITAITriggersTests(TestCase):
         self.assertEqual(log.trigger_reason, 'insufficient within-person history')
         mock_send.assert_not_called()
 
+    @patch('app.tasks.random.uniform', return_value=0.1)
     @patch('app.tasks.send_jitai_prompt')
-    def test_volatile_emas_trigger_prompt_and_call_expo(self, mock_send):
+    def test_volatile_emas_trigger_prompt_and_call_expo(self, mock_send, mock_rand):
         # 5 stable EMAs establish a baseline MSSD near 0.
         # 1 volatile EMA (big drop in scores) pushes MSSD above the within-person
         # threshold, triggering send_prompt=True.
+        # random.uniform is patched to 0.1 so the coin flip always passes.
         from app.tasks import evaluate_jitai_triggers
         user = self._make_enrolled_user()
         for i in range(5):
@@ -1768,7 +1771,7 @@ class EvaluateJITAITriggersTests(TestCase):
         log = JITAILog.objects.get(user=user)
         self.assertEqual(log.ema, volatile)
         self.assertTrue(log.send_prompt)
-        self.assertEqual(log.status, 'delivered')
+        self.assertEqual(log.status, 'pending')
         mock_send.assert_called_once()
 
     @patch('app.tasks.send_jitai_prompt')
@@ -1970,6 +1973,161 @@ class JITAILogMRTSchemaTests(TestCase):
     def test_status_default_is_pending(self):
         log = self._make_log()
         self.assertEqual(log.status, 'pending')
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EvaluateUserMRTTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(
+            email='mrteval@test.com',
+            is_enrolled=True,
+            push_token='ExponentPushToken[abc123]',
+        )
+        WearableDevice.objects.create(
+            user=self.user,
+            labfront_participant_id='labfront-mrt-001',
+            is_active=True,
+        )
+        base = timezone.now() - timedelta(hours=12)
+        for i in range(5):
+            EMA.objects.create(
+                user=self.user,
+                prompt_id='default',
+                sent_at=base + timedelta(hours=i * 2),
+                responded_at=base + timedelta(hours=i * 2, minutes=5),
+                status='completed',
+                mood=(i % 7) + 1,
+                stress=((i + 2) % 7) + 1,
+                energy=((i + 4) % 7) + 1,
+            )
+
+    def _latest_ema(self):
+        return EMA.objects.filter(user=self.user, status='completed').order_by('-sent_at').first()
+
+    def _eligible_df(self, ema):
+        import pandas as pd
+        return pd.DataFrame([{
+            'user_id': self.user.user_id,
+            'timestamp': pd.Timestamp(ema.sent_at),
+            'ema': 4.0,
+            'observed_mssd': 2.5,
+            'eligible': True,
+            'decision_reason': 'prompt sent',
+            'user_threshold': 1.0,
+        }])
+
+    def _ineligible_df(self, ema):
+        import pandas as pd
+        return pd.DataFrame([{
+            'user_id': self.user.user_id,
+            'timestamp': pd.Timestamp(ema.sent_at),
+            'ema': 4.0,
+            'observed_mssd': 0.5,
+            'eligible': False,
+            'decision_reason': 'below within-person threshold',
+            'user_threshold': 1.0,
+        }])
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.3)
+    def test_eligible_below_p_sends_and_logs_draw(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.randomization_draw, 0.3)
+        self.assertEqual(log.randomization_probability, 0.5)
+        self.assertIsNotNone(log.decision_point_id)
+        mock_send.assert_called_once()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.8)
+    def test_eligible_above_p_does_not_send(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.randomization_draw, 0.8)
+        self.assertEqual(log.status, 'not_sent')
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_ineligible_draw_is_none_and_status_not_sent(self, mock_mssd, mock_rules, mock_send):
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._ineligible_df(ema)
+        mock_rules.return_value = self._ineligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertFalse(log.send_prompt)
+        self.assertIsNone(log.randomization_draw)
+        self.assertEqual(log.status, 'not_sent')
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_idempotent_second_call_creates_no_duplicate(self, mock_mssd, mock_rules, mock_send):
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._ineligible_df(ema)
+        mock_rules.return_value = self._ineligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user)
+        _evaluate_user(self.user)
+
+        self.assertEqual(JITAILog.objects.filter(user=self.user).count(), 1)
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_decision_point_id_is_ema_prefixed(self, mock_mssd, mock_rules, mock_send):
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._ineligible_df(ema)
+        mock_rules.return_value = self._ineligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertEqual(log.decision_point_id, f'ema_{ema.pk}')
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.3)
+    def test_randomization_probability_always_logged(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.4'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertEqual(log.randomization_probability, 0.4)
 
 
 class DecisionEngineEligibilityTests(TestCase):
