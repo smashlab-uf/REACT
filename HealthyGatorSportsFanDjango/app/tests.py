@@ -1761,7 +1761,6 @@ class EvaluateJITAITriggersTests(TestCase):
         # 5 stable EMAs establish a baseline MSSD near 0.
         # 1 volatile EMA (big drop in scores) pushes MSSD above the within-person
         # threshold, triggering send_prompt=True.
-        # random.uniform is patched to 0.1 so the coin flip always passes.
         from app.tasks import evaluate_jitai_triggers
         user = self._make_enrolled_user()
         for i in range(5):
