@@ -4,7 +4,7 @@
 
 REACT (working title) is a research-grade Just-In-Time Adaptive Intervention (JITAI) mHealth
 system built at the SMASH Research Lab, University of Florida, under PI Dr. Yonghwan Chang
-(Department of Sport Management). It extends the prior HealthyGatorSportsFan platform, which
+(Department of Sport Management). It extends the prior REACT platform, which
 delivered push notifications to study participants.
 
 REACT adds:
@@ -36,7 +36,7 @@ November/early December, ~12–14 weeks).
 ## Codebase Structure (HealthyGator baseline)
 
 ```
-HealthyGatorSportsFanDjango/
+backend/
   app/
     models.py          # Django ORM models
     serializers.py     # DRF serializers (one per model)
@@ -46,7 +46,7 @@ HealthyGatorSportsFanDjango/
     tasks.py           # Celery tasks (notification logic)
     migrations/        # Django migration history
 
-HealthyGatorSportsFanRN/
+mobile/
   App.tsx              # React Native entry point
   screens/             # One .tsx file per screen
   constants/           # URL management, shared constants
@@ -300,5 +300,5 @@ auto-generated PKs and timestamps.
 - **Dustin** — student software engineer, primary developer
 - **Prof. Yonghwan Chang** — PI, Department of Sport Management, UF. Owns research
   design and IRB scope. Key sync: Fridays.
-- **Prior platform team** — HealthyGatorSportsFan (football + basketball iterations) built
+- **Prior platform team** — REACT (football + basketball iterations) built
   by prior student teams. Codebase is the starting point for REACT.

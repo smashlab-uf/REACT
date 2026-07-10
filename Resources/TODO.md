@@ -84,7 +84,7 @@
 
 ### Swagger API Title
 **File:** `project/urls.py` line 27  
-**Issue:** Still reads `"Healthy Gator Sports Fan API Viewer"` — should be updated to REACT  
+**Issue:** Still reads `"REACT API Viewer"` — should be updated to REACT  
 
 ### `screen_name` Vocabulary on PhoneTelemetry
 **File:** `app/models.py` — `PhoneTelemetry.screen_name` field  

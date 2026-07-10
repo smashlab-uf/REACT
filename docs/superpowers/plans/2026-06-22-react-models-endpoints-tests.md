@@ -14,7 +14,7 @@
 - All new endpoints: `permission_classes = [IsAuthenticated]`
 - One `ModelSerializer` per model, explicit `fields` list, `read_only_fields` for auto PKs and timestamps
 - No comments in code
-- Tests run from `HealthyGatorSportsFanDjango/` with: `python3 manage.py test app --settings=project.test_settings`
+- Tests run from `backend/` with: `python3 manage.py test app --settings=project.test_settings`
 - Baseline: 95 tests, all passing — do not break them
 - `PhoneTelemetry.metadata` string values must not exceed 50 chars (IRB)
 - `JITAILog.prompt_id` stores template references only — never message text (IRB)
@@ -239,7 +239,7 @@ class EngagementLogModelTests(TestCase):
 - [ ] **Step 2: Run tests to verify they all fail**
 
 ```bash
-cd HealthyGatorSportsFanDjango
+cd backend
 python3 manage.py test app.tests.SleepSummaryModelTests app.tests.PhoneTelemetryModelTests app.tests.EngagementLogModelTests --settings=project.test_settings 2>&1 | tail -5
 ```
 Expected: `ImportError` or `AttributeError` — models do not exist yet.
