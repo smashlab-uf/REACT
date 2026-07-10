@@ -8,7 +8,7 @@
 
 ## Overview
 
-The REACT project extends the existing HealthyGatorSportsFan app with Fitbit OAuth2, wearable telemetry, EMA surveys, and JITAI-based interventions. The schema replaces `UserData` with `EMA` and `NotificationData` with `JITAILog`, and adds two new tables (`WearableDevice`, `HeartRateSample`, `ActivitySummary`).
+The REACT project extends the existing REACT app with Fitbit OAuth2, wearable telemetry, EMA surveys, and JITAI-based interventions. The schema replaces `UserData` with `EMA` and `NotificationData` with `JITAILog`, and adds two new tables (`WearableDevice`, `HeartRateSample`, `ActivitySummary`).
 
 Five logical models, six tables total.
 

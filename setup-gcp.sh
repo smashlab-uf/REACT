@@ -1,18 +1,18 @@
 #!/bin/bash
 
-# HealthyGatorFan GCP Setup Script
+# REACT GCP Setup Script
 # This script sets up all necessary GCP services for the Django backend
 
 set -e  # Exit on any error
 
-PROJECT_ID="healthygator-fan"
+PROJECT_ID="react"
 REGION="us-central1"
-SERVICE_NAME="healthygator-backend"
-DB_INSTANCE_NAME="healthygator-db"
-DB_NAME="healthygator_db"
+SERVICE_NAME="react-backend"
+DB_INSTANCE_NAME="react-db"
+DB_NAME="react_db"
 DB_USER="postgres"
 
-echo "🚀 Setting up HealthyGatorFan on Google Cloud Platform"
+echo "🚀 Setting up REACT on Google Cloud Platform"
 echo "Project ID: $PROJECT_ID"
 echo "Region: $REGION"
 echo ""
@@ -67,25 +67,25 @@ echo "Connection name: $CONNECTION_NAME"
 
 # Create Redis instance
 echo "🔴 Creating Redis instance..."
-gcloud redis instances create healthygator-redis \
+gcloud redis instances create react-redis \
     --size=1 \
     --region=$REGION \
     --redis-version=redis_6_x
 
 # Get Redis IP
-REDIS_IP=$(gcloud redis instances describe healthygator-redis --region=$REGION --format="value(host)")
-REDIS_PORT=$(gcloud redis instances describe healthygator-redis --region=$REGION --format="value(port)")
+REDIS_IP=$(gcloud redis instances describe react-redis --region=$REGION --format="value(host)")
+REDIS_PORT=$(gcloud redis instances describe react-redis --region=$REGION --format="value(port)")
 
 echo "Redis connection: $REDIS_IP:$REDIS_PORT"
 
 # Create Cloud Build trigger
 echo "🔨 Setting up Cloud Build trigger..."
 gcloud builds triggers create github \
-    --repo-name=HealthyGatorFan \
+    --repo-name=REACT \
     --repo-owner=smashresearchlabs \
     --branch-pattern="^main$" \
     --build-config=cloudbuild.yaml \
-    --name=healthygator-cd-trigger
+    --name=react-cd-trigger
 
 # Create environment variables file
 echo "📝 Creating environment variables..."
@@ -106,7 +106,7 @@ echo ""
 echo "📋 Summary:"
 echo "  Project ID: $PROJECT_ID"
 echo "  Database: $DB_INSTANCE_NAME"
-echo "  Redis: healthygator-redis"
+echo "  Redis: react-redis"
 echo "  Connection Name: $CONNECTION_NAME"
 echo "  Redis URL: redis://$REDIS_IP:$REDIS_PORT/0"
 echo ""

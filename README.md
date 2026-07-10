@@ -1,7 +1,7 @@
-# HealthyGatorSportsFan
+# REACT
 Senior Project / JITAI application 2024
 
-<img src="HealthyGatorSportsFanRN/assets/images/clipboardgator.jpg" width="200" /><img src="HealthyGatorSportsFanRN/assets/images/coolgator.png" width="200" />
+<img src="mobile/assets/images/clipboardgator.jpg" width="200" /><img src="mobile/assets/images/coolgator.png" width="200" />
 
 ## Run the App: Simple Setup (recommended)
 This process involves downloading our pre-packaged installation file for testing on a mobile device.
@@ -48,25 +48,25 @@ If you want to develop and test backend code changes locally, you can run the ba
 
 1. Install PostgreSQL
     - Download https://www.postgresql.org/download/windows/.
-    - In the terminal from the **HealthyGatorSportsFan** directory run `python -m pip install psycopg2`
+    - In the terminal from the **REACT** directory run `python -m pip install psycopg2`
     - Open pgAdmin4 (from Windows Start menu) and login with the password you made when downloading PostgreSQL.
         - Go to servers/login/grouproles. Right click and create a new role. Set the priviledges to allow “LOG IN”
         - Name it and set the password.
-        - Right click databases and create “healthygatorsportsfan”. Set the owner to yourself.
-    - Navigate to the **HealthyGatorSportsFanDjango** directory and run `python manage.py migrate` then `python manage.py createsuperuser?`
-    - From the **HealthyGatorSportsFanDjango** directory run `python manage.py runserver`, and open the link. Navigate to http://localhost:8000/admin and log in with your superuser credentials.
+        - Right click databases and create “react”. Set the owner to yourself.
+    - Navigate to the **backend** directory and run `python manage.py migrate` then `python manage.py createsuperuser?`
+    - From the **backend** directory run `python manage.py runserver`, and open the link. Navigate to http://localhost:8000/admin and log in with your superuser credentials.
 
 1. Install CORS for Django
-   - Navigate to the **HealthyGatorSportsFanDjango** directory and run `pip install django-cors-headers`. This allows for ExpoGo to connect to the local server on the backend
+   - Navigate to the **backend** directory and run `pip install django-cors-headers`. This allows for ExpoGo to connect to the local server on the backend
   
 1. Install College Football Data API and other needed modules
-   - Navigate to the **HealthyGatorSportsFanDjango** directory and run:
+   - Navigate to the **backend** directory and run:
      - `python -m pip install cfbd==5.3.3a1` (click [here](https://github.com/CFBD/cfbd-python/tree/next?tab=readme-ov-file#installation--usage) for more information)
      - `python -m pip install pytz`
      - `python -m pip install exponent-server-sdk`
 
 1. Install OpenAPI SARTBEAR Swagger generation tool for Django Rest Framework
-   - Navigate to the **HealthyGatorSportsFanDjango** directory and run `pip install drf-yasg`
+   - Navigate to the **backend** directory and run `pip install drf-yasg`
 
 1. Set up Ngrok
    - Follow Steps 1-4 in these instructions: [Quickstart | ngrok documentation](https://ngrok.com/docs/getting-started/?os=windows). Use port 8000 instead of 8080. And be sure to create a static domain (step 4). Here is an excerpt with some tweaks for our use case:
@@ -88,8 +88,8 @@ If you want to develop and test backend code changes locally, you can run the ba
                                           0       0       0.00    0.00    0.00    0.00
         ```
      - **Step 4: Always use the same domain** - If you want to keep the same URL each time you use ngrok (NOTE: You will), create a static domain on your dashboard and then use the --url flag to ask the ngrok agent to use it. First, stop ngrok with Ctrl+C and then run ngrok again: `ngrok http 8000 --url <your new static domain>`. Use this link to get to your dashboard once set up: https://dashboard.ngrok.com/
-   - Navigate to **HealthyGatorSportsFanDjango\project\settings.py** and add your new static domain to ALLOWED_HOSTS and CSRF_TRUSTED_ORIGIN.
-   - Navigate to **HealthyGatorSportsFanRN\constants\AppUrls.ts**, add your new static domain to the list. Comment out other URLs in the list. This will ensure the frontend uses this host for API calls.
+   - Navigate to **backend\project\settings.py** and add your new static domain to ALLOWED_HOSTS and CSRF_TRUSTED_ORIGIN.
+   - Navigate to **mobile\constants\AppUrls.ts**, add your new static domain to the list. Comment out other URLs in the list. This will ensure the frontend uses this host for API calls.
 
 1. Install Celery and Redis
    - Open a terminal in your virtual environment and run: 'python -m pip install celery redis'. This installs Celery (the task queue) and Redis (the message broker).   
@@ -102,14 +102,14 @@ Once you've completed the prerequisites, you're ready to run the application by 
 ##### Step 1. Run the Django server
 
 Be sure you've already completed the following steps specified in the pre-requisites:
-   - Navigate to **HealthyGatorSportsFanDjango\project\settings.py** and add your new static domain to ALLOWED_HOSTS and CSRF_TRUSTED_ORIGIN.
-   - Navigate to **HealthyGatorSportsFanRN\constants\AppUrls.ts**, add your new static domain to the list. Comment out other URLs in the list. This will ensure the frontend uses this host for API calls.
+   - Navigate to **backend\project\settings.py** and add your new static domain to ALLOWED_HOSTS and CSRF_TRUSTED_ORIGIN.
+   - Navigate to **mobile\constants\AppUrls.ts**, add your new static domain to the list. Comment out other URLs in the list. This will ensure the frontend uses this host for API calls.
 
-In a terminal, navigate to **HealthyGatorSportsFanDjango** directory  and run `ngrok http 8000 --url <your new static domain>`. 
+In a terminal, navigate to **backend** directory  and run `ngrok http 8000 --url <your new static domain>`. 
 
 ##### Step 2. Run the Django server
 
-In a terminal, navigate to the **HealthyGatorSportsFanDjango** directory and run `python manage.py runserver 0.0.0.0:8000`. You should see something like this in the terminal:
+In a terminal, navigate to the **backend** directory and run `python manage.py runserver 0.0.0.0:8000`. You should see something like this in the terminal:
 
 <img width="881" alt="image" src="https://github.com/user-attachments/assets/ea048a5a-5931-4690-8865-2418a4a461a1">
 
@@ -128,10 +128,10 @@ Open a terminal as admin (you’ll need root privileges) and navigate to the dir
 > <img width="1117" alt="image" src="https://github.com/user-attachments/assets/604611da-5681-42f2-84d8-e9cfbb38c687">
 
 ##### Step 4: Run the Celery worker
-Open a new terminal and navigate to the **HealthyGatorSportsFanDjango** directory. Start the Celery worker by running `celery -A project worker --pool=solo -l info`. This command starts the Celery worker, which polls Redis for new tasks. The `--pool=solo` forces things to become single threaded so it can work on Windows. 
+Open a new terminal and navigate to the **backend** directory. Start the Celery worker by running `celery -A project worker --pool=solo -l info`. This command starts the Celery worker, which polls Redis for new tasks. The `--pool=solo` forces things to become single threaded so it can work on Windows. 
 
 ##### Step 5: Run the Celery beat scheduler
-Open a new terminal and navigate to the **HealthyGatorSportsFanDjango** directory. Start the celery beat scheduler by running `celery -A project beat --loglevel=info`. This command starts the Celery beat scheduler, which sends tasks to the message broker (in this case, Redis) at set intervals, e.g., every 10 seconds.
+Open a new terminal and navigate to the **backend** directory. Start the celery beat scheduler by running `celery -A project beat --loglevel=info`. This command starts the Celery beat scheduler, which sends tasks to the message broker (in this case, Redis) at set intervals, e.g., every 10 seconds.
 
 Now the backend should be up and running locally!
 
@@ -144,7 +144,7 @@ Now the backend should be up and running locally!
 
 ##### Step 0: Prerequisite downloads and installations
 
-Navigate to the **HealthyGatorSportsFanRN** directory and run the following:
+Navigate to the **mobile** directory and run the following:
 - `npm install`
 - `npx expo install react-native-web`
 - `npx expo install expo-web-browser`
@@ -152,7 +152,7 @@ Navigate to the **HealthyGatorSportsFanRN** directory and run the following:
 > [!WARNING]
 > Running `npm audit fix` will cause errors.
 
-Within the **HealthyGatorSportsFanRN** directory run:
+Within the **mobile** directory run:
 - `npx expo start`
 
 #### Option 2.1: Using Expo Go CLI
@@ -197,15 +197,15 @@ To run the app on the Android emulator:
    - Open Expo Go in the Android emulator
    - In the Expo Go CLI press `a`
 
-HealthyGatorSportsFan is organized into two primary directories: **HealthyGatorSportsFanDjango** for the Django-powered backend code, and **HealthyGatorSportsFanRN** for the React Native frontend code.
+REACT is organized into two primary directories: **backend** for the Django-powered backend code, and **mobile** for the React Native frontend code.
 
 ### Backend
 
-Database entities for User, UserData, and NotificationData are defined in HealthyGatorSportsFanDjango/app/models.py.
+Database entities for User, UserData, and NotificationData are defined in backend/app/models.py.
 
-APIs are defined in the backend in [HealthyGatorSportsFanDjango/app/views.py](HealthyGatorSportsFanDjango/app/views.py)
+APIs are defined in the backend in [backend/app/views.py](backend/app/views.py)
 
-API URLs are captured in [HealthyGatorSportsFanDjango/project/urls.py](HealthyGatorSportsFanDjango/project/urls.py)
+API URLs are captured in [backend/project/urls.py](backend/project/urls.py)
 
 Thse REST APIs are documented in our [Swagger](https://healthygatorsportsfan-84ee3c84673f.herokuapp.com/swagger/).
 

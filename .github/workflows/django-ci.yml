@@ -23,7 +23,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: HealthyGatorSportsFanDjango
+        working-directory: backend
 
     env:
       SECRET_KEY: ci-secret-key
@@ -43,7 +43,7 @@ jobs:
           cache: "pip"
           cache-dependency-path: |
             requirements.txt
-            HealthyGatorSportsFanDjango/requirements.txt
+            backend/requirements.txt
 
       - name: Install dependencies
         run: pip install -r requirements.txt

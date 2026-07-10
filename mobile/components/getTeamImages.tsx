@@ -3,7 +3,7 @@ This file is used to manage dynamic image loading for opposing teams.
 Ensure to load all possible opponents into this file
  */
 
-// TODO: Add all remaining college abbreviations from HealthyGatorSportsFanRN\constants\Abbreviations.ts to this file
+// TODO: Add all remaining college abbreviations from mobile\constants\Abbreviations.ts to this file
     // Can limit this to only the team UF will play.
 
 interface Image {
