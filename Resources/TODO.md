@@ -1,6 +1,6 @@
 # REACT — Open Items & TODOs
 
-**Last updated:** 2026-07-01  
+**Last updated:** 2026-07-06  
 **Author:** Dustin Nguyen — SMASH Research Lab, UF
 
 ---
@@ -26,12 +26,6 @@
 ---
 
 ## Blocked on PI Sign-Off
-
-### JITAI Trigger Thresholds
-**File:** `decision_engine/decision_engine.py` → `apply_decision_rules()`  
-**Status:** Defaults are set (threshold_quantile=0.80, cooldown_minutes=60, max_prompts_per_day=4)  
-**Action needed:** Prof. Chang to confirm or adjust these values before study launch  
-**Reference:** Architecture doc, Section 5 (Key Constraints)
 
 ### Researcher Dashboard (Django Admin Extension)
 **Status:** Deferred — waiting on PI availability  
@@ -63,33 +57,61 @@
 | Question | Owner | Notes |
 |---|---|---|
 | Labfront API vs batch export | Prof. Chang | Determine pricing and access tier before writing `ingest_wearable_data` |
-| Garmin Venu 3 Fitabase/Labfront compatibility | Prof. Chang | Verify all required data streams (15-sec HR, 3-min stress) are supported before signing contract |
+| Garmin Venu 3 Labfront compatibility | Prof. Chang | Verify all required data streams (15-sec HR, 3-min stress) are supported before signing contract |
 | Beat-to-beat RR interval collection | Prof. Chang | Confirm device support and IRB permission; would enable HRV analysis |
 | RA access scope | Prof. Chang + IRB | Which fields, which tables; needed before building researcher dashboard |
-| JITAI threshold values | Prof. Chang | Confirm or adjust decision engine defaults (0.80 quantile, 60 min cooldown, 4/day cap) |
 | Push notification prompt library | Prof. Chang | Define prompt templates and trigger-reason → prompt_id mapping |
+| Alcohol and eating construct — DB fields needed? | Prof. Chang | These constructs currently have zero DB backing; confirm if DB fields are required or Qualtrics is sole source |
+| Cyber aggression construct mapping | Prof. Chang | Confirm compose churn signals (keystroke_count, delete_count) are the designated DB measure |
+
+---
+
+## PI Sign-Offs Received (2026-07-06)
+
+| Item | Confirmed value |
+|---|---|
+| Randomization probability p | 0.5, fixed for whole pilot |
+| Decision point trigger | EMA completion — one DP per new completed EMA |
+| HR/stress eligibility gating | No — covariates only; MSSD is the sole eligibility signal |
+| Cooldown between prompts | 60 minutes |
+| Daily prompt cap | 4 per day |
+| Failed delivery retry policy | One immediate retry for transient Expo errors; no delayed redelivery |
+| JITAI trigger threshold quantile | 0.80 within-person expanding percentile (confirmed as default) |
+
+---
+
+## Completed Implementation
+
+### JITAI MRT Celery Task (2026-07-06)
+**Commits:** `9d87afb` → `a149033` (branch `feat-Final-Database-Model`)  
+**Files changed:** `app/models.py`, `app/migrations/0035_jitailog_mrt_fields.py`, `decision_engine/decision_engine.py`, `app/tasks.py`, `app/notification_service.py`, `app/serializers.py`, `app/tests.py`  
+**Test count:** 152 → 176 (all passing)
+
+What was built:
+- `JITAILog` schema — `decision_point_id` (UNIQUE, idempotency key), `randomization_probability`, `randomization_draw`; status choices expanded to include `pending` and `not_sent`; default changed to `pending`
+- Decision engine — `apply_decision_rules()` now returns `eligible` column (not `send_prompt`); coin flip moved to task layer
+- `_evaluate_user` — `get_or_create` idempotency, coin flip at p=0.5, full MRT record written before delivery
+- `send_jitai_prompt` — one immediate retry on `PushServerError`/`PushTicketError`; `status='delivered'` set explicitly on success; `DeviceNotRegisteredError` clears token
+- Serializers — `JITAILogSerializer` and `TelemetryJITAILogSerializer` expose all three new fields
 
 ---
 
 ## Technical Debt / Known Issues
 
-### Legacy `poll_cfbd` Management Command
-**File:** `app/management/commands/poll_cfbd.py`  
-**Issue:** Hardcoded `America/New_York` timezone (line 24); references 2024/2025 season logic (line 35)  
-**Action:** Can be deleted entirely once REACT study launches — this is HealthyGator legacy code that has no role in REACT
-
-### `dj-database-url` Missing from `requirements.txt`
-**File:** `project/settings.py` imports `dj_database_url` but `requirements.txt` doesn't list it  
-**Fix:** `dj-database-url==2.3.0` is in `requirements_mac.txt` — add it to `requirements.txt`
-
-### Swagger API Title
-**File:** `project/urls.py` line 27  
-**Issue:** Still reads `"Healthy Gator Sports Fan API Viewer"` — should be updated to REACT  
-
 ### `screen_name` Vocabulary on PhoneTelemetry
 **File:** `app/models.py` — `PhoneTelemetry.screen_name` field  
 **Issue:** Field is nullable pending a controlled vocabulary from Prof. Chang  
 **Action:** Once screen names are defined in the React Native app, add a `choices` constraint and make the field non-nullable
+
+### JITAI: stuck `pending` when randomized but no push token
+**File:** `app/tasks.py:128`  
+**Issue:** If `send_prompt=True` but `user.push_token` is falsy, the jitai_log row is written with `status='pending'` and never updated. Effectively a missing delivery that is invisible in MRT analysis.  
+**Action:** Add an explicit `not_sent` branch when `send_prompt=True and not user.push_token`
+
+### JITAI: `'0.5'` hardcoded as env var fallback
+**File:** `app/tasks.py:38`  
+**Issue:** `os.environ.get('JITAI_RANDOMIZATION_PROBABILITY', '0.5')` silently defaults to 0.5 if the env var is missing. For an MRT study this could run at the wrong p undetected.  
+**Action:** Consider raising an error or logging a loud warning when the env var is absent at task startup
 
 ---
 
@@ -101,3 +123,4 @@
 | `JITAI_DEFAULT_PROMPT_ID` | `notification_service.py` | Default prompt template key sent to mobile app |
 | `JITAI_HR_PROMPT_ID` | `notification_service.py` (future) | HR-triggered prompt template key |
 | `JITAI_MOOD_PROMPT_ID` | `notification_service.py` (future) | Low-mood prompt template key |
+| `JITAI_RANDOMIZATION_PROBABILITY` | `tasks.py` → `_evaluate_user` | Randomization probability p — confirmed 0.5 for all participants, whole pilot |

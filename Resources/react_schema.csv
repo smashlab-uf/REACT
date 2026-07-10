@@ -44,6 +44,9 @@ react_db,public,jitai_log,ema_id,8,INT,4,FOREIGN KEY,public,ema,id
 react_db,public,jitai_log,observed_mssd,9,FLOAT,,,,,
 react_db,public,jitai_log,send_prompt,10,BOOLEAN,,,,,
 react_db,public,jitai_log,status,11,VARCHAR,16,,,,
+react_db,public,jitai_log,decision_point_id,12,VARCHAR,64,UNIQUE,,,
+react_db,public,jitai_log,randomization_probability,13,FLOAT,,,,,
+react_db,public,jitai_log,randomization_draw,14,FLOAT,,,,,
 react_db,public,phone_telemetry,id,1,INT,8,PRIMARY KEY,,,
 react_db,public,phone_telemetry,user_id,2,INT,4,FOREIGN KEY,public,user,user_id
 react_db,public,phone_telemetry,session_id,3,VARCHAR,64,,,,

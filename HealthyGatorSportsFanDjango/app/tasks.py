@@ -25,23 +25,19 @@ def evaluate_jitai_triggers():
         is_enrolled=True,
         wearabledevice__is_active=True,
     )
+
+    p = float(os.environ.get('JITAI_RANDOMIZATION_PROBABILITY', '0.5'))
+
     for user in enrolled_users:
         try:
-            _evaluate_user(user)
+            _evaluate_user(user, p)
         except Exception:
             logger.exception(
                 "evaluate_jitai_triggers failed for user_id=%s", user.user_id
             )
 
 
-def _evaluate_user(user):
-    p = float(os.environ.get('JITAI_RANDOMIZATION_PROBABILITY', '0.5'))
-    varies = os.environ.get('JITAI_RANDOMIZATION_VARIES', 'false').lower() == 'true'
-    if varies:
-        logger.warning(
-            "JITAI_RANDOMIZATION_VARIES=true but per-participant lookup is not "
-            "implemented — using fixed p=%s for user_id=%s", p, user.user_id
-        )
+def _evaluate_user(user, p):
 
     latest_new_ema = (
         EMA.objects.filter(user=user, status='completed')
