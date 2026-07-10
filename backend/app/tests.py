@@ -1,3 +1,4 @@
+import os
 from datetime import timedelta
 from unittest.mock import patch, MagicMock
 from django.test import TestCase, override_settings
@@ -16,8 +17,6 @@ from app.serializers import (
     WearableDeviceSerializer, HeartRateSampleSerializer,
     StressSampleSerializer, EMASerializer, JITAILogSerializer,
 )
-from app.utils import check_game_status, send_notification
-
 FAST_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 
 
@@ -28,16 +27,6 @@ def make_user(email='test@example.com', password='testpass123', **kwargs):
     user.set_password(password)
     user.save()
     return user
-
-
-def make_game(home_name, home_pts, away_name, away_pts, game_status):
-    game = MagicMock()
-    game.home_team.name = home_name
-    game.home_team.points = home_pts
-    game.away_team.name = away_name
-    game.away_team.points = away_pts
-    game.status = game_status
-    return game
 
 
 def authenticated_client(app_user):
@@ -97,139 +86,6 @@ class UserLegacyFieldsTest(TestCase):
                        'goal_to_lose_weight', 'goal_to_feel_better'):
             self.assertNotIn(legacy, serializer_fields,
                              msg=f"Legacy field '{legacy}' still in UserSerializer")
-
-
-# ---------------------------------------------------------------------------
-# Utils: check_game_status
-#
-# NOTE: Tests for Florida as the HOME team (winning/losing while home) will
-# FAIL due to a bug in utils.py line 57:
-#   `if curr_game.home_team == curr_team:`
-# should be:
-#   `if curr_game.home_team.name == curr_team:`
-# The tests are written for the correct expected behavior to document the bug.
-# ---------------------------------------------------------------------------
-
-class CheckGameStatusTests(TestCase):
-
-    def _api(self, games):
-        api = MagicMock()
-        api.get_scoreboard.return_value = games
-        return api
-
-    def test_no_florida_game_returns_no_game_found(self):
-        api = self._api([make_game('Alabama', 7, 'Georgia', 3, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'No game found')
-
-    def test_empty_scoreboard_returns_no_game_found(self):
-        api = self._api([])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'No game found')
-
-    def test_scheduled_game_returns_game_not_started(self):
-        api = self._api([make_game('Florida Gators', 0, 'Alabama', 0, 'scheduled')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'Game not started')
-
-    # Florida as AWAY team — these all pass (bug does not affect away branch)
-
-    def test_florida_away_winning_by_14_or_more_returns_winning_decisive(self):
-        api = self._api([make_game('Alabama', 10, 'Florida Gators', 24, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'winning_decisive')
-
-    def test_florida_away_winning_by_1_to_13_returns_winning_close(self):
-        api = self._api([make_game('Alabama', 10, 'Florida Gators', 17, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'winning_close')
-
-    def test_florida_away_tied_returns_tied(self):
-        api = self._api([make_game('Alabama', 7, 'Florida Gators', 7, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'tied')
-
-    def test_florida_away_losing_by_1_to_13_returns_losing_close(self):
-        api = self._api([make_game('Alabama', 17, 'Florida Gators', 10, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'losing_close')
-
-    def test_florida_away_losing_by_14_or_more_returns_losing_decisive(self):
-        api = self._api([make_game('Alabama', 35, 'Florida Gators', 7, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'losing_decisive')
-
-    def test_florida_away_completed_winning_by_14_returns_won_decisive(self):
-        api = self._api([make_game('Alabama', 10, 'Florida Gators', 35, 'completed')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'won_decisive')
-
-    def test_florida_away_completed_winning_by_1_to_13_returns_won_close(self):
-        api = self._api([make_game('Alabama', 14, 'Florida Gators', 21, 'completed')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'won_close')
-
-    def test_florida_away_completed_losing_by_1_to_13_returns_lost_close(self):
-        api = self._api([make_game('Alabama', 21, 'Florida Gators', 14, 'completed')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'lost_close')
-
-    def test_florida_away_completed_losing_by_14_or_more_returns_lost_decisive(self):
-        api = self._api([make_game('Alabama', 35, 'Florida Gators', 10, 'completed')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'lost_decisive')
-
-    # Florida as HOME team — these FAIL due to the home_team == curr_team bug
-
-    def test_florida_home_winning_by_14_or_more_returns_winning_decisive(self):
-        api = self._api([make_game('Florida Gators', 24, 'Alabama', 10, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'winning_decisive')
-
-    def test_florida_home_winning_by_1_to_13_returns_winning_close(self):
-        api = self._api([make_game('Florida Gators', 17, 'Alabama', 10, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'winning_close')
-
-    def test_florida_home_losing_by_1_to_13_returns_losing_close(self):
-        api = self._api([make_game('Florida Gators', 10, 'Alabama', 17, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'losing_close')
-
-    def test_florida_home_losing_by_14_or_more_returns_losing_decisive(self):
-        api = self._api([make_game('Florida Gators', 3, 'Alabama', 21, 'in_progress')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'losing_decisive')
-
-    def test_florida_home_completed_won_decisive(self):
-        api = self._api([make_game('Florida Gators', 35, 'Alabama', 14, 'completed')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'won_decisive')
-
-    def test_florida_home_completed_lost_decisive(self):
-        api = self._api([make_game('Florida Gators', 10, 'Alabama', 35, 'completed')])
-        result, *_ = check_game_status(api)
-        self.assertEqual(result, 'lost_decisive')
-
-    # Result structure
-
-    def test_result_includes_team_names_and_scores(self):
-        api = self._api([make_game('Alabama', 10, 'Florida Gators', 24, 'in_progress')])
-        _, home_team, home_score, away_team, away_score, _ = check_game_status(api)
-        self.assertEqual(home_team, 'Alabama')
-        self.assertEqual(home_score, 10)
-        self.assertEqual(away_team, 'Florida Gators')
-        self.assertEqual(away_score, 24)
-
-    def test_live_game_returns_in_progress_completion_status(self):
-        api = self._api([make_game('Alabama', 7, 'Florida Gators', 7, 'in_progress')])
-        *_, completion = check_game_status(api)
-        self.assertEqual(completion, 'in_progress')
-
-    def test_finished_game_returns_completed_completion_status(self):
-        api = self._api([make_game('Alabama', 14, 'Florida Gators', 21, 'completed')])
-        *_, completion = check_game_status(api)
-        self.assertEqual(completion, 'completed')
 
 
 # ---------------------------------------------------------------------------
@@ -409,68 +265,6 @@ class UserLoginViewTests(TestCase):
     def test_missing_password_returns_400(self):
         response = self.client.post('/user/login/', {'email': 'gator@ufl.edu'}, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
-
-
-# ---------------------------------------------------------------------------
-# Utils: send_notification — score deduplication via cache
-# ---------------------------------------------------------------------------
-
-class SendNotificationTests(TestCase):
-
-    @patch('app.utils.send_push_notification_next_game')
-    @patch('app.utils.cache')
-    @patch('app.utils.get_users_with_push_token')
-    def test_no_push_tokens_sends_nothing(self, mock_get_tokens, mock_cache, mock_send):
-        mock_get_tokens.return_value = []
-        send_notification('winning_decisive', 'Florida Gators', 24, 'Alabama', 10)
-        mock_send.assert_not_called()
-
-    @patch('app.utils.send_push_notification_next_game')
-    @patch('app.utils.cache')
-    @patch('app.utils.get_users_with_push_token')
-    def test_new_score_sends_notification(self, mock_get_tokens, mock_cache, mock_send):
-        mock_get_tokens.return_value = [{'user_id': 1, 'push_token': 'ExponentPushToken[abc]'}]
-        mock_cache.get.return_value = None
-        send_notification('winning_decisive', 'Florida Gators', 24, 'Alabama', 10)
-        mock_send.assert_called_once()
-
-    @patch('app.utils.send_push_notification_next_game')
-    @patch('app.utils.cache')
-    @patch('app.utils.get_users_with_push_token')
-    def test_unchanged_score_does_not_resend(self, mock_get_tokens, mock_cache, mock_send):
-        mock_get_tokens.return_value = [{'user_id': 1, 'push_token': 'ExponentPushToken[abc]'}]
-        mock_cache.get.return_value = b'24-10'
-        send_notification('winning_decisive', 'Florida Gators', 24, 'Alabama', 10)
-        mock_send.assert_not_called()
-
-    @patch('app.utils.send_push_notification_next_game')
-    @patch('app.utils.cache')
-    @patch('app.utils.get_users_with_push_token')
-    def test_updated_score_sends_new_notification(self, mock_get_tokens, mock_cache, mock_send):
-        mock_get_tokens.return_value = [{'user_id': 1, 'push_token': 'ExponentPushToken[abc]'}]
-        mock_cache.get.return_value = b'17-10'
-        send_notification('winning_decisive', 'Florida Gators', 24, 'Alabama', 10)
-        mock_send.assert_called_once()
-
-    @patch('app.utils.send_push_notification_next_game')
-    @patch('app.utils.cache')
-    @patch('app.utils.get_users_with_push_token')
-    def test_no_game_found_sends_nothing(self, mock_get_tokens, mock_cache, mock_send):
-        mock_get_tokens.return_value = [{'user_id': 1, 'push_token': 'ExponentPushToken[abc]'}]
-        mock_cache.get.return_value = None
-        send_notification('No game found', '', 0, '', 0)
-        mock_send.assert_not_called()
-
-    @patch('app.utils.send_push_notification_next_game')
-    @patch('app.utils.cache')
-    @patch('app.utils.get_users_with_push_token')
-    def test_sending_notification_updates_cache_with_current_score(
-        self, mock_get_tokens, mock_cache, mock_send
-    ):
-        mock_get_tokens.return_value = [{'user_id': 1, 'push_token': 'ExponentPushToken[abc]'}]
-        mock_cache.get.return_value = None
-        send_notification('winning_decisive', 'Florida Gators', 24, 'Alabama', 10)
-        mock_cache.set.assert_called_once_with('last_score', '24-10')
 
 
 # ---------------------------------------------------------------------------
@@ -707,14 +501,14 @@ class JITAILogModelTests(TestCase):
         self.assertEqual(log.hr_at_trigger, 105)
         self.assertEqual(log.stress_at_trigger, 72)
 
-    def test_status_defaults_to_delivered(self):
+    def test_status_defaults_to_pending(self):
         user = make_user()
         log = JITAILog.objects.create(
             user=user,
             prompt_id='TEMPLATE_001',
             trigger_reason='hr_elevated',
         )
-        self.assertEqual(log.status, 'delivered')
+        self.assertEqual(log.status, 'pending')
 
     def test_triggered_at_is_set_automatically(self):
         user = make_user()
@@ -871,7 +665,7 @@ class JITAILogSerializerTests(TestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
         log = serializer.save()
         self.assertEqual(log.trigger_reason, 'hr_elevated+stress_high')
-        self.assertEqual(log.status, 'delivered')
+        self.assertEqual(log.status, 'pending')
 
     def test_triggered_at_is_read_only(self):
         user = make_user()
@@ -941,7 +735,6 @@ class TelemetryIngestViewTests(TestCase):
                     'session_id': 'SESSION_ABC',
                     'event_type': 'draft_started',
                     'occurred_at': '2026-06-12T14:04:00Z',
-                    'game_clock_state': 'live',
                     'screen_name': 'game_thread',
                     'latency_ms': 120,
                     'metadata': {'source': 'demo'},
@@ -951,7 +744,6 @@ class TelemetryIngestViewTests(TestCase):
                 {
                     'event_type': 'notification_tapped',
                     'occurred_at': '2026-06-12T14:05:00Z',
-                    'game_clock_state': 'live',
                 }
             ],
         }
@@ -1022,10 +814,8 @@ class PhoneTelemetryModelTests(TestCase):
             session_id='SESSION_ABC',
             event_type='draft_started',
             occurred_at=timezone.now(),
-            game_clock_state='live',
         )
         self.assertEqual(event.event_type, 'draft_started')
-        self.assertEqual(event.game_clock_state, 'live')
         self.assertIsNotNone(event.recorded_at)
 
     def test_metadata_is_nullable(self):
@@ -1101,7 +891,6 @@ class EngagementLogModelTests(TestCase):
             user=user,
             event_type='ema_completed',
             occurred_at=timezone.now(),
-            game_clock_state='live',
         )
         self.assertEqual(log.event_type, 'ema_completed')
         self.assertIsNone(log.jitai_log)
@@ -1161,7 +950,7 @@ class PhoneTelemetrySerializerTests(TestCase):
         user = make_user()
         serializer = PhoneTelemetrySerializer(data=self._base_data())
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        event = serializer.save(user=user, game_clock_state='pre')
+        event = serializer.save(user=user)
         self.assertEqual(event.event_type, 'draft_submitted')
         self.assertEqual(event.metadata['keystroke_count'], 42)
 
@@ -1187,18 +976,8 @@ class PhoneTelemetrySerializerTests(TestCase):
         data['recorded_at'] = '2020-01-01T00:00:00Z'
         serializer = PhoneTelemetrySerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        event = serializer.save(user=user, game_clock_state='pre')
+        event = serializer.save(user=user)
         self.assertNotEqual(str(event.recorded_at.year), '2020')
-
-    def test_game_clock_state_is_read_only(self):
-        from app.serializers import PhoneTelemetrySerializer
-        user = make_user()
-        data = self._base_data()
-        data['game_clock_state'] = 'live'
-        serializer = PhoneTelemetrySerializer(data=data)
-        self.assertTrue(serializer.is_valid(), serializer.errors)
-        event = serializer.save(user=user, game_clock_state='pre')
-        self.assertEqual(event.game_clock_state, 'pre')
 
 
 # ---------------------------------------------------------------------------
@@ -1217,7 +996,7 @@ class EngagementLogSerializerTests(TestCase):
         }
         serializer = EngagementLogSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        log = serializer.save(user=user, game_clock_state='pre')
+        log = serializer.save(user=user)
         self.assertEqual(log.event_type, 'ema_completed')
         self.assertIsNone(log.jitai_log)
 
@@ -1234,7 +1013,7 @@ class EngagementLogSerializerTests(TestCase):
         }
         serializer = EngagementLogSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        log = serializer.save(user=user, game_clock_state='pre')
+        log = serializer.save(user=user)
         self.assertEqual(log.jitai_log, jitai)
 
 
@@ -1515,37 +1294,17 @@ class PhoneTelemetryEndpointTests(TestCase):
             'metadata': {'keystroke_count': 42, 'delete_count': 5},
         }
 
-    @patch('app.views.get_game_clock_state', return_value='live')
-    def test_post_creates_event_and_stamps_game_clock_state(self, mock_gcs):
-        from app.models import PhoneTelemetry
-        response = self.client.post('/telemetry/phone/', self._payload(), format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        event = PhoneTelemetry.objects.get(user=self.user)
-        self.assertEqual(event.game_clock_state, 'live')
-
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_irb_violation_long_string_metadata_returns_400(self, mock_gcs):
+    def test_irb_violation_long_string_metadata_returns_400(self):
         payload = self._payload()
         payload['metadata'] = {'text': 'x' * 51}
         response = self.client.post('/telemetry/phone/', payload, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_client_supplied_game_clock_state_is_ignored(self, mock_gcs):
-        from app.models import PhoneTelemetry
-        payload = self._payload()
-        payload['game_clock_state'] = 'live'
-        response = self.client.post('/telemetry/phone/', payload, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        event = PhoneTelemetry.objects.get(user=self.user)
-        self.assertEqual(event.game_clock_state, 'pre')
-
     def test_post_without_auth_returns_401(self):
         response = APIClient().post('/telemetry/phone/', self._payload(), format='json')
         self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_invalid_event_type_returns_400(self, mock_gcs):
+    def test_invalid_event_type_returns_400(self):
         payload = self._payload()
         payload['event_type'] = 'not_a_real_event'
         response = self.client.post('/telemetry/phone/', payload, format='json')
@@ -1563,21 +1322,7 @@ class EngagementEndpointTests(TestCase):
         self.user = make_user(email='engage@ufl.edu')
         self.client = authenticated_client(self.user)
 
-    @patch('app.views.get_game_clock_state', return_value='live')
-    def test_post_creates_engagement_event_and_stamps_game_clock_state(self, mock_gcs):
-        from app.models import EngagementLog
-        response = self.client.post('/telemetry/engagement/', {
-            'user': self.user.user_id,
-            'event_type': 'ema_completed',
-            'occurred_at': '2026-09-01T15:10:00Z',
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        log = EngagementLog.objects.get(user=self.user)
-        self.assertEqual(log.game_clock_state, 'live')
-        self.assertIsNone(log.jitai_log)
-
-    @patch('app.views.get_game_clock_state', return_value='live')
-    def test_post_with_jitai_log_links_correctly(self, mock_gcs):
+    def test_post_with_jitai_log_links_correctly(self):
         from app.models import EngagementLog
         jitai = JITAILog.objects.create(
             user=self.user, prompt_id='T1', trigger_reason='hr_elevated'
@@ -1600,27 +1345,13 @@ class EngagementEndpointTests(TestCase):
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_invalid_event_type_returns_400(self, mock_gcs):
+    def test_invalid_event_type_returns_400(self):
         response = self.client.post('/telemetry/engagement/', {
             'user': self.user.user_id,
             'event_type': 'not_a_real_event',
             'occurred_at': '2026-09-01T15:10:00Z',
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
-
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_client_supplied_game_clock_state_is_ignored(self, mock_gcs):
-        from app.models import EngagementLog
-        response = self.client.post('/telemetry/engagement/', {
-            'user': self.user.user_id,
-            'event_type': 'ema_opened',
-            'occurred_at': '2026-09-01T15:10:00Z',
-            'game_clock_state': 'live',
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        log = EngagementLog.objects.get(user=self.user)
-        self.assertEqual(log.game_clock_state, 'pre')
 
 
 # ---------------------------------------------------------------------------
@@ -1869,8 +1600,7 @@ class PhoneTelemetryOwnershipTests(TestCase):
         self.other = make_user(email='phone_other@ufl.edu')
         self.client = authenticated_client(self.user)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_user_derived_from_token_not_body(self, mock_gcs):
+    def test_user_derived_from_token_not_body(self):
         from app.models import PhoneTelemetry
         response = self.client.post('/telemetry/phone/', {
             'user': self.other.user_id,
@@ -1882,8 +1612,7 @@ class PhoneTelemetryOwnershipTests(TestCase):
         event = PhoneTelemetry.objects.get(id=response.data['id'])
         self.assertEqual(event.user, self.user)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_post_without_user_in_body_succeeds(self, mock_gcs):
+    def test_post_without_user_in_body_succeeds(self):
         response = self.client.post('/telemetry/phone/', {
             'session_id': 'S2',
             'event_type': 'session_end',
@@ -1905,8 +1634,7 @@ class EngagementLogOwnershipTests(TestCase):
         self.other = make_user(email='engage_other@ufl.edu')
         self.client = authenticated_client(self.user)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_user_derived_from_token_not_body(self, mock_gcs):
+    def test_user_derived_from_token_not_body(self):
         from app.models import EngagementLog
         response = self.client.post('/telemetry/engagement/', {
             'user': self.other.user_id,
@@ -1917,8 +1645,7 @@ class EngagementLogOwnershipTests(TestCase):
         log = EngagementLog.objects.get(id=response.data['id'])
         self.assertEqual(log.user, self.user)
 
-    @patch('app.views.get_game_clock_state', return_value='pre')
-    def test_post_without_user_in_body_succeeds(self, mock_gcs):
+    def test_post_without_user_in_body_succeeds(self):
         response = self.client.post('/telemetry/engagement/', {
             'event_type': 'ema_dismissed',
             'occurred_at': '2025-09-06T20:01:00Z',
@@ -2028,8 +1755,9 @@ class EvaluateJITAITriggersTests(TestCase):
         self.assertEqual(log.trigger_reason, 'insufficient within-person history')
         mock_send.assert_not_called()
 
+    @patch('app.tasks.random.uniform', return_value=0.1)
     @patch('app.tasks.send_jitai_prompt')
-    def test_volatile_emas_trigger_prompt_and_call_expo(self, mock_send):
+    def test_volatile_emas_trigger_prompt_and_call_expo(self, mock_send, mock_rand):
         # 5 stable EMAs establish a baseline MSSD near 0.
         # 1 volatile EMA (big drop in scores) pushes MSSD above the within-person
         # threshold, triggering send_prompt=True.
@@ -2042,7 +1770,7 @@ class EvaluateJITAITriggersTests(TestCase):
         log = JITAILog.objects.get(user=user)
         self.assertEqual(log.ema, volatile)
         self.assertTrue(log.send_prompt)
-        self.assertEqual(log.status, 'delivered')
+        self.assertEqual(log.status, 'pending')
         mock_send.assert_called_once()
 
     @patch('app.tasks.send_jitai_prompt')
@@ -2077,10 +1805,10 @@ class EvaluateJITAITriggersTests(TestCase):
 
         original = tasks_module._evaluate_user
 
-        def raise_for_user1(user):
+        def raise_for_user1(user, p):
             if user.user_id == user1.user_id:
                 raise RuntimeError("simulated failure")
-            original(user)
+            original(user, p)
 
         with patch('app.tasks._evaluate_user', side_effect=raise_for_user1):
             evaluate_jitai_triggers()
@@ -2218,3 +1946,337 @@ class SendJITAIPromptTests(TestCase):
         self.assertFalse(result)
         log.refresh_from_db()
         self.assertEqual(log.status, 'failed')
+
+
+# ---------------------------------------------------------------------------
+# Model: JITAILog MRT schema — new fields and status choices
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class JITAILogMRTSchemaTests(TestCase):
+
+    def _make_log(self, **kwargs):
+        user = make_user(email='mrtschema@test.com')
+        defaults = {
+            'user': user,
+            'prompt_id': 'default',
+            'trigger_reason': 'test',
+        }
+        defaults.update(kwargs)
+        return JITAILog.objects.create(**defaults)
+
+    def test_decision_point_id_is_nullable(self):
+        log = self._make_log()
+        self.assertIsNone(log.decision_point_id)
+
+    def test_decision_point_id_unique_constraint(self):
+        self._make_log(decision_point_id='ema_1')
+        with self.assertRaises(Exception):
+            self._make_log(decision_point_id='ema_1')
+
+    def test_multiple_null_decision_point_ids_allowed(self):
+        self._make_log(decision_point_id=None)
+        make_user(email='mrtschema2@test.com')
+        log2 = JITAILog.objects.create(
+            user=make_user(email='mrtschema3@test.com'),
+            prompt_id='default',
+            trigger_reason='test',
+            decision_point_id=None,
+        )
+        self.assertIsNone(log2.decision_point_id)
+
+    def test_randomization_probability_nullable(self):
+        log = self._make_log(randomization_probability=None)
+        self.assertIsNone(log.randomization_probability)
+
+    def test_randomization_draw_nullable(self):
+        log = self._make_log(randomization_draw=None)
+        self.assertIsNone(log.randomization_draw)
+
+    def test_status_pending_is_valid(self):
+        log = self._make_log(status='pending')
+        self.assertEqual(log.status, 'pending')
+
+    def test_status_not_sent_is_valid(self):
+        log = self._make_log(status='not_sent')
+        self.assertEqual(log.status, 'not_sent')
+
+    def test_status_default_is_pending(self):
+        log = self._make_log()
+        self.assertEqual(log.status, 'pending')
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EvaluateUserMRTTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(
+            email='mrteval@test.com',
+            is_enrolled=True,
+            push_token='ExponentPushToken[abc123]',
+        )
+        WearableDevice.objects.create(
+            user=self.user,
+            labfront_participant_id='labfront-mrt-001',
+            is_active=True,
+        )
+        base = timezone.now() - timedelta(hours=12)
+        for i in range(5):
+            EMA.objects.create(
+                user=self.user,
+                prompt_id='default',
+                sent_at=base + timedelta(hours=i * 2),
+                responded_at=base + timedelta(hours=i * 2, minutes=5),
+                status='completed',
+                mood=(i % 7) + 1,
+                stress=((i + 2) % 7) + 1,
+                energy=((i + 4) % 7) + 1,
+            )
+
+    def _latest_ema(self):
+        return EMA.objects.filter(user=self.user, status='completed').order_by('-sent_at').first()
+
+    def _eligible_df(self, ema):
+        import pandas as pd
+        return pd.DataFrame([{
+            'user_id': self.user.user_id,
+            'timestamp': pd.Timestamp(ema.sent_at),
+            'ema': 4.0,
+            'observed_mssd': 2.5,
+            'eligible': True,
+            'decision_reason': 'prompt sent',
+            'user_threshold': 1.0,
+        }])
+
+    def _ineligible_df(self, ema):
+        import pandas as pd
+        return pd.DataFrame([{
+            'user_id': self.user.user_id,
+            'timestamp': pd.Timestamp(ema.sent_at),
+            'ema': 4.0,
+            'observed_mssd': 0.5,
+            'eligible': False,
+            'decision_reason': 'below within-person threshold',
+            'user_threshold': 1.0,
+        }])
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.3)
+    def test_eligible_below_p_sends_and_logs_draw(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.randomization_draw, 0.3)
+        self.assertEqual(log.randomization_probability, 0.5)
+        self.assertIsNotNone(log.decision_point_id)
+        mock_send.assert_called_once()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.8)
+    def test_eligible_above_p_does_not_send(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.randomization_draw, 0.8)
+        self.assertEqual(log.status, 'not_sent')
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_ineligible_draw_is_none_and_status_not_sent(self, mock_mssd, mock_rules, mock_send):
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._ineligible_df(ema)
+        mock_rules.return_value = self._ineligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertFalse(log.send_prompt)
+        self.assertIsNone(log.randomization_draw)
+        self.assertEqual(log.status, 'not_sent')
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_idempotent_second_call_creates_no_duplicate(self, mock_mssd, mock_rules, mock_send):
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._ineligible_df(ema)
+        mock_rules.return_value = self._ineligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+        _evaluate_user(self.user, 0.5)
+
+        self.assertEqual(JITAILog.objects.filter(user=self.user).count(), 1)
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_decision_point_id_is_ema_prefixed(self, mock_mssd, mock_rules, mock_send):
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._ineligible_df(ema)
+        mock_rules.return_value = self._ineligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertEqual(log.decision_point_id, f'ema_{ema.pk}')
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.3)
+    def test_randomization_probability_always_logged(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.4'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.4)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertEqual(log.randomization_probability, 0.4)
+
+
+class DecisionEngineEligibilityTests(TestCase):
+
+    def _make_df(self):
+        import pandas as pd
+        from datetime import datetime, timedelta
+        base = datetime(2026, 1, 1, 12, 0, 0)
+        rows = [
+            {
+                'user_id': 1,
+                'timestamp': pd.Timestamp(base + timedelta(hours=i * 2)),
+                'ema': float((i * 3 % 6) + 1),
+            }
+            for i in range(8)
+        ]
+        return pd.DataFrame(rows)
+
+    def test_output_has_eligible_column_not_send_prompt(self):
+        from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
+        df = self._make_df()
+        df = calculate_mssd(df, window=3)
+        result = apply_decision_rules(df)
+        self.assertIn('eligible', result.columns)
+        self.assertNotIn('send_prompt', result.columns)
+
+    def test_output_has_decision_reason_column(self):
+        from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
+        df = self._make_df()
+        df = calculate_mssd(df, window=3)
+        result = apply_decision_rules(df)
+        self.assertIn('decision_reason', result.columns)
+
+    def test_eligible_column_is_boolean(self):
+        from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
+        df = self._make_df()
+        df = calculate_mssd(df, window=3)
+        result = apply_decision_rules(df)
+        self.assertTrue(result['eligible'].isin([True, False]).all())
+
+    def test_eligible_true_iff_decision_reason_is_prompt_sent(self):
+        from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
+        df = self._make_df()
+        df = calculate_mssd(df, window=3)
+        result = apply_decision_rules(df)
+        expected = result['decision_reason'] == 'prompt sent'
+        self.assertTrue((result['eligible'] == expected).all())
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class JITAILogSerializerMRTFieldsTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='jitaiser@test.com')
+
+    def _make_log(self, **kwargs):
+        defaults = {
+            'user': self.user,
+            'prompt_id': 'default',
+            'trigger_reason': 'test',
+            'decision_point_id': 'ema_99',
+            'randomization_probability': 0.5,
+            'randomization_draw': 0.3,
+            'send_prompt': True,
+            'status': 'pending',
+        }
+        defaults.update(kwargs)
+        return JITAILog.objects.create(**defaults)
+
+    def test_jitai_log_serializer_includes_decision_point_id(self):
+        from app.serializers import JITAILogSerializer
+        log = self._make_log()
+        data = JITAILogSerializer(log).data
+        self.assertIn('decision_point_id', data)
+        self.assertEqual(data['decision_point_id'], 'ema_99')
+
+    def test_jitai_log_serializer_includes_randomization_probability(self):
+        from app.serializers import JITAILogSerializer
+        log = self._make_log()
+        data = JITAILogSerializer(log).data
+        self.assertIn('randomization_probability', data)
+        self.assertAlmostEqual(float(data['randomization_probability']), 0.5)
+
+    def test_jitai_log_serializer_includes_randomization_draw(self):
+        from app.serializers import JITAILogSerializer
+        log = self._make_log()
+        data = JITAILogSerializer(log).data
+        self.assertIn('randomization_draw', data)
+        self.assertAlmostEqual(float(data['randomization_draw']), 0.3)
+
+    def test_telemetry_jitai_serializer_accepts_new_fields(self):
+        from app.serializers import TelemetryJITAILogSerializer
+        data = {
+            'prompt_id': 'default',
+            'trigger_reason': 'test',
+            'decision_point_id': 'ema_42',
+            'randomization_probability': 0.5,
+            'randomization_draw': 0.2,
+        }
+        ser = TelemetryJITAILogSerializer(data=data)
+        self.assertTrue(ser.is_valid(), ser.errors)
+
+    def test_telemetry_jitai_serializer_new_fields_are_optional(self):
+        from app.serializers import TelemetryJITAILogSerializer
+        data = {
+            'prompt_id': 'default',
+            'trigger_reason': 'test',
+        }
+        ser = TelemetryJITAILogSerializer(data=data)
+        self.assertTrue(ser.is_valid(), ser.errors)
+
+    def test_telemetry_jitai_serializer_probability_range_validation(self):
+        from app.serializers import TelemetryJITAILogSerializer
+        data = {
+            'prompt_id': 'default',
+            'trigger_reason': 'test',
+            'randomization_probability': 1.5,
+        }
+        ser = TelemetryJITAILogSerializer(data=data)
+        self.assertFalse(ser.is_valid())
+        self.assertIn('randomization_probability', ser.errors)

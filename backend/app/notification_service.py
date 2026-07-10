@@ -78,25 +78,40 @@ def send_jitai_prompt(user, jitai_log) -> bool:
         return False
 
     message = build_jitai_push_message(user, jitai_log)
-    try:
-        response = PushClient().publish(message)
-        response.validate_response()
-        mark_jitai_status(jitai_log, 'delivered')
-        logger.info(
-            "Expo push sent: user_id=%s prompt_id=%s",
-            user.user_id, jitai_log.prompt_id,
-        )
-        return True
-    except DeviceNotRegisteredError:
-        logger.warning(
-            "Expo: device not registered for user_id=%s — clearing push_token",
-            user.user_id,
-        )
-        user.push_token = None
-        user.save(update_fields=['push_token'])
-        mark_jitai_status(jitai_log, 'failed')
-        return False
-    except (PushServerError, PushTicketError, Exception) as exc:
-        logger.error("Expo push failed for user_id=%s: %s", user.user_id, exc)
-        mark_jitai_status(jitai_log, 'failed')
-        return False
+
+    for attempt in range(2):
+        try:
+            response = PushClient().publish(message)
+            response.validate_response()
+            mark_jitai_status(jitai_log, 'delivered')
+            logger.info(
+                "Expo push sent: user_id=%s prompt_id=%s",
+                user.user_id, jitai_log.prompt_id,
+            )
+            return True
+        except DeviceNotRegisteredError:
+            logger.warning(
+                "Expo: device not registered for user_id=%s — clearing push_token",
+                user.user_id,
+            )
+            user.push_token = None
+            user.save(update_fields=['push_token'])
+            mark_jitai_status(jitai_log, 'failed')
+            return False
+        except (PushServerError, PushTicketError) as exc:
+            if attempt == 0:
+                logger.warning(
+                    "Expo push transient error (retrying): user_id=%s %s",
+                    user.user_id, exc,
+                )
+                continue
+            logger.error(
+                "Expo push failed after retry: user_id=%s %s",
+                user.user_id, exc,
+            )
+        except Exception as exc:
+            logger.error("Expo push failed for user_id=%s: %s", user.user_id, exc)
+            break
+
+    mark_jitai_status(jitai_log, 'failed')
+    return False

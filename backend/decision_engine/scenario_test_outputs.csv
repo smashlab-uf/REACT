@@ -1,4 +1,4 @@
-user_id,timestamp,scheduled_timestamp,prompt_idx,day,ema,minutes_late,ema_diff_squared,observed_mssd,user_threshold,send_prompt,decision_reason,scenario,expected_behavior
+user_id,timestamp,scheduled_timestamp,prompt_idx,day,ema,minutes_late,ema_diff_squared,observed_mssd,user_threshold,eligible,decision_reason,scenario,expected_behavior
 low_volatility,2026-06-01 09:00:00,2026-06-01 09:00:00,0,0,3.0,0,,,,False,missing or insufficient EMA data,low_volatility,Expected: no prompts because EMA responses are stable.
 low_volatility,2026-06-01 10:00:00,2026-06-01 10:00:00,1,0,3.0,0,0.0,0.0,,False,insufficient within-person history,low_volatility,Expected: no prompts because EMA responses are stable.
 low_volatility,2026-06-01 11:00:00,2026-06-01 11:00:00,2,0,3.0,0,0.0,0.0,,False,insufficient within-person history,low_volatility,Expected: no prompts because EMA responses are stable.

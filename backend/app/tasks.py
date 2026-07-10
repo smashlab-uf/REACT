@@ -1,7 +1,10 @@
 import logging
+import os
+import random
 
 import pandas as pd
 from celery import shared_task
+from django.db import IntegrityError
 from django.db.models import Exists, OuterRef
 
 from app.models import EMA, HeartRateSample, JITAILog, StressSample, User
@@ -22,16 +25,20 @@ def evaluate_jitai_triggers():
         is_enrolled=True,
         wearabledevice__is_active=True,
     )
+
+    p = float(os.environ.get('JITAI_RANDOMIZATION_PROBABILITY', '0.5'))
+
     for user in enrolled_users:
         try:
-            _evaluate_user(user)
+            _evaluate_user(user, p)
         except Exception:
             logger.exception(
                 "evaluate_jitai_triggers failed for user_id=%s", user.user_id
             )
 
 
-def _evaluate_user(user):
+def _evaluate_user(user, p):
+
     latest_new_ema = (
         EMA.objects.filter(user=user, status='completed')
         .exclude(Exists(JITAILog.objects.filter(ema=OuterRef('pk'))))
@@ -41,6 +48,8 @@ def _evaluate_user(user):
 
     if latest_new_ema is None:
         return
+
+    decision_point_id = f"ema_{latest_new_ema.pk}"
 
     all_emas = list(
         EMA.objects.filter(
@@ -70,25 +79,47 @@ def _evaluate_user(user):
         return
 
     row = match.iloc[0]
-    send_prompt = bool(row['send_prompt'])
+    eligible = bool(row['eligible'])
     raw_mssd = row['observed_mssd']
     observed_mssd = None if pd.isna(raw_mssd) else float(raw_mssd)
     trigger_reason = str(row['decision_reason'])
 
+    if eligible:
+        draw = random.uniform(0, 1)
+        send_prompt = draw < p
+    else:
+        draw = None
+        send_prompt = False
+
     recent_hr = HeartRateSample.objects.filter(user=user).order_by('-timestamp').first()
     recent_stress = StressSample.objects.filter(user=user).order_by('-timestamp').first()
 
-    jitai_log = JITAILog.objects.create(
-        user=user,
-        prompt_id=get_prompt_id(trigger_reason) if send_prompt else '',
-        trigger_reason=trigger_reason,
-        hr_at_trigger=recent_hr.bpm if recent_hr else None,
-        stress_at_trigger=recent_stress.stress_score if recent_stress else None,
-        ema=latest_new_ema,
-        observed_mssd=observed_mssd,
-        send_prompt=send_prompt,
-        status='delivered' if send_prompt else 'failed',
-    )
+    try:
+        jitai_log, created = JITAILog.objects.get_or_create(
+            decision_point_id=decision_point_id,
+            defaults={
+                'user': user,
+                'prompt_id': get_prompt_id(trigger_reason) if send_prompt else '',
+                'trigger_reason': trigger_reason,
+                'hr_at_trigger': recent_hr.bpm if recent_hr else None,
+                'stress_at_trigger': recent_stress.stress_score if recent_stress else None,
+                'ema': latest_new_ema,
+                'observed_mssd': observed_mssd,
+                'randomization_probability': p,
+                'randomization_draw': draw,
+                'send_prompt': send_prompt,
+                'status': 'pending' if send_prompt else 'not_sent',
+            },
+        )
+    except IntegrityError:
+        logger.warning(
+            "decision_point_id=%s already exists (race) — skipping user_id=%s",
+            decision_point_id, user.user_id,
+        )
+        return
+
+    if not created:
+        return
 
     if send_prompt and user.push_token:
         send_jitai_prompt(user, jitai_log)

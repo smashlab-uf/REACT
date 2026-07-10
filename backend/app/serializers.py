@@ -84,6 +84,7 @@ class JITAILogSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'user', 'prompt_id', 'triggered_at', 'trigger_reason',
             'hr_at_trigger', 'stress_at_trigger', 'ema', 'observed_mssd',
+            'decision_point_id', 'randomization_probability', 'randomization_draw',
             'send_prompt', 'status',
         ]
         read_only_fields = ('id', 'triggered_at')
@@ -123,19 +124,17 @@ class TelemetryJITAILogSerializer(serializers.Serializer):
     stress_at_trigger = serializers.IntegerField(min_value=0, max_value=100, required=False, allow_null=True)
     ema = serializers.IntegerField(required=False, allow_null=True)
     observed_mssd = serializers.FloatField(required=False, allow_null=True)
+    decision_point_id = serializers.CharField(max_length=64, required=False, allow_null=True)
+    randomization_probability = serializers.FloatField(min_value=0.0, max_value=1.0, required=False, allow_null=True)
+    randomization_draw = serializers.FloatField(min_value=0.0, max_value=1.0, required=False, allow_null=True)
     send_prompt = serializers.BooleanField(required=False, default=True)
-    status = serializers.ChoiceField(choices=JITAILog.STATUS_CHOICES, required=False, default='delivered')
+    status = serializers.ChoiceField(choices=JITAILog.STATUS_CHOICES, required=False, default='pending')
 
 
 class TelemetryPhoneEventSerializer(serializers.Serializer):
     session_id = serializers.CharField(max_length=64)
     event_type = serializers.ChoiceField(choices=PhoneTelemetry._meta.get_field('event_type').choices)
     occurred_at = serializers.DateTimeField()
-    game_clock_state = serializers.ChoiceField(
-        choices=PhoneTelemetry._meta.get_field('game_clock_state').choices,
-        required=False,
-        default='pre',
-    )
     screen_name = serializers.CharField(max_length=64, required=False, allow_null=True, allow_blank=True)
     latency_ms = serializers.IntegerField(required=False, allow_null=True)
     metadata = serializers.JSONField(required=False, allow_null=True)
@@ -155,11 +154,6 @@ class TelemetryEngagementEventSerializer(serializers.Serializer):
     jitai_log = serializers.IntegerField(required=False, allow_null=True)
     event_type = serializers.ChoiceField(choices=EngagementLog._meta.get_field('event_type').choices)
     occurred_at = serializers.DateTimeField()
-    game_clock_state = serializers.ChoiceField(
-        choices=EngagementLog._meta.get_field('game_clock_state').choices,
-        required=False,
-        default='pre',
-    )
 
 
 class TelemetryIngestSerializer(serializers.Serializer):
@@ -179,9 +173,9 @@ class PhoneTelemetrySerializer(serializers.ModelSerializer):
         model = PhoneTelemetry
         fields = [
             'id', 'user', 'session_id', 'event_type', 'occurred_at',
-            'recorded_at', 'game_clock_state', 'screen_name', 'latency_ms', 'metadata',
+            'recorded_at', 'screen_name', 'latency_ms', 'metadata',
         ]
-        read_only_fields = ('id', 'recorded_at', 'game_clock_state', 'user')
+        read_only_fields = ('id', 'recorded_at', 'user')
 
     def validate_metadata(self, value):
         if value is None:
@@ -199,6 +193,6 @@ class EngagementLogSerializer(serializers.ModelSerializer):
         model = EngagementLog
         fields = [
             'id', 'user', 'jitai_log', 'event_type', 'occurred_at',
-            'recorded_at', 'game_clock_state',
+            'recorded_at',
         ]
-        read_only_fields = ('id', 'recorded_at', 'game_clock_state', 'user')
+        read_only_fields = ('id', 'recorded_at', 'user')

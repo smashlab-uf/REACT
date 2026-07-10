@@ -26,7 +26,6 @@ from .serializers import (
     WearableDeviceSerializer,
 )
 from django.utils import timezone as django_timezone
-from .utils import get_game_clock_state
 from django.conf import settings
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
@@ -490,7 +489,7 @@ class PhoneTelemetryView(APIView):
         serializer = PhoneTelemetrySerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        event = serializer.save(user=app_user, game_clock_state=get_game_clock_state())
+        event = serializer.save(user=app_user)
         return Response(PhoneTelemetrySerializer(event).data, status=status.HTTP_201_CREATED)
 
 
@@ -504,5 +503,5 @@ class EngagementLogView(APIView):
         serializer = EngagementLogSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        log = serializer.save(user=app_user, game_clock_state=get_game_clock_state())
+        log = serializer.save(user=app_user)
         return Response(EngagementLogSerializer(log).data, status=status.HTTP_201_CREATED)

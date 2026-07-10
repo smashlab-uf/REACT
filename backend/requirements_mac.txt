@@ -4,7 +4,6 @@ asgiref==3.8.1
 billiard==4.2.1
 celery==5.4.0
 certifi==2024.8.30
-cfbd==5.3.3a1
 charset-normalizer==3.4.0
 click==8.1.7
 click-didyoumean==0.3.1
