@@ -14,23 +14,23 @@
 
 | File | Change |
 |---|---|
-| `HealthyGatorSportsFanDjango/app/models.py` | Add Fitbit fields to User; add WearableDevice, HeartRateSample, ActivitySummary, EMA, JITAILog |
-| `HealthyGatorSportsFanDjango/app/serializers.py` | Add serializers for all 5 new models |
-| `HealthyGatorSportsFanDjango/app/admin.py` | Register all new models |
-| `HealthyGatorSportsFanDjango/app/tests.py` | Add model and serializer tests |
-| `HealthyGatorSportsFanDjango/app/migrations/` | Auto-generated — do not edit manually |
+| `backend/app/models.py` | Add Fitbit fields to User; add WearableDevice, HeartRateSample, ActivitySummary, EMA, JITAILog |
+| `backend/app/serializers.py` | Add serializers for all 5 new models |
+| `backend/app/admin.py` | Register all new models |
+| `backend/app/tests.py` | Add model and serializer tests |
+| `backend/app/migrations/` | Auto-generated — do not edit manually |
 
 ---
 
 ### Task 1: Extend User with Fitbit token fields
 
 **Files:**
-- Modify: `HealthyGatorSportsFanDjango/app/models.py`
-- Modify: `HealthyGatorSportsFanDjango/app/tests.py`
+- Modify: `backend/app/models.py`
+- Modify: `backend/app/tests.py`
 
 - [ ] **Step 1: Write the failing test**
 
-Add `from django.utils import timezone` to the imports at the top of `HealthyGatorSportsFanDjango/app/tests.py`, then add this class at the end of the file:
+Add `from django.utils import timezone` to the imports at the top of `backend/app/tests.py`, then add this class at the end of the file:
 
 ```python
 class UserFitbitFieldTests(TestCase):
@@ -56,14 +56,14 @@ class UserFitbitFieldTests(TestCase):
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py test app.tests.UserFitbitFieldTests
+cd backend && python manage.py test app.tests.UserFitbitFieldTests
 ```
 
 Expected: FAIL — `AttributeError: 'User' object has no attribute 'fitbit_user_id'`
 
 - [ ] **Step 3: Add Fitbit fields to the User model**
 
-In `HealthyGatorSportsFanDjango/app/models.py`, add these four fields inside the `User` class after the `push_token` field:
+In `backend/app/models.py`, add these four fields inside the `User` class after the `push_token` field:
 
 ```python
 fitbit_user_id = models.CharField(max_length=64, blank=True, null=True)
@@ -75,7 +75,7 @@ fitbit_token_expires = models.DateTimeField(blank=True, null=True)
 - [ ] **Step 4: Generate and apply migration**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py makemigrations && python manage.py migrate
+cd backend && python manage.py makemigrations && python manage.py migrate
 ```
 
 Expected: new migration file created in `app/migrations/` and applied successfully.
@@ -83,7 +83,7 @@ Expected: new migration file created in `app/migrations/` and applied successful
 - [ ] **Step 5: Run the test to verify it passes**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py test app.tests.UserFitbitFieldTests
+cd backend && python manage.py test app.tests.UserFitbitFieldTests
 ```
 
 Expected: PASS
@@ -91,7 +91,7 @@ Expected: PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add HealthyGatorSportsFanDjango/app/models.py HealthyGatorSportsFanDjango/app/migrations/ HealthyGatorSportsFanDjango/app/tests.py
+git add backend/app/models.py backend/app/migrations/ backend/app/tests.py
 git commit -m "feat: add Fitbit OAuth2 token fields to User model"
 ```
 
@@ -100,8 +100,8 @@ git commit -m "feat: add Fitbit OAuth2 token fields to User model"
 ### Task 2: Add WearableDevice model
 
 **Files:**
-- Modify: `HealthyGatorSportsFanDjango/app/models.py`
-- Modify: `HealthyGatorSportsFanDjango/app/tests.py`
+- Modify: `backend/app/models.py`
+- Modify: `backend/app/tests.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -161,14 +161,14 @@ class WearableDeviceModelTests(TestCase):
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py test app.tests.WearableDeviceModelTests
+cd backend && python manage.py test app.tests.WearableDeviceModelTests
 ```
 
 Expected: FAIL — `ImportError: cannot import name 'WearableDevice' from 'app.models'`
 
 - [ ] **Step 3: Add the WearableDevice model**
 
-Add to the end of `HealthyGatorSportsFanDjango/app/models.py`:
+Add to the end of `backend/app/models.py`:
 
 ```python
 class WearableDevice(models.Model):
@@ -188,7 +188,7 @@ class WearableDevice(models.Model):
 - [ ] **Step 4: Generate and apply migration**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py makemigrations && python manage.py migrate
+cd backend && python manage.py makemigrations && python manage.py migrate
 ```
 
 Expected: new migration created and applied.
@@ -196,7 +196,7 @@ Expected: new migration created and applied.
 - [ ] **Step 5: Run the test to verify it passes**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py test app.tests.WearableDeviceModelTests
+cd backend && python manage.py test app.tests.WearableDeviceModelTests
 ```
 
 Expected: PASS
@@ -204,7 +204,7 @@ Expected: PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add HealthyGatorSportsFanDjango/app/models.py HealthyGatorSportsFanDjango/app/migrations/ HealthyGatorSportsFanDjango/app/tests.py
+git add backend/app/models.py backend/app/migrations/ backend/app/tests.py
 git commit -m "feat: add WearableDevice model"
 ```
 
@@ -213,8 +213,8 @@ git commit -m "feat: add WearableDevice model"
 ### Task 3: Add HeartRateSample and ActivitySummary models
 
 **Files:**
-- Modify: `HealthyGatorSportsFanDjango/app/models.py`
-- Modify: `HealthyGatorSportsFanDjango/app/tests.py`
+- Modify: `backend/app/models.py`
+- Modify: `backend/app/tests.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -292,14 +292,14 @@ class ActivitySummaryModelTests(TestCase):
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py test app.tests.HeartRateSampleModelTests app.tests.ActivitySummaryModelTests
+cd backend && python manage.py test app.tests.HeartRateSampleModelTests app.tests.ActivitySummaryModelTests
 ```
 
 Expected: FAIL — `ImportError: cannot import name 'HeartRateSample' from 'app.models'`
 
 - [ ] **Step 3: Add HeartRateSample and ActivitySummary to models.py**
 
-Add to the end of `HealthyGatorSportsFanDjango/app/models.py`:
+Add to the end of `backend/app/models.py`:
 
 ```python
 class HeartRateSample(models.Model):
@@ -339,7 +339,7 @@ class ActivitySummary(models.Model):
 - [ ] **Step 4: Generate and apply migration**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py makemigrations && python manage.py migrate
+cd backend && python manage.py makemigrations && python manage.py migrate
 ```
 
 Expected: new migration created and applied.
@@ -347,7 +347,7 @@ Expected: new migration created and applied.
 - [ ] **Step 5: Run the tests to verify they pass**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py test app.tests.HeartRateSampleModelTests app.tests.ActivitySummaryModelTests
+cd backend && python manage.py test app.tests.HeartRateSampleModelTests app.tests.ActivitySummaryModelTests
 ```
 
 Expected: PASS
@@ -355,7 +355,7 @@ Expected: PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add HealthyGatorSportsFanDjango/app/models.py HealthyGatorSportsFanDjango/app/migrations/ HealthyGatorSportsFanDjango/app/tests.py
+git add backend/app/models.py backend/app/migrations/ backend/app/tests.py
 git commit -m "feat: add HeartRateSample and ActivitySummary models"
 ```
 
@@ -364,8 +364,8 @@ git commit -m "feat: add HeartRateSample and ActivitySummary models"
 ### Task 4: Add EMA model
 
 **Files:**
-- Modify: `HealthyGatorSportsFanDjango/app/models.py`
-- Modify: `HealthyGatorSportsFanDjango/app/tests.py`
+- Modify: `backend/app/models.py`
+- Modify: `backend/app/tests.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -419,14 +419,14 @@ class EMAModelTests(TestCase):
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py test app.tests.EMAModelTests
+cd backend && python manage.py test app.tests.EMAModelTests
 ```
 
 Expected: FAIL — `ImportError: cannot import name 'EMA' from 'app.models'`
 
 - [ ] **Step 3: Add the EMA model**
 
-Add this import at the top of `HealthyGatorSportsFanDjango/app/models.py` (after the existing imports):
+Add this import at the top of `backend/app/models.py` (after the existing imports):
 
 ```python
 from django.core.validators import MinValueValidator, MaxValueValidator
@@ -471,7 +471,7 @@ class EMA(models.Model):
 - [ ] **Step 4: Generate and apply migration**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py makemigrations && python manage.py migrate
+cd backend && python manage.py makemigrations && python manage.py migrate
 ```
 
 Expected: new migration created and applied.
@@ -479,7 +479,7 @@ Expected: new migration created and applied.
 - [ ] **Step 5: Run the test to verify it passes**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py test app.tests.EMAModelTests
+cd backend && python manage.py test app.tests.EMAModelTests
 ```
 
 Expected: PASS
@@ -487,7 +487,7 @@ Expected: PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add HealthyGatorSportsFanDjango/app/models.py HealthyGatorSportsFanDjango/app/migrations/ HealthyGatorSportsFanDjango/app/tests.py
+git add backend/app/models.py backend/app/migrations/ backend/app/tests.py
 git commit -m "feat: add EMA model"
 ```
 
@@ -496,8 +496,8 @@ git commit -m "feat: add EMA model"
 ### Task 5: Add JITAILog model
 
 **Files:**
-- Modify: `HealthyGatorSportsFanDjango/app/models.py`
-- Modify: `HealthyGatorSportsFanDjango/app/tests.py`
+- Modify: `backend/app/models.py`
+- Modify: `backend/app/tests.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -569,14 +569,14 @@ class JITAILogModelTests(TestCase):
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py test app.tests.JITAILogModelTests
+cd backend && python manage.py test app.tests.JITAILogModelTests
 ```
 
 Expected: FAIL — `ImportError: cannot import name 'JITAILog' from 'app.models'`
 
 - [ ] **Step 3: Add the JITAILog model**
 
-Add to the end of `HealthyGatorSportsFanDjango/app/models.py`:
+Add to the end of `backend/app/models.py`:
 
 ```python
 class JITAILog(models.Model):
@@ -608,7 +608,7 @@ class JITAILog(models.Model):
 - [ ] **Step 4: Generate and apply migration**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py makemigrations && python manage.py migrate
+cd backend && python manage.py makemigrations && python manage.py migrate
 ```
 
 Expected: new migration created and applied.
@@ -616,7 +616,7 @@ Expected: new migration created and applied.
 - [ ] **Step 5: Run the test to verify it passes**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py test app.tests.JITAILogModelTests
+cd backend && python manage.py test app.tests.JITAILogModelTests
 ```
 
 Expected: PASS
@@ -624,7 +624,7 @@ Expected: PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add HealthyGatorSportsFanDjango/app/models.py HealthyGatorSportsFanDjango/app/migrations/ HealthyGatorSportsFanDjango/app/tests.py
+git add backend/app/models.py backend/app/migrations/ backend/app/tests.py
 git commit -m "feat: add JITAILog model"
 ```
 
@@ -633,8 +633,8 @@ git commit -m "feat: add JITAILog model"
 ### Task 6: Add serializers for new models
 
 **Files:**
-- Modify: `HealthyGatorSportsFanDjango/app/serializers.py`
-- Modify: `HealthyGatorSportsFanDjango/app/tests.py`
+- Modify: `backend/app/serializers.py`
+- Modify: `backend/app/tests.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -739,14 +739,14 @@ class JITAILogSerializerTests(TestCase):
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py test app.tests.WearableDeviceSerializerTests app.tests.HeartRateSampleSerializerTests app.tests.ActivitySummarySerializerTests app.tests.EMASerializerTests app.tests.JITAILogSerializerTests
+cd backend && python manage.py test app.tests.WearableDeviceSerializerTests app.tests.HeartRateSampleSerializerTests app.tests.ActivitySummarySerializerTests app.tests.EMASerializerTests app.tests.JITAILogSerializerTests
 ```
 
 Expected: FAIL — `ImportError: cannot import name 'WearableDeviceSerializer' from 'app.serializers'`
 
 - [ ] **Step 3: Add serializers to serializers.py**
 
-Update the model import line at the top of `HealthyGatorSportsFanDjango/app/serializers.py`:
+Update the model import line at the top of `backend/app/serializers.py`:
 
 ```python
 from .models import UserData, User, NotificationData, WearableDevice, HeartRateSample, ActivitySummary, EMA, JITAILog
@@ -793,7 +793,7 @@ class JITAILogSerializer(serializers.ModelSerializer):
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py test app.tests.WearableDeviceSerializerTests app.tests.HeartRateSampleSerializerTests app.tests.ActivitySummarySerializerTests app.tests.EMASerializerTests app.tests.JITAILogSerializerTests
+cd backend && python manage.py test app.tests.WearableDeviceSerializerTests app.tests.HeartRateSampleSerializerTests app.tests.ActivitySummarySerializerTests app.tests.EMASerializerTests app.tests.JITAILogSerializerTests
 ```
 
 Expected: PASS
@@ -801,7 +801,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add HealthyGatorSportsFanDjango/app/serializers.py HealthyGatorSportsFanDjango/app/tests.py
+git add backend/app/serializers.py backend/app/tests.py
 git commit -m "feat: add serializers for WearableDevice, HeartRateSample, ActivitySummary, EMA, JITAILog"
 ```
 
@@ -810,11 +810,11 @@ git commit -m "feat: add serializers for WearableDevice, HeartRateSample, Activi
 ### Task 7: Register new models in Django admin
 
 **Files:**
-- Modify: `HealthyGatorSportsFanDjango/app/admin.py`
+- Modify: `backend/app/admin.py`
 
 - [ ] **Step 1: Update admin.py**
 
-Replace the full contents of `HealthyGatorSportsFanDjango/app/admin.py` with:
+Replace the full contents of `backend/app/admin.py` with:
 
 ```python
 from django.contrib import admin
@@ -836,7 +836,7 @@ admin.site.register(JITAILog)
 - [ ] **Step 2: Verify the full test suite passes**
 
 ```bash
-cd HealthyGatorSportsFanDjango && python manage.py test app
+cd backend && python manage.py test app
 ```
 
 Expected: all tests PASS with no regressions.
@@ -844,6 +844,6 @@ Expected: all tests PASS with no regressions.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add HealthyGatorSportsFanDjango/app/admin.py
+git add backend/app/admin.py
 git commit -m "feat: register REACT models in Django admin"
 ```

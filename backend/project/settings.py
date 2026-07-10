@@ -159,7 +159,7 @@ elif os.getenv('K_SERVICE'):
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
-            'NAME': os.getenv('DATABASE_NAME', 'healthygator_db'),
+            'NAME': os.getenv('DATABASE_NAME', 'react_db'),
             'USER': os.getenv('DATABASE_USER', 'postgres'),
             'PASSWORD': os.getenv('DATABASE_PASSWORD'),
             'HOST': f'/cloudsql/{os.getenv("CLOUD_SQL_CONNECTION_NAME")}',
@@ -214,7 +214,7 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles') # HealthyGatorSportsFanDjango/staticfiles
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles') # backend/staticfiles
 
 STATIC_DIR = os.path.join(BASE_DIR, 'static')
 STATICFILES_DIRS = [STATIC_DIR] if os.path.isdir(STATIC_DIR) else []
