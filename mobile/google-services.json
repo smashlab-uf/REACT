@@ -1,21 +1,21 @@
 {
   "project_info": {
-    "project_number": "510865383660",
-    "project_id": "healthygatorsportsfan-22157",
-    "storage_bucket": "healthygatorsportsfan-22157.firebasestorage.app"
+    "project_number": "1088980839697",
+    "project_id": "react-expo-2041c",
+    "storage_bucket": "react-expo-2041c.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:510865383660:android:11e152f6cf31a6d011c5c9",
+        "mobilesdk_app_id": "1:1088980839697:android:17ede873daae529cee70b0",
         "android_client_info": {
-          "package_name": "com.lisareichelson.healthygatorsportsfanrn"
+          "package_name": "com.smashlab.react"
         }
       },
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyC2ErvdqEsrygyI3RHPiB2h-F8s6OcG4jw"
+          "current_key": "AIzaSyDJA9LaH-pRPRhTh0kLUKZVo_LLO2Uy16Y"
         }
       ],
       "services": {
