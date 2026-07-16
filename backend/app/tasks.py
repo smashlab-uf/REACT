@@ -102,7 +102,7 @@ def _evaluate_user(user, p):
     raw_mssd = row['observed_mssd']
     observed_mssd = None if pd.isna(raw_mssd) else float(raw_mssd)
     trigger_reason = str(row['decision_reason'])
-    trigger_signal = 'hr_elevated' if trigger_reason == 'prompt sent (hr factor)' else None
+    trigger_signal = None
 
     if eligible:
         draw = random.uniform(0, 1)
