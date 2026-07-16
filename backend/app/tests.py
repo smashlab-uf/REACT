@@ -2204,7 +2204,7 @@ class DecisionEngineEligibilityTests(TestCase):
         df = self._make_df()
         df = calculate_mssd(df, window=3)
         result = apply_decision_rules(df)
-        expected = result['decision_reason'].isin(['prompt sent', 'prompt sent (hr factor)'])
+        expected = result['decision_reason'] == 'prompt sent'
         self.assertTrue((result['send_prompt'] == expected).all())
 
 
