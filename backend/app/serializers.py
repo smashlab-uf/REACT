@@ -86,6 +86,8 @@ class JITAILogSerializer(serializers.ModelSerializer):
             'hr_at_trigger', 'stress_at_trigger', 'ema', 'observed_mssd',
             'decision_point_id', 'randomization_probability', 'randomization_draw',
             'send_prompt', 'status',
+            'trigger_signal', 'ema_mood', 'ema_stress', 'ema_energy',
+            'eligible_prompt_ids',
         ]
         read_only_fields = ('id', 'triggered_at')
 

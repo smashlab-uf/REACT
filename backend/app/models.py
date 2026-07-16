@@ -166,6 +166,11 @@ class JITAILog(models.Model):
     randomization_draw = models.FloatField(null=True, blank=True)
     send_prompt = models.BooleanField(default=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='pending')
+    trigger_signal = models.CharField(max_length=32, null=True, blank=True)
+    ema_mood = models.PositiveSmallIntegerField(null=True, blank=True)
+    ema_stress = models.PositiveSmallIntegerField(null=True, blank=True)
+    ema_energy = models.PositiveSmallIntegerField(null=True, blank=True)
+    eligible_prompt_ids = models.JSONField(null=True, blank=True)
 
     class Meta:
         ordering = ['-triggered_at']
