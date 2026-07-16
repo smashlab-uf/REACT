@@ -1,5 +1,5 @@
 import logging
-import os
+import random
 
 from exponent_server_sdk import (
     DeviceNotRegisteredError,
@@ -12,27 +12,77 @@ from exponent_server_sdk import (
 logger = logging.getLogger(__name__)
 EXPO_PUSH_TOKEN_PREFIXES = ('ExponentPushToken[', 'ExpoPushToken[')
 
-# Maps trigger reasons (from decision engine) to prompt_id keys in the React
-# Native app's local template store. The mobile app looks up the message text
-# by prompt_id — text never reaches the backend (IRB constraint).
-# Add entries here as the prompt library grows; unknown reasons fall back to
-# 'default'.
-PROMPT_LIBRARY = {
-    'default': os.environ.get('JITAI_DEFAULT_PROMPT_ID', 'default'),
-    # trigger_reason is always one of these strings from apply_decision_rules():
-    #   "prompt sent"                     ← only value when send_prompt=True
-    #   "below within-person threshold"   ← not sent; logged only
-    #   "insufficient within-person history"
-    #   "missing or insufficient EMA data"
-    #   "cooldown active"
-    #   "daily cap reached"
-    # Once Prof. Chang defines distinct prompt templates, add entries keyed on
-    # "prompt sent" (or a richer signal string constructed in tasks._evaluate_user).
-}
+# Prompt catalog — Eliana Bacal, 2026-07-09.
+# Message text lives in the React Native app's local template store — never here (IRB).
+# ema=True: appropriate for EMA-triggered decisions (current system).
+# ema=False: telemetry-only (HR/HRV spike) — excluded until Labfront triggers are wired.
+_CATALOG = [
+    {'id': 'P001', 'state': 'High Arousal / Anger',   'ema': False},
+    {'id': 'P002', 'state': 'High Arousal / Anxiety', 'ema': False},
+    {'id': 'P003', 'state': 'Interpersonal Conflict',  'ema': False},
+    {'id': 'P004', 'state': 'High Arousal / Anxiety', 'ema': True},
+    {'id': 'P005', 'state': 'General Stress',          'ema': True},
+    {'id': 'P006', 'state': 'Urge / Craving',          'ema': False},
+    {'id': 'P007', 'state': 'Interpersonal Conflict',  'ema': False},
+    {'id': 'P008', 'state': 'Urge / Craving',          'ema': True},
+    {'id': 'P009', 'state': 'High Arousal / Anger',   'ema': False},
+    {'id': 'P010', 'state': 'High Arousal / Anger',   'ema': False},
+    {'id': 'P011', 'state': 'Low Mood / Withdrawal',  'ema': True},
+    {'id': 'P012', 'state': 'General Stress',          'ema': True},
+    {'id': 'P013', 'state': 'Urge / Craving',          'ema': True},
+    {'id': 'P014', 'state': 'Social Pressure',         'ema': True},
+    {'id': 'P015', 'state': 'Urge / Craving',          'ema': True},
+    {'id': 'P016', 'state': 'General Stress',          'ema': True},
+    {'id': 'P017', 'state': 'Urge / Craving',          'ema': True},
+    {'id': 'P018', 'state': 'General Stress',          'ema': True},
+    {'id': 'P019', 'state': 'Urge / Craving',          'ema': True},
+    {'id': 'P020', 'state': 'General Stress',          'ema': True},
+    {'id': 'P021', 'state': 'High Arousal / Anger',   'ema': False},
+    {'id': 'P022', 'state': 'High Arousal / Anxiety', 'ema': True},
+    {'id': 'P023', 'state': 'Interpersonal Conflict',  'ema': False},
+    {'id': 'P024', 'state': 'High Arousal / Anxiety', 'ema': True},
+    {'id': 'P025', 'state': 'Low Mood / Withdrawal',  'ema': True},
+    {'id': 'P026', 'state': 'General Stress',          'ema': True},
+    {'id': 'P027', 'state': 'Interpersonal Conflict',  'ema': False},
+    {'id': 'P028', 'state': 'Urge / Craving',          'ema': True},
+    {'id': 'P029', 'state': 'High Arousal / Anger',   'ema': False},
+    {'id': 'P030', 'state': 'Urge / Craving',          'ema': True},
+    {'id': 'P031', 'state': 'High Arousal / Anger',   'ema': False},
+    {'id': 'P032', 'state': 'High Arousal / Anxiety', 'ema': True},
+    {'id': 'P033', 'state': 'General Stress',          'ema': True},
+    {'id': 'P034', 'state': 'Low Mood / Withdrawal',  'ema': True},
+    {'id': 'P035', 'state': 'Urge / Craving',          'ema': True},
+    {'id': 'P036', 'state': 'Social Pressure',         'ema': True},
+    {'id': 'P037', 'state': 'Urge / Craving',          'ema': True},
+    {'id': 'P038', 'state': 'Urge / Craving',          'ema': True},
+    {'id': 'P039', 'state': 'Urge / Craving',          'ema': True},
+    {'id': 'P040', 'state': 'General Stress',          'ema': True},
+    {'id': 'P041', 'state': 'Urge / Craving',          'ema': True},
+]
+
+_EMA_CATALOG = [p for p in _CATALOG if p['ema']]
 
 
-def get_prompt_id(trigger_reason: str) -> str:
-    return PROMPT_LIBRARY.get(trigger_reason, PROMPT_LIBRARY['default'])
+def _classify_state(mood: int, stress: int, energy: int) -> str:
+    if mood <= 3 and energy <= 3:
+        return 'Low Mood / Withdrawal'
+    if stress >= 5 and mood <= 3:
+        return 'High Arousal / Anxiety'
+    if stress >= 5:
+        return 'General Stress'
+    return 'General Stress'
+
+
+def select_prompt(ema) -> tuple[str, list[str]]:
+    """Return (selected_prompt_id, eligible_prompt_ids) based on EMA scores."""
+    if ema.mood is not None and ema.stress is not None and ema.energy is not None:
+        state = _classify_state(ema.mood, ema.stress, ema.energy)
+        eligible = [p['id'] for p in _EMA_CATALOG if p['state'] == state]
+        if not eligible:
+            eligible = [p['id'] for p in _EMA_CATALOG]
+    else:
+        eligible = [p['id'] for p in _EMA_CATALOG]
+    return random.choice(eligible), eligible
 
 
 def is_valid_expo_push_token(push_token: str | None) -> bool:

@@ -8,7 +8,7 @@ from django.db import IntegrityError
 from django.db.models import Exists, OuterRef
 
 from app.models import EMA, HeartRateSample, JITAILog, StressSample, User
-from app.notification_service import get_prompt_id, send_jitai_prompt
+from app.notification_service import select_prompt, send_jitai_prompt
 from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,25 @@ def _evaluate_user(user, p):
     df = df.rename(columns={'sent_at': 'timestamp'})
     df['ema'] = df[['mood', 'stress', 'energy']].mean(axis=1)
 
+    hr_rows = list(
+        HeartRateSample.objects
+        .filter(user=user)
+        .order_by('timestamp')
+        .values('timestamp', 'bpm')
+    )
+    if hr_rows:
+        hr_df = pd.DataFrame(hr_rows)
+        hr_df['user_id'] = user.user_id
+        hr_df = hr_df.rename(columns={'bpm': 'hr'})
+        df = pd.merge_asof(
+            df.sort_values('timestamp'),
+            hr_df[['user_id', 'timestamp', 'hr']].sort_values('timestamp'),
+            on='timestamp',
+            by='user_id',
+            direction='backward',
+            tolerance=pd.Timedelta('30min'),
+        )
+
     df = calculate_mssd(df, window=3)
     result_df = apply_decision_rules(df)
 
@@ -79,17 +98,21 @@ def _evaluate_user(user, p):
         return
 
     row = match.iloc[0]
-    eligible = bool(row['eligible'])
+    eligible = bool(row['send_prompt'])
     raw_mssd = row['observed_mssd']
     observed_mssd = None if pd.isna(raw_mssd) else float(raw_mssd)
     trigger_reason = str(row['decision_reason'])
+    trigger_signal = 'hr_elevated' if trigger_reason == 'prompt sent (hr factor)' else None
 
     if eligible:
         draw = random.uniform(0, 1)
         send_prompt = draw < p
+        selected_prompt_id, eligible_ids = select_prompt(latest_new_ema)
     else:
         draw = None
         send_prompt = False
+        selected_prompt_id = ''
+        eligible_ids = None
 
     recent_hr = HeartRateSample.objects.filter(user=user).order_by('-timestamp').first()
     recent_stress = StressSample.objects.filter(user=user).order_by('-timestamp').first()
@@ -99,7 +122,7 @@ def _evaluate_user(user, p):
             decision_point_id=decision_point_id,
             defaults={
                 'user': user,
-                'prompt_id': get_prompt_id(trigger_reason) if send_prompt else '',
+                'prompt_id': selected_prompt_id if send_prompt else '',
                 'trigger_reason': trigger_reason,
                 'hr_at_trigger': recent_hr.bpm if recent_hr else None,
                 'stress_at_trigger': recent_stress.stress_score if recent_stress else None,
@@ -109,6 +132,11 @@ def _evaluate_user(user, p):
                 'randomization_draw': draw,
                 'send_prompt': send_prompt,
                 'status': 'pending' if send_prompt else 'not_sent',
+                'trigger_signal': trigger_signal,
+                'ema_mood': latest_new_ema.mood,
+                'ema_stress': latest_new_ema.stress,
+                'ema_energy': latest_new_ema.energy,
+                'eligible_prompt_ids': eligible_ids,
             },
         )
     except IntegrityError:

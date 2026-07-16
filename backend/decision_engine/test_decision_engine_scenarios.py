@@ -47,7 +47,7 @@ class DecisionEngineScenarioTests(unittest.TestCase):
             "ema_diff_squared",
             "observed_mssd",
             "user_threshold",
-            "eligible",
+            "send_prompt",
             "decision_reason",
         ]
 
