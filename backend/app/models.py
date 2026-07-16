@@ -2,6 +2,7 @@ from django.db import models
 from django.contrib.auth.hashers import make_password, check_password as django_check_password
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 
 class User(models.Model):
@@ -152,6 +153,13 @@ class JITAILog(models.Model):
         ('failed', 'Failed'),
         ('not_sent', 'Not Sent'),
     ]
+    DELIVERY_STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('not_sent', 'Not Sent'),
+        ('accepted_by_expo', 'Accepted by Expo'),
+        ('received_on_device', 'Received on Device'),
+        ('failed', 'Failed'),
+    ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     prompt_id = models.CharField(max_length=64)
@@ -166,6 +174,19 @@ class JITAILog(models.Model):
     randomization_draw = models.FloatField(null=True, blank=True)
     send_prompt = models.BooleanField(default=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='pending')
+    decision_made_at = models.DateTimeField(default=timezone.now, db_index=True)
+    push_sent_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    device_received_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    receipt_reported_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    delivery_status = models.CharField(
+        max_length=32,
+        choices=DELIVERY_STATUS_CHOICES,
+        default='pending',
+        db_index=True,
+    )
+    delivery_error = models.TextField(blank=True, default='')
+    receipt_platform = models.CharField(max_length=16, blank=True, default='')
+    receipt_app_state = models.CharField(max_length=32, blank=True, default='')
 
     class Meta:
         ordering = ['-triggered_at']

@@ -1,6 +1,8 @@
 import logging
 import os
 
+from django.utils import timezone
+
 from exponent_server_sdk import (
     DeviceNotRegisteredError,
     PushClient,
@@ -50,6 +52,23 @@ def mark_jitai_status(jitai_log, status: str) -> None:
         jitai_log.save(update_fields=['status'])
 
 
+def mark_delivery_failed(jitai_log, error: str) -> None:
+    jitai_log.status = 'failed'
+    jitai_log.delivery_status = 'failed'
+    jitai_log.delivery_error = error[:2000]
+    jitai_log.save(update_fields=['status', 'delivery_status', 'delivery_error'])
+
+
+def mark_delivery_accepted(jitai_log) -> None:
+    jitai_log.status = 'delivered'
+    jitai_log.delivery_status = 'accepted_by_expo'
+    jitai_log.push_sent_at = timezone.now()
+    jitai_log.delivery_error = ''
+    jitai_log.save(
+        update_fields=['status', 'delivery_status', 'push_sent_at', 'delivery_error']
+    )
+
+
 def build_jitai_push_message(user, jitai_log) -> PushMessage:
     return PushMessage(
         to=user.push_token,
@@ -64,7 +83,7 @@ def build_jitai_push_message(user, jitai_log) -> PushMessage:
 def send_jitai_prompt(user, jitai_log) -> bool:
     if not user.push_token:
         logger.warning("No push token for user_id=%s — skipping", user.user_id)
-        mark_jitai_status(jitai_log, 'failed')
+        mark_delivery_failed(jitai_log, 'missing push token')
         return False
 
     if not is_valid_expo_push_token(user.push_token):
@@ -74,7 +93,7 @@ def send_jitai_prompt(user, jitai_log) -> bool:
         )
         user.push_token = None
         user.save(update_fields=['push_token'])
-        mark_jitai_status(jitai_log, 'failed')
+        mark_delivery_failed(jitai_log, 'invalid Expo push token')
         return False
 
     message = build_jitai_push_message(user, jitai_log)
@@ -83,7 +102,7 @@ def send_jitai_prompt(user, jitai_log) -> bool:
         try:
             response = PushClient().publish(message)
             response.validate_response()
-            mark_jitai_status(jitai_log, 'delivered')
+            mark_delivery_accepted(jitai_log)
             logger.info(
                 "Expo push sent: user_id=%s prompt_id=%s",
                 user.user_id, jitai_log.prompt_id,
@@ -96,7 +115,7 @@ def send_jitai_prompt(user, jitai_log) -> bool:
             )
             user.push_token = None
             user.save(update_fields=['push_token'])
-            mark_jitai_status(jitai_log, 'failed')
+            mark_delivery_failed(jitai_log, 'device not registered')
             return False
         except (PushServerError, PushTicketError) as exc:
             if attempt == 0:
@@ -109,9 +128,12 @@ def send_jitai_prompt(user, jitai_log) -> bool:
                 "Expo push failed after retry: user_id=%s %s",
                 user.user_id, exc,
             )
+            mark_delivery_failed(jitai_log, str(exc))
+            return False
         except Exception as exc:
             logger.error("Expo push failed for user_id=%s: %s", user.user_id, exc)
-            break
+            mark_delivery_failed(jitai_log, str(exc))
+            return False
 
-    mark_jitai_status(jitai_log, 'failed')
+    mark_delivery_failed(jitai_log, 'Expo push failed')
     return False

@@ -1900,6 +1900,8 @@ class SendJITAIPromptTests(TestCase):
         self.assertIsNone(user.push_token)
         log.refresh_from_db()
         self.assertEqual(log.status, 'failed')
+        self.assertEqual(log.delivery_status, 'failed')
+        self.assertEqual(log.delivery_error, 'invalid Expo push token')
 
     @patch('app.notification_service.PushClient')
     def test_successful_push_returns_true_and_marks_delivered(self, MockPushClient):
@@ -1915,6 +1917,9 @@ class SendJITAIPromptTests(TestCase):
         self.assertTrue(result)
         log.refresh_from_db()
         self.assertEqual(log.status, 'delivered')
+        self.assertEqual(log.delivery_status, 'accepted_by_expo')
+        self.assertIsNotNone(log.push_sent_at)
+        self.assertEqual(log.delivery_error, '')
 
     @patch('app.notification_service.PushClient')
     def test_device_not_registered_clears_push_token_and_marks_failed(self, MockPushClient):
@@ -1933,6 +1938,8 @@ class SendJITAIPromptTests(TestCase):
         self.assertIsNone(user.push_token)
         log.refresh_from_db()
         self.assertEqual(log.status, 'failed')
+        self.assertEqual(log.delivery_status, 'failed')
+        self.assertEqual(log.delivery_error, 'device not registered')
 
     @patch('app.notification_service.PushClient')
     def test_push_error_marks_log_as_failed_and_returns_false(self, MockPushClient):
@@ -1946,6 +1953,8 @@ class SendJITAIPromptTests(TestCase):
         self.assertFalse(result)
         log.refresh_from_db()
         self.assertEqual(log.status, 'failed')
+        self.assertEqual(log.delivery_status, 'failed')
+        self.assertEqual(log.delivery_error, 'network error')
 
 
 # ---------------------------------------------------------------------------
@@ -2249,6 +2258,18 @@ class JITAILogSerializerMRTFieldsTests(TestCase):
         self.assertIn('randomization_draw', data)
         self.assertAlmostEqual(float(data['randomization_draw']), 0.3)
 
+    def test_jitai_log_serializer_includes_latency_fields(self):
+        from app.serializers import JITAILogSerializer
+        log = self._make_log(delivery_status='accepted_by_expo')
+        data = JITAILogSerializer(log).data
+        for field in [
+            'decision_made_at', 'push_sent_at', 'device_received_at',
+            'receipt_reported_at', 'delivery_status', 'delivery_error',
+            'receipt_platform', 'receipt_app_state',
+        ]:
+            self.assertIn(field, data)
+        self.assertEqual(data['delivery_status'], 'accepted_by_expo')
+
     def test_telemetry_jitai_serializer_accepts_new_fields(self):
         from app.serializers import TelemetryJITAILogSerializer
         data = {
@@ -2257,6 +2278,10 @@ class JITAILogSerializerMRTFieldsTests(TestCase):
             'decision_point_id': 'ema_42',
             'randomization_probability': 0.5,
             'randomization_draw': 0.2,
+            'delivery_status': 'accepted_by_expo',
+            'delivery_error': '',
+            'receipt_platform': 'ios',
+            'receipt_app_state': 'foreground',
         }
         ser = TelemetryJITAILogSerializer(data=data)
         self.assertTrue(ser.is_valid(), ser.errors)

@@ -109,6 +109,7 @@ def _evaluate_user(user, p):
                 'randomization_draw': draw,
                 'send_prompt': send_prompt,
                 'status': 'pending' if send_prompt else 'not_sent',
+                'delivery_status': 'pending' if send_prompt else 'not_sent',
             },
         )
     except IntegrityError:
