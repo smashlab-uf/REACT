@@ -18,6 +18,7 @@ from .serializers import (
     EMASerializer,
     EngagementLogSerializer,
     HeartRateSampleSerializer,
+    JITAIReceiptSerializer,
     JITAILogSerializer,
     PhoneTelemetrySerializer,
     StressSampleSerializer,
@@ -441,6 +442,75 @@ class JITAILogView(APIView):
                 return Response(status=status.HTTP_403_FORBIDDEN)
         logs = JITAILog.objects.filter(user__user_id=user_id).order_by('-triggered_at')
         return Response(JITAILogSerializer(logs, many=True).data)
+
+
+class JITAIReceiptView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Record JITAI notification receipt",
+        operation_description=(
+            "Mobile calls this when the device receives a JITAI push. "
+            "The endpoint records device_received_at and server receipt time."
+        ),
+        request_body=JITAIReceiptSerializer,
+    )
+    def post(self, request):
+        app_user = _get_app_user(request)
+        if app_user is None:
+            return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = JITAIReceiptSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        try:
+            jitai_log = JITAILog.objects.get(id=data["jitai_log_id"], user=app_user)
+        except JITAILog.DoesNotExist:
+            return Response({"error": "JITAI log not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        now = django_timezone.now()
+        jitai_log.device_received_at = data["device_received_at"]
+        jitai_log.receipt_reported_at = now
+        jitai_log.receipt_platform = data.get("platform", "")
+        jitai_log.receipt_app_state = data.get("app_state", "")
+        jitai_log.delivery_status = "received_on_device"
+        jitai_log.delivery_error = ""
+        jitai_log.save(update_fields=[
+            "device_received_at",
+            "receipt_reported_at",
+            "receipt_platform",
+            "receipt_app_state",
+            "delivery_status",
+            "delivery_error",
+        ])
+
+        delivery_latency_ms = None
+        total_latency_ms = None
+        server_observed_latency_ms = None
+        if jitai_log.push_sent_at:
+            delivery_latency_ms = int(
+                (jitai_log.device_received_at - jitai_log.push_sent_at).total_seconds() * 1000
+            )
+            server_observed_latency_ms = int(
+                (jitai_log.receipt_reported_at - jitai_log.push_sent_at).total_seconds() * 1000
+            )
+        if jitai_log.decision_made_at:
+            total_latency_ms = int(
+                (jitai_log.device_received_at - jitai_log.decision_made_at).total_seconds() * 1000
+            )
+
+        return Response({
+            "message": "Receipt recorded.",
+            "jitai_log_id": jitai_log.id,
+            "delivery_status": jitai_log.delivery_status,
+            "device_received_at": jitai_log.device_received_at,
+            "receipt_reported_at": jitai_log.receipt_reported_at,
+            "delivery_latency_ms": delivery_latency_ms,
+            "server_observed_latency_ms": server_observed_latency_ms,
+            "total_latency_ms": total_latency_ms,
+        }, status=status.HTTP_200_OK)
 
 
 class HeartRateListView(APIView):
