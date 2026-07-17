@@ -26,6 +26,8 @@ def _load_catalog(path: Path) -> list[dict]:
             pid = row['ID'].strip()
             if not pid:
                 continue
+            if row['Notification Message'].strip().lower() == 'retired':
+                continue
             catalog.append({
                 'id': pid,
                 'goal_type': row['Goal Type'].strip(),
@@ -39,7 +41,10 @@ _EMA_CATALOG = [p for p in _CATALOG if p['ema']]
 
 
 def select_prompt(ema) -> tuple[str, list[str]]:
-    eligible = [p['id'] for p in _EMA_CATALOG] or [p['id'] for p in _CATALOG]
+    eligible = [p['id'] for p in _EMA_CATALOG]
+    if not eligible:
+        logger.error("select_prompt: EMA prompt pool is empty — refusing to fall back to full catalog")
+        return '', []
     return random.choice(eligible), eligible
 
 

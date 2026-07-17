@@ -108,6 +108,8 @@ def _evaluate_user(user, p):
         draw = random.uniform(0, 1)
         send_prompt = draw < p
         selected_prompt_id, eligible_ids = select_prompt(latest_new_ema)
+        if send_prompt and not selected_prompt_id:
+            send_prompt = False
     else:
         draw = None
         send_prompt = False
