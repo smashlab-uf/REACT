@@ -128,19 +128,30 @@ class JITAILogAdmin(ReadableAdminMixin, admin.ModelAdmin):
         "hr_at_trigger",
         "stress_at_trigger",
         "status",
+        "delivery_status",
+        "decision_made_at",
+        "push_sent_at",
+        "device_received_at",
     )
-    list_filter = ("status", "trigger_reason", "triggered_at")
+    list_filter = ("status", "delivery_status", "trigger_reason", "triggered_at")
     search_fields = ("user__email", "prompt_id", "trigger_reason")
     date_hierarchy = "triggered_at"
     ordering = ("-triggered_at",)
     autocomplete_fields = ("user",)
-    readonly_fields = ("triggered_at",)
+    readonly_fields = ("triggered_at", "decision_made_at", "push_sent_at", "device_received_at", "receipt_reported_at")
     fieldsets = (
         ("Prompt", {
             "fields": ("user", "prompt_id", "triggered_at", "status"),
         }),
         ("Trigger Context", {
             "fields": ("trigger_reason", "hr_at_trigger", "stress_at_trigger"),
+        }),
+        ("Delivery Latency", {
+            "fields": (
+                "delivery_status", "decision_made_at", "push_sent_at",
+                "device_received_at", "receipt_reported_at",
+                "receipt_platform", "receipt_app_state", "delivery_error",
+            ),
         }),
     )
 

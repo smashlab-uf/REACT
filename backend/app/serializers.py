@@ -85,6 +85,9 @@ class JITAILogSerializer(serializers.ModelSerializer):
             'id', 'user', 'prompt_id', 'triggered_at', 'trigger_reason',
             'hr_at_trigger', 'stress_at_trigger', 'ema', 'observed_mssd',
             'decision_point_id', 'randomization_probability', 'randomization_draw',
+            'send_prompt', 'status', 'decision_made_at', 'push_sent_at',
+            'device_received_at', 'receipt_reported_at', 'delivery_status',
+            'delivery_error', 'receipt_platform', 'receipt_app_state',
             'send_prompt', 'status',
             'trigger_signal', 'ema_mood', 'ema_stress', 'ema_energy',
             'eligible_prompt_ids',
@@ -131,6 +134,14 @@ class TelemetryJITAILogSerializer(serializers.Serializer):
     randomization_draw = serializers.FloatField(min_value=0.0, max_value=1.0, required=False, allow_null=True)
     send_prompt = serializers.BooleanField(required=False, default=True)
     status = serializers.ChoiceField(choices=JITAILog.STATUS_CHOICES, required=False, default='pending')
+    decision_made_at = serializers.DateTimeField(required=False)
+    push_sent_at = serializers.DateTimeField(required=False, allow_null=True)
+    device_received_at = serializers.DateTimeField(required=False, allow_null=True)
+    receipt_reported_at = serializers.DateTimeField(required=False, allow_null=True)
+    delivery_status = serializers.ChoiceField(choices=JITAILog.DELIVERY_STATUS_CHOICES, required=False, default='pending')
+    delivery_error = serializers.CharField(required=False, allow_blank=True)
+    receipt_platform = serializers.CharField(max_length=16, required=False, allow_blank=True)
+    receipt_app_state = serializers.CharField(max_length=32, required=False, allow_blank=True)
 
 
 class TelemetryPhoneEventSerializer(serializers.Serializer):

@@ -132,6 +132,7 @@ def _evaluate_user(user, p):
                 'randomization_draw': draw,
                 'send_prompt': send_prompt,
                 'status': 'pending' if send_prompt else 'not_sent',
+                'delivery_status': 'pending' if send_prompt else 'not_sent',
                 'trigger_signal': trigger_signal,
                 'ema_mood': latest_new_ema.mood,
                 'ema_stress': latest_new_ema.stress,
