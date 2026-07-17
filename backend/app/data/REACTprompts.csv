@@ -1,0 +1,66 @@
+ID,Category,Trigger Condition,Notification Message,Tone,Goal Type,Flag,
+P001,Thought Record ,Telemetry,"Is the worst case actually likely, or does it just feel that way right now?",Reflective,Cyber Aggression,,
+P002,Perspective-Taking,Telemetry,What would you tell a friend who was thinking this way right now?,Warm,Cyber Aggression,,
+P003,Thought Record,Telemetry,Has this kind of situation worked out before? What was different then?,Reflective,Cyber Aggression,,
+P004,Decatastrophizing,Telemetry,"On a scale of 1–10, how much will this matter in a week?",Calm,"Cyber Aggression, Alcohol Use & Unhealthy Eating
+",,
+P005,Decatastrophizing,Telemetry,"What is one thing that is actually going well right now, even if it is small?",Warm,"Cyber Aggression, Alcohol Use & Unhealthy Eating
+",,
+P006,Cost-Benefit Check,Telemetry,"If you send this right now, what's the likely short-term gain vs. cost?",Direct, Cyber Aggression,,
+P007,Cost-Benefit Check,Telemetry,"Before you respond, ask: Will this help or make things worse?",Direct, Cyber Aggression,,
+P008,Implementation Intention,Telemetry,"If you feel the urge to react, take 3 slow breaths before opening the app.",Calm,"Cyber Aggression, Alcohol Use & Unhealthy Eating
+",,
+P009,Implementation Intention,Telemetry,"When this feeling comes up, name it out loud, then wait 60 seconds before doing anything.",Direct, Cyber Aggression,,
+P010,Behavioral Redirect,Telemetry,Name one 2-minute action that moves you forward instead of responding right now.,Direct, Cyber Aggression,,
+P011,Behavioral Redirect,Telemetry,One small thing you can do in the next 5 minutes that is not scrolling?,Warm,"Cyber Aggression, Alcohol Use & Unhealthy Eating
+",,
+P012,Behavioral Redirect,Telemetry,Step away for 2 minutes. Your reaction will be clearer when you come back.,Calm,"Cyber Aggression, Alcohol Use & Unhealthy Eating
+",,
+P013,Cost-Benefit Check,Survey,"Before you pour that drink, what are you actually trying to feel right now?",Direct,Alcohol Use,🚩,
+P014,Implementation Intention,Survey,"If someone offers you a drink and you're already stressed, what's your one-line response?",Direct,Alcohol Use,,
+P015,Decatastrophizing,Survey,"On a scale of 1–10, how strong is the urge right now? Will it still feel this strong in 20 minutes?",Calm,Alcohol Use,,
+P016,"Behavioral Redirect
+",Survey,Name one thing you can do right now that isn't drinking.,Direct,Alcohol Use,,
+P017,Cost-Benefit Check,Survey,You're having a craving right now. What emotion is strongest for you in this moment?,Direct,Unhealthy Eating,,
+P018,"Behavioral Redirect
+",Survey,"Before you grab that snack, take 2 minutes to do something else. Still want it after?",Calm,Unhealthy Eating,,
+P019,Implementation Intention,Survey," If you feel the urge to stress eat, drink a glass of water first and wait 5 minutes.",Calm,Unhealthy Eating,,
+P020,Cognitive Defusion,Telemetry,"Notice the thought is showing up. You don't have to act on it, it's just a thought.",Calm, Cyber Aggression,,
+P021,Cognitive Defusion,Telemetry,Your brain is telling you a story right now. What would you call that story?,Reflective,"Cyber Aggression, Alcohol Use & Unhealthy Eating
+",,
+P022,Cognitive Defusion,Telemetry,That thought sounds loud right now. Can you notice it without becoming it?,Reflective, Cyber Aggression,,
+P023,Acceptance,Telemetry,You're feeling something strong. Can you let it be there for 60 seconds without fixing it or reacting?,Calm,"Cyber Aggression, Alcohol Use & Unhealthy Eating
+",🚩,
+P024,Acceptance,Survey,"It's okay to feel this way. You don't have to fix it right now, just notice it.",Warm,Alcohol Use & Unhealthy Eating,🚩,
+P025,Acceptance,Telemetry,"This feeling is temporary. You don't have to make it go away, just let it move through.",Calm,"Cyber Aggression, Alcohol Use & Unhealthy Eating
+",🚩,
+P026,Values Anchor,Telemetry,"Before you respond, what kind of person do you want to be in this moment?",Reflective, Cyber Aggression,,
+P027,Values Anchor,Telemetry,"What matters most to you right now, this reaction, or something bigger?",Direct,"Cyber Aggression, Alcohol Use & Unhealthy Eating
+",,
+P028,Values Anchor,Telemetry,"If someone you respect could see this moment, what would you want them to do?",Reflective, Cyber Aggression,🚩,
+P029,Urge Surfing,Telemetry,Rate the urge to react (1–10). Just noticing it often lowers it. What's your number now?,Direct,"Cyber Aggression, Alcohol Use & Unhealthy Eating
+",,
+P030,Urge Surfing,Telemetry,The urge to respond is peaking. Can you ride it for 90 seconds without acting on it?,Calm, Cyber Aggression,,
+P031,Present-Moment Grounding,Telemetry,Name 3 things you can physically feel right now. Then re-read the situation.,Calm,"Cyber Aggression, Alcohol Use & Unhealthy Eating
+",,
+P032,Present-Moment Grounding,Telemetry,"Take one slow breath. Feel your feet on the floor. You are here, not in the worst-case scenario.",Calm,"Cyber Aggression, Alcohol Use & Unhealthy Eating
+",,
+P033,Present-Moment Grounding,Survey,"Look up from the screen. Name one thing you can see, one you can hear, one you can feel.",Calm,Alcohol Use & Unhealthy Eating,🚩,
+P034,Urge Surfing,Survey,The urge to drink is peaking. Can you sit with it for 90 seconds without acting on it?,Calm,Alcohol Use,,
+P035,Values Anchor,Survey,"What matters more to you tonight, this drink, or how you want to feel tomorrow?",Direct,Alcohol Use,,
+P036,Cognitive Defusion,Survey,"Notice the urge is showing up. It's just a feeling, it doesn't have to become a decision.",Calm,Alcohol Use,,
+P037,Urge Surfing,Survey,Rate the craving (1–10). Just noticing it often lowers it. What's your number now?,Direct,"Unhealthy Eating
+",,
+P038,Cognitive Defusion,Survey,"Notice the craving is showing up. You don't have to act on it, it's just a feeling.",Calm,"Unhealthy Eating
+",,
+P039,"Values Anchor
+",Survey,You're stressed right now. Can you take 2 minutes before you decide what you need?,Reflective,"Unhealthy Eating
+",,
+P040, Thought Record ,Survey,You're having a craving right now. What's actually going on for you underneath it?,Calm,"Unhealthy Eating
+",,
+P041,Cost-Benefit Check,Telemetry," Your heart rate just spiked. Before you post this, is it worth it? ",Direct,Cyber Aggression,,
+P042, Thought Record,Telemetry," Your stress signals are up right now. Read your post back, does it sound like you, or like the stress?",Reflective,Cyber Aggression,,
+P043,Implementation Intention,Telemetry,Your body is in high alert right now. Wait 30 seconds before you hit post.,Direct,Cyber Aggression,,
+P044,Urge Surfing,Telemetry,Your breathing just picked up. Rate the urge to post this (1–10). What's your number?,Direct,Cyber Aggression,,
+P045,Values Anchor,Telemetry,"Your heart rate is elevated. Before you post, what kind of person do you want this to show? ",Reflective,Cyber Aggression,,
+,,,,,,,`

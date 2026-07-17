@@ -187,6 +187,11 @@ class JITAILog(models.Model):
     delivery_error = models.TextField(blank=True, default='')
     receipt_platform = models.CharField(max_length=16, blank=True, default='')
     receipt_app_state = models.CharField(max_length=32, blank=True, default='')
+    trigger_signal = models.CharField(max_length=32, null=True, blank=True)
+    ema_mood = models.PositiveSmallIntegerField(null=True, blank=True)
+    ema_stress = models.PositiveSmallIntegerField(null=True, blank=True)
+    ema_energy = models.PositiveSmallIntegerField(null=True, blank=True)
+    eligible_prompt_ids = models.JSONField(null=True, blank=True)
 
     class Meta:
         ordering = ['-triggered_at']

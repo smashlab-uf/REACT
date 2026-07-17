@@ -1,5 +1,7 @@
+import csv
 import logging
-import os
+import random
+from pathlib import Path
 
 from django.utils import timezone
 
@@ -14,27 +16,31 @@ from exponent_server_sdk import (
 logger = logging.getLogger(__name__)
 EXPO_PUSH_TOKEN_PREFIXES = ('ExponentPushToken[', 'ExpoPushToken[')
 
-# Maps trigger reasons (from decision engine) to prompt_id keys in the React
-# Native app's local template store. The mobile app looks up the message text
-# by prompt_id — text never reaches the backend (IRB constraint).
-# Add entries here as the prompt library grows; unknown reasons fall back to
-# 'default'.
-PROMPT_LIBRARY = {
-    'default': os.environ.get('JITAI_DEFAULT_PROMPT_ID', 'default'),
-    # trigger_reason is always one of these strings from apply_decision_rules():
-    #   "prompt sent"                     ← only value when send_prompt=True
-    #   "below within-person threshold"   ← not sent; logged only
-    #   "insufficient within-person history"
-    #   "missing or insufficient EMA data"
-    #   "cooldown active"
-    #   "daily cap reached"
-    # Once Prof. Chang defines distinct prompt templates, add entries keyed on
-    # "prompt sent" (or a richer signal string constructed in tasks._evaluate_user).
-}
+_CATALOG_PATH = Path(__file__).parent / 'data' / 'REACTprompts.csv'
 
 
-def get_prompt_id(trigger_reason: str) -> str:
-    return PROMPT_LIBRARY.get(trigger_reason, PROMPT_LIBRARY['default'])
+def _load_catalog(path: Path) -> list[dict]:
+    catalog = []
+    with open(path, newline='', encoding='utf-8') as f:
+        for row in csv.DictReader(f):
+            pid = row['ID'].strip()
+            if not pid:
+                continue
+            catalog.append({
+                'id': pid,
+                'goal_type': row['Goal Type'].strip(),
+                'ema': row['Trigger Condition'].strip() == 'Survey',
+            })
+    return catalog
+
+
+_CATALOG = _load_catalog(_CATALOG_PATH)
+_EMA_CATALOG = [p for p in _CATALOG if p['ema']]
+
+
+def select_prompt(ema) -> tuple[str, list[str]]:
+    eligible = [p['id'] for p in _EMA_CATALOG] or [p['id'] for p in _CATALOG]
+    return random.choice(eligible), eligible
 
 
 def is_valid_expo_push_token(push_token: str | None) -> bool:

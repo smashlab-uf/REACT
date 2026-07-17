@@ -7,6 +7,28 @@ Author: Celia Mercier
 import pandas as pd
 
 
+def merge_hr_to_prompts(ema_df, hr_df, hr_col="hr"):
+    if hr_col not in hr_df.columns:
+        raise ValueError(f"HR column '{hr_col}' not found in heart-rate data")
+
+    hr_cols = ["user_id", "timestamp", hr_col]
+    return ema_df.merge(hr_df[hr_cols], on=["user_id", "timestamp"], how="left")
+
+
+def add_hr_features(df):
+    df = df.copy()
+
+    if "hr" not in df.columns:
+        return df
+
+    df["baseline_hr"] = df.groupby("user_id")["hr"].transform("median")
+    df["hr_delta"] = df["hr"] - df["baseline_hr"]
+    df["hr_score"] = (df["hr_delta"] / 20.0).clip(lower=0).fillna(0.0)
+    df["adjusted_mssd"] = df["observed_mssd"] + df["hr_score"]
+
+    return df
+
+
 def calculate_mssd(df, window=3):
     df = df.copy()
     df = df.sort_values(["user_id", "timestamp"])
@@ -50,7 +72,7 @@ def apply_decision_rules(
 
     df = add_within_person_threshold(df, threshold_quantile)
 
-    df["eligible"] = False
+    df["send_prompt"] = False
     df["decision_reason"] = "below within-person threshold"
 
     for user_id in df["user_id"].unique():
@@ -88,7 +110,7 @@ def apply_decision_rules(
                     last_prompt_time = row["timestamp"]
                     prompts_by_day[day] += 1
 
-    df["eligible"] = df["decision_reason"] == "prompt sent"
+    df["send_prompt"] = df["decision_reason"] == "prompt sent"
 
     return df
 

@@ -2052,7 +2052,7 @@ class EvaluateUserMRTTests(TestCase):
             'timestamp': pd.Timestamp(ema.sent_at),
             'ema': 4.0,
             'observed_mssd': 2.5,
-            'eligible': True,
+            'send_prompt': True,
             'decision_reason': 'prompt sent',
             'user_threshold': 1.0,
         }])
@@ -2064,7 +2064,7 @@ class EvaluateUserMRTTests(TestCase):
             'timestamp': pd.Timestamp(ema.sent_at),
             'ema': 4.0,
             'observed_mssd': 0.5,
-            'eligible': False,
+            'send_prompt': False,
             'decision_reason': 'below within-person threshold',
             'user_threshold': 1.0,
         }])
@@ -2186,13 +2186,13 @@ class DecisionEngineEligibilityTests(TestCase):
         ]
         return pd.DataFrame(rows)
 
-    def test_output_has_eligible_column_not_send_prompt(self):
+    def test_output_has_send_prompt_column(self):
         from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
         df = self._make_df()
         df = calculate_mssd(df, window=3)
         result = apply_decision_rules(df)
-        self.assertIn('eligible', result.columns)
-        self.assertNotIn('send_prompt', result.columns)
+        self.assertIn('send_prompt', result.columns)
+        self.assertNotIn('eligible', result.columns)
 
     def test_output_has_decision_reason_column(self):
         from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
@@ -2201,20 +2201,20 @@ class DecisionEngineEligibilityTests(TestCase):
         result = apply_decision_rules(df)
         self.assertIn('decision_reason', result.columns)
 
-    def test_eligible_column_is_boolean(self):
+    def test_send_prompt_column_is_boolean(self):
         from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
         df = self._make_df()
         df = calculate_mssd(df, window=3)
         result = apply_decision_rules(df)
-        self.assertTrue(result['eligible'].isin([True, False]).all())
+        self.assertTrue(result['send_prompt'].isin([True, False]).all())
 
-    def test_eligible_true_iff_decision_reason_is_prompt_sent(self):
+    def test_send_prompt_true_iff_decision_reason_is_prompt_sent(self):
         from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
         df = self._make_df()
         df = calculate_mssd(df, window=3)
         result = apply_decision_rules(df)
         expected = result['decision_reason'] == 'prompt sent'
-        self.assertTrue((result['eligible'] == expected).all())
+        self.assertTrue((result['send_prompt'] == expected).all())
 
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
