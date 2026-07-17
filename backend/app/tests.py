@@ -1431,6 +1431,83 @@ class JITAIEndpointIDORTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# API: POST /jitai/receipt/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class JITAIReceiptEndpointTests(TestCase):
+
+    def setUp(self):
+        from django.utils import timezone as tz
+        from datetime import timedelta
+        self.user = make_user(email='jitai_receipt@ufl.edu')
+        self.client = authenticated_client(self.user)
+        self.decision_made_at = tz.now() - timedelta(seconds=10)
+        self.push_sent_at = tz.now() - timedelta(seconds=4)
+        self.device_received_at = tz.now() - timedelta(seconds=1)
+        self.log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='default',
+            trigger_reason='manual test',
+            status='delivered',
+            delivery_status='accepted_by_expo',
+            decision_made_at=self.decision_made_at,
+            push_sent_at=self.push_sent_at,
+        )
+
+    def test_post_records_receipt_and_latency_metrics(self):
+        response = self.client.post('/jitai/receipt/', {
+            'jitai_log_id': self.log.id,
+            'device_received_at': self.device_received_at.isoformat(),
+            'platform': 'ios',
+            'app_state': 'foreground',
+        }, format='json')
+
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.log.refresh_from_db()
+        self.assertEqual(self.log.delivery_status, 'received_on_device')
+        self.assertEqual(self.log.status, 'delivered')
+        self.assertEqual(self.log.receipt_platform, 'ios')
+        self.assertEqual(self.log.receipt_app_state, 'foreground')
+        self.assertIsNotNone(self.log.receipt_reported_at)
+        self.assertEqual(response.data['jitai_log_id'], self.log.id)
+        self.assertIsNotNone(response.data['delivery_latency_ms'])
+        self.assertIsNotNone(response.data['server_observed_latency_ms'])
+        self.assertIsNotNone(response.data['total_latency_ms'])
+
+    def test_post_without_auth_returns_401(self):
+        response = APIClient().post('/jitai/receipt/', {
+            'jitai_log_id': self.log.id,
+            'device_received_at': self.device_received_at.isoformat(),
+        }, format='json')
+
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_cannot_record_receipt_for_other_users_log(self):
+        other_user = make_user(email='other_receipt@ufl.edu')
+        other_log = JITAILog.objects.create(
+            user=other_user,
+            prompt_id='default',
+            trigger_reason='manual test',
+        )
+
+        response = self.client.post('/jitai/receipt/', {
+            'jitai_log_id': other_log.id,
+            'device_received_at': self.device_received_at.isoformat(),
+        }, format='json')
+
+        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
+
+    def test_invalid_payload_returns_400(self):
+        response = self.client.post('/jitai/receipt/', {
+            'jitai_log_id': self.log.id,
+        }, format='json')
+
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+        self.assertIn('device_received_at', response.data)
+
+
+# ---------------------------------------------------------------------------
 # IDOR: cross-user access blocked for telemetry reads
 # ---------------------------------------------------------------------------
 

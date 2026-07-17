@@ -95,6 +95,13 @@ class JITAILogSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'triggered_at')
 
 
+class JITAIReceiptSerializer(serializers.Serializer):
+    jitai_log_id = serializers.IntegerField()
+    device_received_at = serializers.DateTimeField()
+    platform = serializers.CharField(max_length=16, required=False, allow_blank=True)
+    app_state = serializers.CharField(max_length=32, required=False, allow_blank=True)
+
+
 class TelemetryWearableDeviceSerializer(serializers.Serializer):
     labfront_participant_id = serializers.CharField(max_length=64)
     last_synced_at = serializers.DateTimeField(required=False, allow_null=True)
