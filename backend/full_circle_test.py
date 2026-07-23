@@ -15,6 +15,7 @@ Usage:
   python3 full_circle_test.py --count 3 --push-token "ExponentPushToken[...]"
 """
 import argparse
+import subprocess
 import sys
 import time
 import uuid
@@ -97,6 +98,22 @@ def build_test_user(base_url, index, push_token):
     return user_id, headers
 
 
+def restart_worker(heroku_app):
+    print(f'\nRestarting worker dyno on {heroku_app} (proving idempotency survives a crash)...')
+    try:
+        subprocess.run(
+            ['heroku', 'ps:restart', 'worker', '-a', heroku_app],
+            check=True,
+        )
+    except FileNotFoundError:
+        print('  heroku CLI not found on PATH -- skipping restart, continuing without it.', file=sys.stderr)
+        return
+    except subprocess.CalledProcessError as exc:
+        print(f'  heroku ps:restart failed (exit {exc.returncode}) -- continuing without it.', file=sys.stderr)
+        return
+    print('  Worker restarted. Whatever runs on the next beat tick has to survive this.\n')
+
+
 def poll_for_jitai_rows(base_url, users, duration_seconds, interval_seconds):
     seen_ids = {user_id: set() for user_id, _ in users}
     deadline = time.time() + duration_seconds
@@ -131,6 +148,11 @@ def main():
     parser.add_argument('--poll-seconds', type=int, default=400,
                          help='How long to poll after seeding (default covers one 180s beat tick with margin)')
     parser.add_argument('--poll-interval', type=int, default=15)
+    parser.add_argument('--restart-worker', metavar='HEROKU_APP_NAME', default=None,
+                         help='If set, runs `heroku ps:restart worker -a HEROKU_APP_NAME` right after '
+                              'seeding, before polling starts -- proves the pipeline survives a worker '
+                              'restart with no duplicate JITAILog rows. Requires heroku CLI on PATH and '
+                              'access to that app.')
     args = parser.parse_args()
 
     print(f'Target: {args.base_url}')
@@ -140,6 +162,9 @@ def main():
     for i in range(args.count):
         user_id, headers = build_test_user(args.base_url, i, args.push_token)
         users.append((user_id, headers))
+
+    if args.restart_worker:
+        restart_worker(args.restart_worker)
 
     poll_for_jitai_rows(args.base_url, users, args.poll_seconds, args.poll_interval)
 
