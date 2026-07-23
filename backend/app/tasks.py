@@ -8,7 +8,7 @@ from django.db import IntegrityError
 from django.db.models import Exists, OuterRef
 
 from app.models import EMA, HeartRateSample, JITAILog, StressSample, User
-from app.notification_service import select_prompt, send_jitai_prompt
+from app.notification_service import mark_delivery_failed, select_prompt, send_jitai_prompt
 from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
 
 logger = logging.getLogger(__name__)
@@ -152,5 +152,12 @@ def _evaluate_user(user, p):
     if not created:
         return
 
-    if send_prompt and user.push_token:
-        send_jitai_prompt(user, jitai_log)
+    if send_prompt:
+        if user.push_token:
+            send_jitai_prompt(user, jitai_log)
+        else:
+            logger.warning(
+                "send_prompt=True but no push token for user_id=%s — skipping send",
+                user.user_id,
+            )
+            mark_delivery_failed(jitai_log, 'missing push token')

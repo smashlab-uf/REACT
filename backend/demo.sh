@@ -52,6 +52,7 @@ logs = JITAILog.objects.filter(user=u).exclude(
 print(f'  demo rows: {logs.count()}')
 for l in logs:
     draw = f'{l.randomization_draw:.4f}' if l.randomization_draw is not None else 'null'
+    eligible = l.eligible_prompt_ids or []
     print(f'')
     print(f'    id                        : {l.pk}')
     print(f'    decision_point_id         : {l.decision_point_id}')
@@ -60,7 +61,37 @@ for l in logs:
     print(f'    send_prompt               : {l.send_prompt}')
     print(f'    trigger_reason            : {l.trigger_reason}')
     print(f'    observed_mssd             : {l.observed_mssd}')
+    print(f'    eligible_prompt_ids       : {eligible}  ({len(eligible)} in pool)')
+    print(f'    prompt_id (selected)      : {l.prompt_id or \"(none)\"}')
     print(f'    status                    : {l.status}')
+    print(f'    delivery_status           : {l.delivery_status}')
+    print(f'    push_sent_at              : {l.push_sent_at or \"(not sent)\"}')
+    print(f'    delivery_error            : {l.delivery_error or \"(none)\"}')
+"
+}
+
+show_catalog() {
+    python3 manage.py shell -c "
+from app.notification_service import _CATALOG, _EMA_CATALOG, select_prompt
+import app.notification_service as ns
+
+eligible_ids = [p['id'] for p in _EMA_CATALOG]
+print(f'  total catalog (blank/retired rows dropped) : {len(_CATALOG)}')
+print(f'  EMA-eligible pool (Trigger Condition=Survey): {len(_EMA_CATALOG)}')
+print(f'  eligible ids                                : {eligible_ids}')
+
+chosen, pool = select_prompt(None)
+print()
+print(f'  select_prompt() -> chosen={chosen}  pool_size={len(pool)}')
+
+print()
+print('  Simulating an empty EMA pool (e.g. a bad CSV edit) to prove the no-fallback fix:')
+saved = ns._EMA_CATALOG
+ns._EMA_CATALOG = []
+chosen2, pool2 = ns.select_prompt(None)
+print(f'  select_prompt() with empty pool -> chosen={chosen2!r}  pool={pool2!r}')
+print('  (refuses to silently fall back to the full Telemetry+Survey catalog)')
+ns._EMA_CATALOG = saved
 "
 }
 
@@ -113,20 +144,35 @@ python3 manage.py jitai_demo $SEED_ARGS
 
 ok "DB seeded  (p for this run: $P_VALUE)"
 
-# ── STEP 2: START WORKER ──────────────────────────────────────────────────────
+# ── STEP 2: NOTIFICATION SERVICE — PROMPT CATALOG ──────────────────────────────
 
-step "STEP 2: START CELERY WORKER"
+step "STEP 2: NOTIFICATION SERVICE — PROMPT CATALOG"
+echo "  notification_service loads REACTprompts.csv once at import: blank IDs and rows"
+echo "  marked 'retired' are dropped, then the catalog is split into the full pool"
+echo "  and the EMA-only pool (Trigger Condition == Survey) that select_prompt() draws from."
+echo ""
+
+show_catalog
+
+ok "Catalog loaded — eligible pool is what evaluate_jitai_triggers will draw from"
+
+# ── STEP 3: START WORKER ──────────────────────────────────────────────────────
+
+step "STEP 3: START CELERY WORKER"
 echo "  JITAI_RANDOMIZATION_PROBABILITY=$P_VALUE"
 echo "  Logs → /tmp/react-celery-demo.log"
 echo ""
 
 start_worker
 
-# ── STEP 3: TRIGGER TASK ─────────────────────────────────────────────────────
+# ── STEP 4: TRIGGER TASK ─────────────────────────────────────────────────────
 
-step "STEP 3: TRIGGER evaluate_jitai_triggers"
-echo "  Worker picks up the fresh EMA, computes MSSD, flips coin, writes jitai_log,"
-echo "  then calls send_jitai_prompt."
+step "STEP 4: TRIGGER evaluate_jitai_triggers"
+echo "  Worker picks up the fresh EMA, computes MSSD via decision_engine, and flips a coin"
+echo "  weighted by p. If eligible, select_prompt() draws from the EMA-only pool shown in"
+echo "  STEP 2 and both the choice and the full pool are frozen onto the jitai_log row"
+echo "  (prompt_id, eligible_prompt_ids). If send_prompt=True and a push token exists,"
+echo "  send_jitai_prompt() fires the Expo push and records delivery_status."
 echo ""
 
 trigger_task
@@ -137,26 +183,26 @@ sleep 2
 
 show_rows
 
-# ── STEP 4: KILL WORKER ───────────────────────────────────────────────────────
+# ── STEP 5: KILL WORKER ───────────────────────────────────────────────────────
 
-step "STEP 4: KILL WORKER  (simulating server crash / deploy restart)"
+step "STEP 5: KILL WORKER  (simulating server crash / deploy restart)"
 echo "  In a real study, Celery Beat would fire the task again on the next 2-min tick."
 echo "  We trigger it manually to show the same effect."
 echo ""
 
 stop_worker
 
-# ── STEP 5: RESTART WORKER ────────────────────────────────────────────────────
+# ── STEP 6: RESTART WORKER ────────────────────────────────────────────────────
 
-step "STEP 5: RESTART WORKER"
+step "STEP 6: RESTART WORKER"
 echo "  Same p=$P_VALUE — no parameter change yet."
 echo ""
 
 start_worker
 
-# ── STEP 6: TRIGGER AGAIN (idempotency check) ────────────────────────────────
+# ── STEP 7: TRIGGER AGAIN (idempotency check) ────────────────────────────────
 
-step "STEP 6: TRIGGER AGAIN — idempotency check"
+step "STEP 7: TRIGGER AGAIN — idempotency check"
 echo "  The fresh EMA is already linked to a jitai_log."
 echo "  Layer 1: Exists subquery excludes it → _evaluate_user returns early (no DB write)."
 echo "  Layer 2 (if race): get_or_create on decision_point_id → created=False → no duplicate."
@@ -172,9 +218,9 @@ show_rows
 echo ""
 ok "Same row count = idempotency proven. No duplicate delivery."
 
-# ── STEP 7: CHANGE p ON THE SPOT ─────────────────────────────────────────────
+# ── STEP 8: CHANGE p ON THE SPOT ─────────────────────────────────────────────
 
-step "STEP 7: CHANGE p ON THE SPOT"
+step "STEP 8: CHANGE p ON THE SPOT"
 echo "  Simulate changing p from $P_VALUE to 0.1."
 echo "  Stop worker → update env → restart → create a new fresh EMA → trigger."
 echo ""
@@ -215,12 +261,14 @@ echo -e "${GREEN}  DEMO COMPLETE${NC}"
 echo -e "${GREEN}${SEP}${NC}"
 echo ""
 echo "  What was shown:"
-echo "    1. Celery worker start"
-echo "    2. Task fires → jitai_log written with MRT fields"
-echo "    3. Worker killed → restarted"
-echo "    4. Task fires again → no duplicate row (idempotency key)"
-echo "    5. p changed live → new row reflects new probability"
-[[ -n "$PUSH_TOKEN" ]] && echo "    6. Push notification sent to device"
+echo "    1. Prompt catalog loaded from REACTprompts.csv, split into full vs. EMA-eligible pool"
+echo "    2. select_prompt() refuses to fall back to the full catalog when the pool is empty"
+echo "    3. Celery worker start"
+echo "    4. Task fires → jitai_log written with MRT fields, selected prompt_id, eligible_prompt_ids"
+echo "    5. Worker killed → restarted"
+echo "    6. Task fires again → no duplicate row (idempotency key)"
+echo "    7. p changed live → new row reflects new probability"
+[[ -n "$PUSH_TOKEN" ]] && echo "    8. Push notification sent to device — delivery_status/push_sent_at recorded"
 echo ""
 echo "  Celery log: /tmp/react-celery-demo.log"
 echo ""

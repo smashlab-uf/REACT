@@ -1850,6 +1850,24 @@ class EvaluateJITAITriggersTests(TestCase):
         self.assertEqual(log.status, 'pending')
         mock_send.assert_called_once()
 
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_eligible_user_with_no_push_token_skips_send_and_marks_failed(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        user.push_token = None
+        user.save(update_fields=['push_token'])
+        for i in range(5):
+            self._make_ema(user, 4, 4, 4, offset_seconds=i * 60)
+        self._make_ema(user, 1, 1, 1, offset_seconds=300)
+        evaluate_jitai_triggers()
+        log = JITAILog.objects.get(user=user)
+        self.assertTrue(log.send_prompt)
+        mock_send.assert_not_called()
+        self.assertEqual(log.status, 'failed')
+        self.assertEqual(log.delivery_status, 'failed')
+        self.assertEqual(log.delivery_error, 'missing push token')
+
     @patch('app.tasks.send_jitai_prompt')
     def test_jitai_log_written_even_when_no_prompt_sent(self, mock_send):
         from app.tasks import evaluate_jitai_triggers
@@ -1906,6 +1924,57 @@ class EvaluateJITAITriggersTests(TestCase):
             self.assertNotEqual(log.prompt_id, '')
         else:
             self.assertEqual(log.prompt_id, '')
+
+
+# ---------------------------------------------------------------------------
+# Notification service: prompt catalog
+# ---------------------------------------------------------------------------
+
+class NotificationCatalogTests(TestCase):
+
+    def test_load_catalog_skips_retired_and_blank_id_rows(self):
+        import csv
+        import tempfile
+        from pathlib import Path
+        from app.notification_service import _load_catalog
+
+        fieldnames = ['ID', 'Category', 'Trigger Condition', 'Notification Message', 'Tone', 'Goal Type', 'Flag']
+        rows = [
+            {'ID': 'X001', 'Category': 'Test', 'Trigger Condition': 'Survey',
+             'Notification Message': 'Real prompt', 'Tone': 'Calm', 'Goal Type': 'Test', 'Flag': ''},
+            {'ID': 'X002', 'Category': 'retired', 'Trigger Condition': 'retired',
+             'Notification Message': 'retired', 'Tone': 'retired', 'Goal Type': 'retired', 'Flag': ''},
+            {'ID': '', 'Category': 'Test', 'Trigger Condition': 'Survey',
+             'Notification Message': 'Blank id row', 'Tone': 'Calm', 'Goal Type': 'Test', 'Flag': ''},
+        ]
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+            path = Path(f.name)
+
+        catalog = _load_catalog(path)
+
+        self.assertEqual([p['id'] for p in catalog], ['X001'])
+
+    def test_select_prompt_returns_empty_when_ema_pool_empty(self):
+        import app.notification_service as ns
+
+        saved = ns._EMA_CATALOG
+        ns._EMA_CATALOG = []
+        try:
+            chosen, pool = ns.select_prompt(None)
+        finally:
+            ns._EMA_CATALOG = saved
+
+        self.assertEqual(chosen, '')
+        self.assertEqual(pool, [])
+
+    def test_live_catalog_never_offers_retired_prompt_p019(self):
+        from app.notification_service import _CATALOG, _EMA_CATALOG
+
+        self.assertNotIn('P019', [p['id'] for p in _CATALOG])
+        self.assertNotIn('P019', [p['id'] for p in _EMA_CATALOG])
 
 
 # ---------------------------------------------------------------------------
