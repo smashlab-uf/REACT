@@ -2451,3 +2451,54 @@ class JITAILogSerializerMRTFieldsTests(TestCase):
         ser = TelemetryJITAILogSerializer(data=data)
         self.assertFalse(ser.is_valid())
         self.assertIn('randomization_probability', ser.errors)
+
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS, DASHBOARD_API_KEY='dashboard-test-key')
+class DashboardAPIKeyAccessTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='dashboard@test.com')
+        WearableDevice.objects.create(
+            user=self.user,
+            labfront_participant_id='participant-001',
+            last_synced_at=timezone.now(),
+        )
+        self.jitai_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='prompt-001',
+            trigger_reason='test',
+            push_sent_at=timezone.now(),
+            device_received_at=timezone.now(),
+            receipt_reported_at=timezone.now(),
+            delivery_status='received_on_device',
+        )
+
+    def test_participant_dashboard_requires_auth_or_api_key(self):
+        response = self.client.get('/dashboard/participants/')
+        self.assertEqual(response.status_code, 401)
+
+    def test_participant_dashboard_accepts_api_key(self):
+        response = self.client.get(
+            '/dashboard/participants/',
+            HTTP_X_DASHBOARD_API_KEY='dashboard-test-key',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()[0]['participant_id'], 'participant-001')
+
+    def test_latency_dashboard_accepts_api_key(self):
+        response = self.client.get(
+            '/dashboard/latency-events/',
+            HTTP_X_DASHBOARD_API_KEY='dashboard-test-key',
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data[0]['message_id'], 'prompt-001')
+        self.assertEqual(data[0]['participant_id'], 'participant-001')
+
+    def test_dashboard_rejects_wrong_api_key(self):
+        response = self.client.get(
+            '/dashboard/participants/',
+            HTTP_X_DASHBOARD_API_KEY='wrong-key',
+        )
+        self.assertEqual(response.status_code, 401)

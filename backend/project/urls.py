@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path
-from app.views import index, CreateUserView, UserLoginView, UserUpdateView, CheckEmailView, TelemetryIngestView, WearableDeviceView, EMAView, JITAILogView, JITAIReceiptView, HeartRateListView, StressListView, PhoneTelemetryView, EngagementLogView
+from app.views import index, CreateUserView, UserLoginView, UserUpdateView, CheckEmailView, TelemetryIngestView, WearableDeviceView, EMAView, JITAILogView, JITAIReceiptView, DashboardParticipantStatusView, DashboardLatencyEventsView, HeartRateListView, StressListView, PhoneTelemetryView, EngagementLogView
 
 # Import drf-yasg components
 from drf_yasg.views import get_schema_view
@@ -52,6 +52,8 @@ urlpatterns = [
     path('jitai/<int:user_id>/', JITAILogView.as_view(), name='jitai-list'),
     path('jitai/receipt/', JITAIReceiptView.as_view(), name='jitai-receipt'),
     path('telemetry/ingest/', TelemetryIngestView.as_view(), name='telemetry-ingest'),
+    path('dashboard/participants/', DashboardParticipantStatusView.as_view(), name='dashboard-participants'),
+    path('dashboard/latency-events/', DashboardLatencyEventsView.as_view(), name='dashboard-latency-events'),
     path('telemetry/hr/<int:user_id>/', HeartRateListView.as_view(), name='telemetry-hr'),
     path('telemetry/stress/<int:user_id>/', StressListView.as_view(), name='telemetry-stress'),
     path('telemetry/phone/', PhoneTelemetryView.as_view(), name='telemetry-phone'),
