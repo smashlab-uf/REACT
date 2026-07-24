@@ -1,6 +1,9 @@
+from datetime import timedelta
+
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
+from django.db.models import OuterRef, Subquery
 from .models import (
     EMA,
     EngagementLog,
@@ -35,7 +38,7 @@ from drf_yasg import openapi
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 
 
 def _get_app_user(request):
@@ -46,6 +49,16 @@ def _get_app_user(request):
         return User.objects.get(email=email)
     except User.DoesNotExist:
         return None
+
+
+class IsAdminUserOrDashboardAPIKey(BasePermission):
+    def has_permission(self, request, view):
+        if request.user and request.user.is_staff:
+            return True
+
+        expected_key = getattr(settings, 'DASHBOARD_API_KEY', '')
+        provided_key = request.headers.get('X-Dashboard-API-Key', '')
+        return bool(expected_key) and provided_key == expected_key
 
 
 # Create your views here.
@@ -511,6 +524,154 @@ class JITAIReceiptView(APIView):
             "server_observed_latency_ms": server_observed_latency_ms,
             "total_latency_ms": total_latency_ms,
         }, status=status.HTTP_200_OK)
+
+
+class DashboardParticipantStatusView(APIView):
+    permission_classes = [IsAdminUserOrDashboardAPIKey]
+
+    def get(self, request):
+        try:
+            stale_after_hours = max(1, int(request.query_params.get('stale_after_hours', 24)))
+        except (TypeError, ValueError):
+            return Response(
+                {'error': 'stale_after_hours must be a positive integer'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        stale_cutoff = django_timezone.now() - timedelta(hours=stale_after_hours)
+
+        latest_participant_id = (
+            WearableDevice.objects
+            .filter(user=OuterRef('pk'))
+            .order_by('-last_synced_at', '-id')
+            .values('labfront_participant_id')[:1]
+        )
+        latest_device_sync = (
+            WearableDevice.objects
+            .filter(user=OuterRef('pk'))
+            .order_by('-last_synced_at', '-id')
+            .values('last_synced_at')[:1]
+        )
+        latest_push = (
+            JITAILog.objects
+            .filter(user=OuterRef('pk'), push_sent_at__isnull=False)
+            .order_by('-push_sent_at')
+            .values('push_sent_at')[:1]
+        )
+        latest_receipt = (
+            JITAILog.objects
+            .filter(user=OuterRef('pk'), device_received_at__isnull=False)
+            .order_by('-device_received_at')
+            .values('device_received_at')[:1]
+        )
+
+        users = (
+            User.objects
+            .annotate(
+                labfront_participant_id=Subquery(latest_participant_id),
+                last_sync_timestamp=Subquery(latest_device_sync),
+                last_push_timestamp=Subquery(latest_push),
+                last_receipt_timestamp=Subquery(latest_receipt),
+            )
+            .order_by('user_id')
+        )
+
+        data = []
+        for user in users:
+            last_sync = user.last_sync_timestamp
+            is_stale = last_sync is None or last_sync < stale_cutoff
+            data.append({
+                'participant_id': user.labfront_participant_id or str(user.user_id),
+                'user_id': user.user_id,
+                'email': user.email,
+                'last_sync_timestamp': last_sync,
+                'last_push_timestamp': user.last_push_timestamp,
+                'last_receipt_timestamp': user.last_receipt_timestamp,
+                'current_status': 'stale' if is_stale else 'active',
+                'is_stale': is_stale,
+                'stale_after_hours': stale_after_hours,
+            })
+
+        return Response(data)
+
+
+class DashboardLatencyEventsView(APIView):
+    permission_classes = [IsAdminUserOrDashboardAPIKey]
+
+    def get(self, request):
+        try:
+            limit = max(1, min(int(request.query_params.get('limit', 200)), 1000))
+        except (TypeError, ValueError):
+            return Response(
+                {'error': 'limit must be a positive integer'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        logs = (
+            JITAILog.objects
+            .select_related('user', 'user__wearabledevice')
+            .prefetch_related('engagementlog_set')
+            .order_by('-decision_made_at', '-push_sent_at', '-id')[:limit]
+        )
+
+        data = []
+        for log in logs:
+            delivery_latency_ms = None
+            if log.push_sent_at and log.device_received_at:
+                delivery_latency_ms = int(
+                    (log.device_received_at - log.push_sent_at).total_seconds() * 1000
+                )
+
+            total_latency_ms = None
+            if log.decision_made_at and log.device_received_at:
+                total_latency_ms = int(
+                    (log.device_received_at - log.decision_made_at).total_seconds() * 1000
+                )
+
+            server_observed_latency_ms = None
+            if log.push_sent_at and log.receipt_reported_at:
+                server_observed_latency_ms = int(
+                    (log.receipt_reported_at - log.push_sent_at).total_seconds() * 1000
+                )
+
+            engagement_events = [
+                {
+                    'event_id': event.id,
+                    'event_type': event.event_type,
+                    'occurred_at': event.occurred_at,
+                    'recorded_at': event.recorded_at,
+                }
+                for event in log.engagementlog_set.all().order_by('occurred_at')
+            ]
+
+            device = getattr(log.user, 'wearabledevice', None)
+            participant_id = (
+                device.labfront_participant_id
+                if device is not None
+                else str(log.user.user_id)
+            )
+
+            data.append({
+                'event_id': log.id,
+                'message_id': log.prompt_id,
+                'participant_id': participant_id,
+                'user_id': log.user.user_id,
+                'decision_point_id': log.decision_point_id,
+                'decision_made_at': log.decision_made_at,
+                'push_sent_timestamp': log.push_sent_at,
+                'receipt_timestamp': log.device_received_at,
+                'receipt_reported_at': log.receipt_reported_at,
+                'delivery_status': log.delivery_status,
+                'delivery_error': log.delivery_error,
+                'receipt_platform': log.receipt_platform,
+                'receipt_app_state': log.receipt_app_state,
+                'delivery_latency_ms': delivery_latency_ms,
+                'server_observed_latency_ms': server_observed_latency_ms,
+                'total_latency_ms': total_latency_ms,
+                'engagement_events': engagement_events,
+            })
+
+        return Response(data)
 
 
 class HeartRateListView(APIView):
