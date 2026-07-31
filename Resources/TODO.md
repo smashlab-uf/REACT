@@ -1,7 +1,88 @@
 # REACT — Open Items & TODOs
 
-**Last updated:** 2026-07-06  
+**Last updated:** 2026-07-31  
 **Author:** Dustin Nguyen — SMASH Research Lab, UF
+
+---
+
+## Mobile App Gaps (2026-07-31 re-review)
+
+Sai's real mobile app is now merged into `main` (via `mobile-only-update` → `mobile-app-gaps` →
+PR #25, 2026-07-30/31). Full writeup: `docs/sai-handover-review-2026-07-28.md` (see the
+"Update — 2026-07-31" section at the top). Ordered by severity:
+
+### The app does not build
+**File:** `mobile/babel.config.js` requires `babel-preset-expo`; `mobile/package.json`
+`devDependencies` only lists `@types/react` and `typescript`.  
+**Impact:** `npx expo export` / `npx expo start` / any EAS build fails immediately with
+`Cannot find module 'babel-preset-expo'`. Nothing else about the mobile app can be verified
+until this is fixed.  
+**Fix:** `npm install --save-dev babel-preset-expo` in `mobile/`.
+
+### No EMA submission anywhere (biggest functional gap)
+**File:** `mobile/src/screens/ComposeScreen.tsx`  
+**Status:** Free-text box with keystroke telemetry only; `ema.submit()` is defined in
+`mobile/src/api/endpoints.ts` and never called; no mood/stress/energy input UI exists.  
+**Impact:** No real EMA data can reach the decision engine at all.  
+**Assigned:** Shawnick's first task (`docs/shawnick-onboarding.md`).
+
+### Auth token refresh is broken and fails silently
+**Files:** `mobile/src/api/client.ts`, `mobile/src/store/authStore.ts`  
+**Status:** Both call backend routes that don't exist — `/auth/token/refresh/` and `/auth/me/`
+are not registered in `backend/project/urls.py`. Access tokens expire after 30 minutes
+(`SIMPLE_JWT.ACCESS_TOKEN_LIFETIME`). On failure the client clears local tokens but never logs
+the Zustand store out, so the UI keeps showing the app as logged in while every API call 401s
+silently.  
+**Action needed:** Design decision — add the backend endpoints, or simplify the client.
+
+### Receipt round trip — half fixed
+**Status:** Tyler added a `POST /jitai/receipt/` call (2026-07-31), but only inside the
+foreground `addNotificationReceivedListener` (`mobile/App.tsx`). The tap/response listener —
+phone elsewhere, participant taps the notification later — still only logs engagement, never
+posts a receipt. Given these are silent, data-only pushes, the foreground path may rarely fire
+in practice, especially on iOS.
+
+### Orphaned legacy code
+**Files:** `mobile/app/`, `mobile/components/`, `mobile/hooks/`, `mobile/constants/`  
+**Status:** Old HealthyGator/create-expo-app boilerplate, never deleted when Sai's app was
+merged in. Now fails to typecheck (23 errors) since `package.json` dropped their dependencies
+(`expo-router`, `@react-navigation/native`, etc.). Delete — nothing references them.
+
+### Expo Go cannot run this app; push notification native config gaps
+**Status:** `mobile/android/` and `mobile/ios/` native folders are committed (bare workflow, not
+gitignored/CNG) — Expo Go can't load a bare-workflow app regardless of anything else. Separately:
+- `android/app/src/main/AndroidManifest.xml` has no `POST_NOTIFICATIONS` permission — required
+  on Android 13+ for any notification to post at all.
+- `ios/REACT/Info.plist` has no `UIBackgroundModes: remote-notification` — needed for the
+  silent/background pushes this project's architecture depends on.
+- `expo-doctor` confirms `app.json`'s `ios`/`android`/`icon`/`orientation` fields are now dead
+  (ignored, since native folders exist and won't re-sync without `expo prebuild`).
+
+### No enrollment / wearable-registration UI
+Nothing in Login/Register/Compose calls `POST /wearable/` or sets `is_enrolled=True`. Confirm
+with Sai whether this was planned as a separate flow.
+
+### `BASE_URL` hardcoded to `'prod'`
+**File:** `mobile/src/api/config.ts` — a `dev`/`prod` switch already exists, just needs flipping.
+
+### `backend/requirements_mac.txt` is broken
+**Status:** Missing `sentry_sdk`, `django-redis`, `djangorestframework_simplejwt`,
+`argon2-cffi`, and `psycopg`. A fresh Mac clone can't run `manage.py` at all. ~10 minute fix —
+diff against `requirements.txt`.
+
+### No missing-check-in / non-response detection
+**File:** `backend/app/tasks.py` → `_evaluate_user()`, `backend/app/models.py` → `EMA.status`  
+`EMA.status='expired'` is declared but never assigned anywhere outside test fixtures.
+
+### `trigger_signal` field always written `None`
+**File:** `backend/app/tasks.py:105`. Declared on `JITAILog`, never populated.
+
+### `celery.py` disables TLS certificate verification for `rediss://`
+**File:** `backend/project/celery.py` — `ssl_cert_reqs: ssl.CERT_NONE`. Flag for a security pass.
+
+### `.env` doesn't document all required/optional variables
+`DASHBOARD_API_KEY` and `JITAI_RANDOMIZATION_PROBABILITY` both have code-level defaults but
+aren't documented anywhere.
 
 ---
 
@@ -42,16 +123,6 @@
 
 ---
 
-## Blocked on Prompt Library Design
-
-### Multi-Prompt Support
-**File:** `app/notification_service.py` → `PROMPT_LIBRARY`  
-**Status:** Single default prompt — `JITAI_DEFAULT_PROMPT_ID` env var  
-**What's needed:** Prof. Chang to define the prompt library (message templates keyed by trigger type)  
-**How it connects:** The decision engine returns a `trigger_reason` string (`prompt sent`, etc.). Once a prompt library exists, map trigger reasons → prompt IDs in `PROMPT_LIBRARY`. The React Native app holds the message text locally and displays it by `prompt_id`. Only the key ever reaches the backend (IRB constraint).
-
----
-
 ## Open Research / Contract Questions
 
 | Question | Owner | Notes |
@@ -60,7 +131,6 @@
 | Garmin Venu 3 Labfront compatibility | Prof. Chang | Verify all required data streams (15-sec HR, 3-min stress) are supported before signing contract |
 | Beat-to-beat RR interval collection | Prof. Chang | Confirm device support and IRB permission; would enable HRV analysis |
 | RA access scope | Prof. Chang + IRB | Which fields, which tables; needed before building researcher dashboard |
-| Push notification prompt library | Prof. Chang | Define prompt templates and trigger-reason → prompt_id mapping |
 | Alcohol and eating construct — DB fields needed? | Prof. Chang | These constructs currently have zero DB backing; confirm if DB fields are required or Qualtrics is sole source |
 | Cyber aggression construct mapping | Prof. Chang | Confirm compose churn signals (keystroke_count, delete_count) are the designated DB measure |
 
@@ -103,15 +173,11 @@ What was built:
 **Issue:** Field is nullable pending a controlled vocabulary from Prof. Chang  
 **Action:** Once screen names are defined in the React Native app, add a `choices` constraint and make the field non-nullable
 
-### JITAI: stuck `pending` when randomized but no push token
-**File:** `app/tasks.py:128`  
-**Issue:** If `send_prompt=True` but `user.push_token` is falsy, the jitai_log row is written with `status='pending'` and never updated. Effectively a missing delivery that is invisible in MRT analysis.  
-**Action:** Add an explicit `not_sent` branch when `send_prompt=True and not user.push_token`
-
 ### JITAI: `'0.5'` hardcoded as env var fallback
-**File:** `app/tasks.py:38`  
-**Issue:** `os.environ.get('JITAI_RANDOMIZATION_PROBABILITY', '0.5')` silently defaults to 0.5 if the env var is missing. For an MRT study this could run at the wrong p undetected.  
-**Action:** Consider raising an error or logging a loud warning when the env var is absent at task startup
+**File:** `app/tasks.py:29`  
+**Status:** Still present, but no longer a real risk — the PI Sign-Offs table above confirms
+0.5 fixed for the whole pilot, so defaulting to it is now correct behavior. Low-priority: could
+still raise/log loudly if the env var is absent, purely as a startup sanity check.
 
 ---
 
