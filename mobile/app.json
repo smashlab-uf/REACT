@@ -1,46 +1,37 @@
 {
   "expo": {
     "name": "REACT",
-    "slug": "healthygatorsportsfanrn",
+    "slug": "react-smash-lab",
     "version": "1.0.0",
+    "owner": "sai_puneeth",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "myapp",
-    "userInterfaceStyle": "automatic",
-    "splash": {
-      "image": "./assets/images/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
-    },
-    "android": {
-      "googleServicesFile": "./google-services.json",
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+      "supportsTablet": true,
+      "bundleIdentifier": "com.smashlab.react",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
-    "web": {
-      "bundler": "metro",
-      "output": "static",
-      "favicon": "./assets/images/favicon.png"
+    "android": {
+      "package": "com.smashlab.react",
+      "googleServicesFile": "./google-services.json",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
     },
-    "plugins": [
-      "expo-router",
-      "expo-build-properties",
-      "expo-font",
-      "expo-secure-store"
-    ],
-    "experiments": {
-      "typedRoutes": true
+    "web": {
+      "favicon": "./assets/favicon.png"
     },
     "extra": {
       "eas": {
-        "projectId": "f46bf456-c579-4de5-aa32-17f1d2ee030f"
+        "projectId": "f0fc7be5-bec6-4665-a49f-a63de4e71a93"
       }
-    },
-    "owner": "healthygatorsportsfan"
+    }
   }
 }
