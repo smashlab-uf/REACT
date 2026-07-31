@@ -55,6 +55,18 @@ export const ema = {
   }) => client.post('/ema/', body),
 };
 
+
+// ─── JITAI ───────────────────────────────────────────────────────────────────
+
+export const jitai = {
+  receipt: (body: {
+    jitai_log_id: number;
+    device_received_at: string;
+    platform?: string;
+    app_state?: string;
+  }) => client.post('/jitai/receipt/', body),
+};
+
 // ─── Telemetry ────────────────────────────────────────────────────────────────
 
 export const telemetry = {
