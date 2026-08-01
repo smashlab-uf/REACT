@@ -154,6 +154,7 @@ if database_url:
         'default': dj_database_url.config(
             default=database_url,
             conn_max_age=600,
+            conn_health_checks=True,
             ssl_require=database_url.startswith('postgres://') or database_url.startswith('postgresql://'),
         )
     }
