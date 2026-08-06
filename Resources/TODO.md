@@ -1,7 +1,17 @@
 # REACT — Open Items & TODOs
 
-**Last updated:** 2026-07-06  
+**Last updated:** 2026-07-31  
 **Author:** Dustin Nguyen — SMASH Research Lab, UF
+
+---
+
+## Mobile App Gaps
+
+Active development branch: **`mobile-app-gaps`** (`mobile-code-replacement` is retired —
+its content is merged into `main`, don't develop there). Full current gap list, kept up to date
+as work lands: `docs/mobile-app-gaps.md` / `Resources/REACT_Mobile_App_Gaps.docx`. Top priority
+right now: the mobile app doesn't build at all (missing `babel-preset-expo`), then no EMA
+submission UI, then the broken auth-refresh flow.
 
 ---
 
@@ -42,16 +52,6 @@
 
 ---
 
-## Blocked on Prompt Library Design
-
-### Multi-Prompt Support
-**File:** `app/notification_service.py` → `PROMPT_LIBRARY`  
-**Status:** Single default prompt — `JITAI_DEFAULT_PROMPT_ID` env var  
-**What's needed:** Prof. Chang to define the prompt library (message templates keyed by trigger type)  
-**How it connects:** The decision engine returns a `trigger_reason` string (`prompt sent`, etc.). Once a prompt library exists, map trigger reasons → prompt IDs in `PROMPT_LIBRARY`. The React Native app holds the message text locally and displays it by `prompt_id`. Only the key ever reaches the backend (IRB constraint).
-
----
-
 ## Open Research / Contract Questions
 
 | Question | Owner | Notes |
@@ -60,7 +60,6 @@
 | Garmin Venu 3 Labfront compatibility | Prof. Chang | Verify all required data streams (15-sec HR, 3-min stress) are supported before signing contract |
 | Beat-to-beat RR interval collection | Prof. Chang | Confirm device support and IRB permission; would enable HRV analysis |
 | RA access scope | Prof. Chang + IRB | Which fields, which tables; needed before building researcher dashboard |
-| Push notification prompt library | Prof. Chang | Define prompt templates and trigger-reason → prompt_id mapping |
 | Alcohol and eating construct — DB fields needed? | Prof. Chang | These constructs currently have zero DB backing; confirm if DB fields are required or Qualtrics is sole source |
 | Cyber aggression construct mapping | Prof. Chang | Confirm compose churn signals (keystroke_count, delete_count) are the designated DB measure |
 
@@ -103,15 +102,11 @@ What was built:
 **Issue:** Field is nullable pending a controlled vocabulary from Prof. Chang  
 **Action:** Once screen names are defined in the React Native app, add a `choices` constraint and make the field non-nullable
 
-### JITAI: stuck `pending` when randomized but no push token
-**File:** `app/tasks.py:128`  
-**Issue:** If `send_prompt=True` but `user.push_token` is falsy, the jitai_log row is written with `status='pending'` and never updated. Effectively a missing delivery that is invisible in MRT analysis.  
-**Action:** Add an explicit `not_sent` branch when `send_prompt=True and not user.push_token`
-
 ### JITAI: `'0.5'` hardcoded as env var fallback
-**File:** `app/tasks.py:38`  
-**Issue:** `os.environ.get('JITAI_RANDOMIZATION_PROBABILITY', '0.5')` silently defaults to 0.5 if the env var is missing. For an MRT study this could run at the wrong p undetected.  
-**Action:** Consider raising an error or logging a loud warning when the env var is absent at task startup
+**File:** `app/tasks.py:29`  
+**Status:** Still present, but no longer a real risk — the PI Sign-Offs table above confirms
+0.5 fixed for the whole pilot, so defaulting to it is now correct behavior. Low-priority: could
+still raise/log loudly if the env var is absent, purely as a startup sanity check.
 
 ---
 
