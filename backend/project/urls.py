@@ -16,7 +16,8 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path
-from app.views import index, CreateUserView, UserLoginView, UserUpdateView, CheckEmailView, TelemetryIngestView, WearableDeviceView, EMAView, JITAILogView, JITAIReceiptView, DashboardParticipantStatusView, DashboardLatencyEventsView, HeartRateListView, StressListView, PhoneTelemetryView, EngagementLogView
+from rest_framework_simplejwt.views import TokenRefreshView
+from app.views import index, CreateUserView, UserLoginView, UserUpdateView, CheckEmailView, MeView, TelemetryIngestView, WearableDeviceView, EMAView, JITAILogView, JITAIReceiptView, DashboardParticipantStatusView, DashboardLatencyEventsView, HeartRateListView, StressListView, PhoneTelemetryView, EngagementLogView
 
 # Import drf-yasg components
 from drf_yasg.views import get_schema_view
@@ -44,6 +45,8 @@ urlpatterns = [
     path('user/<int:user_id>/', UserUpdateView.as_view(), name='update-user'),
     path('user/login/', UserLoginView.as_view(), name='user-login'),
     path('user/checkemail/', CheckEmailView.as_view(), name='check-user-email'),
+    path('auth/token/refresh/', TokenRefreshView.as_view(), name='auth-token-refresh'),
+    path('auth/me/', MeView.as_view(), name='auth-me'),
     path('wearable/', WearableDeviceView.as_view(), name='wearable-create'),
     path('wearable/<int:user_id>/', WearableDeviceView.as_view(), name='wearable-detail'),
     path('ema/', EMAView.as_view(), name='ema-create'),

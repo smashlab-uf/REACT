@@ -16,6 +16,14 @@ export function clearTokens() {
   refreshToken = null;
 }
 
+// Set by authStore so a session that can't be refreshed also logs out of app state,
+// instead of leaving the UI showing "logged in" while every call 401s.
+let onAuthFailure: (() => void) | null = null;
+
+export function setOnAuthFailure(fn: () => void) {
+  onAuthFailure = fn;
+}
+
 const client: AxiosInstance = axios.create({
   baseURL: BASE_URL,
   headers: { 'Content-Type': 'application/json' },
@@ -51,24 +59,31 @@ client.interceptors.response.use(
       }
     }
 
-    if (error.response?.status === 401 && !original._retry && refreshToken) {
-      original._retry = true;
-      try {
-        const res = await axios.post(`${BASE_URL}/auth/token/refresh/`, {
-          refresh: refreshToken,
-        });
-        accessToken = res.data.access;
-        // Persist the new access token back to SecureStore
-        const stored = await SecureStore.getItemAsync('auth_tokens').catch(() => null);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          await SecureStore.setItemAsync('auth_tokens', JSON.stringify({ ...parsed, access: accessToken }));
+    if (error.response?.status === 401) {
+      if (!original._retry && refreshToken) {
+        original._retry = true;
+        try {
+          const res = await axios.post(`${BASE_URL}/auth/token/refresh/`, {
+            refresh: refreshToken,
+          });
+          accessToken = res.data.access;
+          // Persist the new access token back to SecureStore
+          const stored = await SecureStore.getItemAsync('auth_tokens').catch(() => null);
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            await SecureStore.setItemAsync('auth_tokens', JSON.stringify({ ...parsed, access: accessToken }));
+          }
+          original.headers.Authorization = `Bearer ${accessToken}`;
+          return client(original);
+        } catch {
+          clearTokens();
+          onAuthFailure?.();
         }
-        original.headers.Authorization = `Bearer ${accessToken}`;
-        return client(original);
-      } catch {
+      } else {
+        // No refresh token to try, or the refresh already failed once for this request —
+        // the session can't be recovered, so log out instead of leaving the UI stuck.
         clearTokens();
-        // Caller handles navigation to login
+        onAuthFailure?.();
       }
     }
 

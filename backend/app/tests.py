@@ -268,6 +268,69 @@ class UserLoginViewTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# API: POST /auth/token/refresh/ and GET /auth/me/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class AuthTokenRefreshViewTests(TestCase):
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = make_user(email='gator@ufl.edu', password='chomp1234')
+        login_response = self.client.post('/user/login/', {
+            'email': 'gator@ufl.edu',
+            'password': 'chomp1234',
+        }, format='json')
+        self.refresh_token = login_response.data['refresh']
+
+    def test_valid_refresh_token_returns_new_access_token(self):
+        response = self.client.post('/auth/token/refresh/', {
+            'refresh': self.refresh_token,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertIn('access', response.data)
+
+    def test_new_access_token_authenticates_subsequent_request(self):
+        response = self.client.post('/auth/token/refresh/', {
+            'refresh': self.refresh_token,
+        }, format='json')
+        new_access = response.data['access']
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {new_access}')
+        me_response = client.get('/auth/me/')
+        self.assertEqual(me_response.status_code, http_status.HTTP_200_OK)
+
+    def test_invalid_refresh_token_returns_401(self):
+        response = self.client.post('/auth/token/refresh/', {
+            'refresh': 'not-a-real-token',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_missing_refresh_token_returns_400(self):
+        response = self.client.post('/auth/token/refresh/', {}, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class MeViewTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='gator@ufl.edu', password='chomp1234', first_name='Al')
+
+    def test_authenticated_request_returns_own_profile(self):
+        client = authenticated_client(self.user)
+        response = client.get('/auth/me/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(response.data['email'], 'gator@ufl.edu')
+        self.assertEqual(response.data['first_name'], 'Al')
+
+    def test_unauthenticated_request_returns_401(self):
+        client = APIClient()
+        response = client.get('/auth/me/')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+
+# ---------------------------------------------------------------------------
 # Model: User enrollment fields
 # ---------------------------------------------------------------------------
 
