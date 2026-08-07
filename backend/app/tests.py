@@ -2502,3 +2502,33 @@ class DashboardAPIKeyAccessTests(TestCase):
             HTTP_X_DASHBOARD_API_KEY='wrong-key',
         )
         self.assertEqual(response.status_code, 401)
+
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class TokenRefreshEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(
+            email='refresh-token@test.com',
+            password='testpass123',
+        )
+
+    def test_refresh_endpoint_returns_new_access_token(self):
+        login_response = self.client.post('/user/login/', {
+            'email': 'refresh-token@test.com',
+            'password': 'testpass123',
+        })
+        self.assertEqual(login_response.status_code, 200)
+        refresh = login_response.json()['refresh']
+
+        response = self.client.post('/auth/token/refresh/', {'refresh': refresh})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('access', response.json())
+
+    def test_refresh_endpoint_rejects_missing_token(self):
+        response = self.client.post('/auth/token/refresh/', {})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('refresh', response.json())
