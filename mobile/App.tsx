@@ -5,6 +5,7 @@ import { useAuthStore } from './src/store/authStore';
 import LoginScreen from './src/screens/LoginScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
 import ComposeScreen from './src/screens/ComposeScreen';
+import EMAScreen from './src/screens/EMAScreen';
 import { flushQueue, startNetworkListener } from './src/telemetry/offlineQueue';
 import { registerForPushNotifications } from './src/notifications/pushToken';
 import { jitai, user as userApi, telemetry } from './src/api/endpoints';
@@ -21,11 +22,13 @@ Notifications.setNotificationHandler({
 });
 
 type Screen = 'login' | 'register' | 'app';
+type ActiveEMA = { promptId: string; jitaiLogId?: number };
 
 export default function App() {
   const { isAuthenticated, isLoading, restoreSession, userId } = useAuthStore();
   const [screen, setScreen] = useState<Screen>('login');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [activeEMA, setActiveEMA] = useState<ActiveEMA | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function showToast(message: string) {
@@ -99,6 +102,10 @@ export default function App() {
         showToast(`❌ Engagement log failed: ${e?.response?.status ?? 'Network error'}`);
         console.log('[Push] Engagement log failed:', e?.response?.status);
       });
+
+      if (data.type === 'ema_prompt' && typeof data.prompt_id === 'string') {
+        setActiveEMA({ promptId: data.prompt_id, jitaiLogId });
+      }
     });
 
     return () => {
@@ -119,12 +126,19 @@ export default function App() {
     <View style={{ flex: 1 }}>
       <NotificationToast message={toastMessage} />
       {isAuthenticated ? (
-        <ComposeScreen />
+        <ComposeScreen onOpenEMA={() => setActiveEMA({ promptId: 'ema_standard_v1' })} />
       ) : screen === 'register' ? (
         <RegisterScreen onGoToLogin={() => setScreen('login')} />
       ) : (
         <LoginScreen onGoToRegister={() => setScreen('register')} />
       )}
+
+      <EMAScreen
+        visible={activeEMA !== null}
+        promptId={activeEMA?.promptId ?? ''}
+        jitaiLogId={activeEMA?.jitaiLogId}
+        onClose={() => setActiveEMA(null)}
+      />
     </View>
   );
 }

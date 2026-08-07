@@ -1,0 +1,10 @@
+participant,persona,sim_days,silent_days,days_with_checkin,retention_pct,decision_points,check_in_completion_pct,prompts_sent,pushes_delivered,delivery_success_pct,cooldown_blocks,daily_cap_blocks,below_threshold,insufficient_history,avg_total_latency_ms
+p01,regular,5,0,5,100.0,20,100.0,8,8,100.0,0,0,6,3,20250.0
+p02,regular,5,0,5,100.0,20,100.0,6,6,100.0,0,0,9,3,18167.0
+p03,regular,5,0,5,100.0,20,100.0,5,0,0.0,0,0,10,3,
+p04,regular,5,0,5,100.0,20,100.0,7,0,0.0,0,0,7,3,
+p05,spiky,5,0,5,100.0,40,100.0,11,11,100.0,0,3,22,3,15727.0
+p06,bursty,5,0,5,100.0,30,100.0,3,3,100.0,3,0,20,3,9667.0
+p07,flat,5,0,5,100.0,20,100.0,5,5,100.0,0,0,10,3,15200.0
+p08,regular,5,0,5,100.0,20,100.0,4,4,100.0,0,0,9,3,14500.0
+p09,regular,5,2,3,60.0,12,85.7,3,3,100.0,0,0,4,3,17333.0
