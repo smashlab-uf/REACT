@@ -12,7 +12,9 @@ import { emitDraftDeleted, emitDraftSubmitted } from '../telemetry/composeTeleme
 import { useTelemetryStore, TelemetryEvent } from '../telemetry/telemetryStore';
 import { useAuthStore } from '../store/authStore';
 
-export default function ComposeScreen() {
+type Props = { onOpenEMA: () => void };
+
+export default function ComposeScreen({ onOpenEMA }: Props) {
   const [text, setText] = useState('');
   const events = useTelemetryStore((s) => s.events);
   const flush = useTelemetryStore((s) => s.flush);
@@ -46,9 +48,14 @@ export default function ComposeScreen() {
         </TouchableOpacity>
       </View>
 
-      <TouchableOpacity style={styles.logoutBtn} onPress={() => { flush(); logout(); }}>
-        <Text style={styles.logoutBtnText}>Logout</Text>
-      </TouchableOpacity>
+      <View style={styles.devRow}>
+        <TouchableOpacity style={styles.devBtn} onPress={onOpenEMA}>
+          <Text style={styles.devBtnText}>Open EMA survey (dev)</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.logoutBtn} onPress={() => { flush(); logout(); }}>
+          <Text style={styles.logoutBtnText}>Logout</Text>
+        </TouchableOpacity>
+      </View>
 
       <ComposeInput value={text} onChangeText={setText} />
 
@@ -114,11 +121,27 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 15,
   },
+  devRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    marginBottom: 4,
+  },
+  devBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#007AFF',
+  },
+  devBtnText: {
+    color: '#007AFF',
+    fontSize: 13,
+  },
   logoutBtn: {
-    alignSelf: 'center',
     paddingVertical: 6,
     paddingHorizontal: 20,
-    marginBottom: 4,
   },
   logoutBtnText: {
     color: '#e00',
