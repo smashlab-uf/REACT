@@ -224,7 +224,8 @@ class UserLoginView(APIView):
             "refresh": str(refresh),
             "data": serializer.data
         }, status=status.HTTP_200_OK)
-    
+
+
     # def get(self, request):
     #     email = request.query_params.get('email')
     #     password = request.query_params.get('password')
@@ -266,7 +267,23 @@ class UserLoginView(APIView):
 #             return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
 #     def logout_view(request):
 #         logout(request)
-    
+
+
+class MeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Get current user's profile",
+        operation_description="Returns the authenticated participant's profile, resolved from the JWT.",
+        responses={200: UserSerializer(many=False)}
+    )
+    def get(self, request):
+        app_user = _get_app_user(request)
+        if app_user is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        serializer = UserSerializer(app_user)
+        return Response(serializer.data)
+
 
 class TelemetryIngestView(APIView):
     permission_classes = [IsAuthenticated]

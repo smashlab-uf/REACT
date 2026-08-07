@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
-import { setTokens, clearTokens } from '../api/client';
+import { setTokens, clearTokens, setOnAuthFailure } from '../api/client';
 import { auth } from '../api/endpoints';
 
 const KEYS = {
@@ -77,3 +77,10 @@ export const useAuthStore = create<AuthStore>((set) => ({
     }
   },
 }));
+
+// A session the client can't refresh (expired/invalid refresh token, or no
+// refresh token at all) must also log the app out — otherwise the UI keeps
+// showing "logged in" while every request 401s silently.
+setOnAuthFailure(() => {
+  useAuthStore.getState().logout();
+});
