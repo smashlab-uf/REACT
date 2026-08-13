@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path
-from app.views import index, CreateUserView, UserLoginView, UserUpdateView, CheckEmailView, TelemetryIngestView, WearableDeviceView, EMAView, JITAILogView, JITAIReceiptView, DashboardParticipantStatusView, DashboardLatencyEventsView, HeartRateListView, StressListView, PhoneTelemetryView, EngagementLogView
+from app.views import index, CreateUserView, UserLoginView, UserUpdateView, CheckEmailView, TelemetryIngestView, WearableDeviceView, EMAView, EMANextView, EMAResponseView, JITAILogView, JITAIReceiptView, DashboardParticipantStatusView, DashboardLatencyEventsView, HeartRateListView, StressListView, PhoneTelemetryView, EngagementLogView
 
 # Import drf-yasg components
 from drf_yasg.views import get_schema_view
@@ -47,6 +47,8 @@ urlpatterns = [
     path('wearable/', WearableDeviceView.as_view(), name='wearable-create'),
     path('wearable/<int:user_id>/', WearableDeviceView.as_view(), name='wearable-detail'),
     path('ema/', EMAView.as_view(), name='ema-create'),
+    path('ema/next/', EMANextView.as_view(), name='ema-next'),
+    path('ema/responses/', EMAResponseView.as_view(), name='ema-responses'),
     path('ema/<int:user_id>/', EMAView.as_view(), name='ema-list'),
     path('jitai/', JITAILogView.as_view(), name='jitai-create'),
     path('jitai/<int:user_id>/', JITAILogView.as_view(), name='jitai-list'),

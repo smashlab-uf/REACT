@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import (
-    EMA, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
+    EMA, EMAItemResponse, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
     StressSample, User, WearableDevice,
 )
 from django.contrib.auth.hashers import make_password
@@ -66,10 +66,24 @@ class StressSampleSerializer(serializers.ModelSerializer):
 
 
 
+class EMAItemResponseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EMAItemResponse
+        fields = ['id', 'item_id', 'value']
+        read_only_fields = ('id',)
+
+
 class EMASerializer(serializers.ModelSerializer):
+    item_responses = EMAItemResponseSerializer(many=True, read_only=True)
+
     class Meta:
         model = EMA
-        fields = ['id', 'user', 'prompt_id', 'sent_at', 'responded_at', 'status', 'mood', 'stress', 'energy']
+        fields = [
+            'id', 'user', 'prompt_id', 'sent_at', 'responded_at', 'status',
+            'ema_type', 'source_jitai_log', 'outcome_window_start',
+            'outcome_window_end', 'expires_at', 'mood', 'stress', 'energy',
+            'item_responses',
+        ]
         read_only_fields = ('id', 'sent_at', 'user', 'responded_at', 'status')
         extra_kwargs = {
             'mood':   {'min_value': 1, 'max_value': 7},
@@ -216,3 +230,24 @@ class EngagementLogSerializer(serializers.ModelSerializer):
             'recorded_at',
         ]
         read_only_fields = ('id', 'recorded_at', 'user')
+
+
+
+class EMAAnswerSerializer(serializers.Serializer):
+    item_id = serializers.ChoiceField(choices=[f'B{i}' for i in range(1, 9)])
+    value = serializers.IntegerField(min_value=1, max_value=7)
+
+
+class EMAResponseSubmitSerializer(serializers.Serializer):
+    prompt_id = serializers.CharField(max_length=64)
+    responses = EMAAnswerSerializer(many=True)
+    ema_type = serializers.ChoiceField(choices=EMA.EMA_TYPE_CHOICES, required=False, default='scheduled_check_in')
+    jitai_log_id = serializers.IntegerField(required=False, allow_null=True)
+    outcome_window_start = serializers.DateTimeField(required=False, allow_null=True)
+    outcome_window_end = serializers.DateTimeField(required=False, allow_null=True)
+
+    def validate_responses(self, value):
+        item_ids = [item['item_id'] for item in value]
+        if len(item_ids) != len(set(item_ids)):
+            raise serializers.ValidationError('response item_id values must be unique')
+        return value

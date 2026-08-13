@@ -9,7 +9,7 @@ from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from app.models import (
-    EMA, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
+    EMA, EMAItemResponse, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
     StressSample, User, WearableDevice,
 )
 from app.serializers import (
@@ -2502,3 +2502,70 @@ class DashboardAPIKeyAccessTests(TestCase):
             HTTP_X_DASHBOARD_API_KEY='wrong-key',
         )
         self.assertEqual(response.status_code, 401)
+
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMARotationEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='ema-rotation@test.com')
+        self.client = authenticated_client(self.user)
+
+    def test_next_returns_scheduled_items_without_active_jitai(self):
+        response = self.client.get('/ema/next/')
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['should_show'])
+        self.assertEqual(data['ema_type'], 'scheduled_check_in')
+        self.assertFalse(data['outcome_window_active'])
+        self.assertGreaterEqual(len(data['items']), 4)
+
+    def test_next_returns_post_prompt_items_during_outcome_window(self):
+        jitai_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='JITAI-EMA-1',
+            trigger_reason='test',
+            push_sent_at=timezone.now() - timedelta(minutes=10),
+            send_prompt=True,
+        )
+
+        response = self.client.get('/ema/next/')
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['should_show'])
+        self.assertTrue(data['outcome_window_active'])
+        self.assertEqual(data['jitai_log_id'], jitai_log.id)
+        self.assertEqual([item['item_id'] for item in data['items']], ['B1', 'B2', 'B4', 'B5', 'B6', 'B7'])
+
+    def test_submit_variable_ema_responses(self):
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-ROTATION-1',
+            'ema_type': 'scheduled_check_in',
+            'responses': [
+                {'item_id': 'B1', 'value': 5},
+                {'item_id': 'B2', 'value': 3},
+                {'item_id': 'B8', 'value': 7},
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+        self.assertEqual(data['prompt_id'], 'EMA-ROTATION-1')
+        self.assertEqual(data['status'], 'completed')
+        self.assertEqual(len(data['item_responses']), 3)
+        self.assertEqual(EMAItemResponse.objects.filter(ema_id=data['id']).count(), 3)
+
+    def test_submit_rejects_duplicate_items(self):
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-ROTATION-2',
+            'responses': [
+                {'item_id': 'B1', 'value': 5},
+                {'item_id': 'B1', 'value': 6},
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('responses', response.json())
