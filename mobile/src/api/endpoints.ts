@@ -1,4 +1,5 @@
 import client from './client';
+import { EMANextResponse, EMASubmitRequest, EMASubmitResponse } from './types';
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
@@ -46,13 +47,11 @@ export const user = {
 // ─── EMA ──────────────────────────────────────────────────────────────────────
 
 export const ema = {
-  submit: (body: {
-    user: number;
-    prompt_id: string;
-    mood?: number;
-    stress?: number;
-    energy?: number;
-  }) => client.post('/ema/', body),
+  next: () =>
+    client.get<EMANextResponse>('/ema/next/'),
+
+  submitResponses: (body: EMASubmitRequest) =>
+    client.post<EMASubmitResponse>('/ema/responses/', body),
 };
 
 

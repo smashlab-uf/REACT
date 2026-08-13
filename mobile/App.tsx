@@ -22,7 +22,7 @@ Notifications.setNotificationHandler({
 });
 
 type Screen = 'login' | 'register' | 'app';
-type ActiveEMA = { promptId: string; jitaiLogId?: number };
+type ActiveEMA = { jitaiLogId?: number };
 
 export default function App() {
   const { isAuthenticated, isLoading, restoreSession, userId } = useAuthStore();
@@ -103,8 +103,8 @@ export default function App() {
         console.log('[Push] Engagement log failed:', e?.response?.status);
       });
 
-      if (data.type === 'ema_prompt' && typeof data.prompt_id === 'string') {
-        setActiveEMA({ promptId: data.prompt_id, jitaiLogId });
+      if (data.type === 'ema_prompt') {
+        setActiveEMA({ jitaiLogId });
       }
     });
 
@@ -126,7 +126,7 @@ export default function App() {
     <View style={{ flex: 1 }}>
       <NotificationToast message={toastMessage} />
       {isAuthenticated ? (
-        <ComposeScreen onOpenEMA={() => setActiveEMA({ promptId: 'ema_standard_v1' })} />
+        <ComposeScreen onOpenEMA={() => setActiveEMA({})} />
       ) : screen === 'register' ? (
         <RegisterScreen onGoToLogin={() => setScreen('login')} />
       ) : (
@@ -135,7 +135,6 @@ export default function App() {
 
       <EMAScreen
         visible={activeEMA !== null}
-        promptId={activeEMA?.promptId ?? ''}
         jitaiLogId={activeEMA?.jitaiLogId}
         onClose={() => setActiveEMA(null)}
       />
