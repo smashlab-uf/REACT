@@ -140,7 +140,7 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
       await emaApi.submitResponses({
         prompt_id: survey.prompt_id,
         ema_type: survey.ema_type,
-        jitai_log_id: survey.jitai_log_id ?? null,
+        jitai_log_id: survey.jitai_log_id ?? jitaiLogId ?? null,
         outcome_window_start: survey.outcome_window_start ?? null,
         outcome_window_end: survey.outcome_window_end ?? null,
         responses: answerable.map((i) => ({ item_id: i.item_id, value: answers[i.item_id] })),
