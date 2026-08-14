@@ -20,6 +20,8 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
   const flush = useTelemetryStore((s) => s.flush);
   const logout = useAuthStore((s) => s.logout);
 
+  const devNote = __DEV__ ? ' Check the console for telemetry.' : '';
+
   function handleSubmit() {
     if (!text.trim()) {
       Alert.alert('Nothing to submit', 'Type something first.');
@@ -27,13 +29,13 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
     }
     emitDraftSubmitted();
     setText('');
-    Alert.alert('Submitted', 'Your draft was submitted. Check the console for telemetry.');
+    Alert.alert('Submitted', `Your draft was submitted.${devNote}`);
   }
 
   function handleDelete() {
     emitDraftDeleted();
     setText('');
-    Alert.alert('Deleted', 'Draft cleared. Check the console for telemetry.');
+    Alert.alert('Deleted', `Draft cleared.${devNote}`);
   }
 
   return (
@@ -48,37 +50,48 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.devRow}>
-        <TouchableOpacity style={styles.devBtn} onPress={onOpenEMA}>
-          <Text style={styles.devBtnText}>Open EMA survey (dev)</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.logoutBtn} onPress={() => { flush(); logout(); }}>
-          <Text style={styles.logoutBtnText}>Logout</Text>
-        </TouchableOpacity>
-      </View>
+      {__DEV__ && (
+        <View style={styles.devRow}>
+          <TouchableOpacity style={styles.devBtn} onPress={onOpenEMA}>
+            <Text style={styles.devBtnText}>Open EMA survey (dev)</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       <ComposeInput value={text} onChangeText={setText} />
 
-      <View style={styles.debugPanel}>
-        <Text style={styles.debugTitle}>Telemetry Events</Text>
-        <ScrollView style={styles.debugScroll}>
-          {events.length === 0 ? (
-            <Text style={styles.debugEmpty}>No events yet. Start typing.</Text>
-          ) : (
-            [...events].reverse().map((e: TelemetryEvent, i) => (
-              <View key={i} style={styles.debugEvent}>
-                <Text style={styles.debugType}>{e.event_type}</Text>
-                <Text style={styles.debugDetail}>user: {e.user ?? 'null'}</Text>
-                <Text style={styles.debugDetail}>session_id: {e.session_id.slice(0, 8)}...</Text>
-                <Text style={styles.debugDetail}>occurred_at: {e.occurred_at}</Text>
-                <Text style={styles.debugDetail}>screen: {e.screen_name}</Text>
-                <Text style={styles.debugDetail}>keystrokes: {(e.metadata.keystroke_count as number)}</Text>
-                <Text style={styles.debugDetail}>deletes: {(e.metadata.delete_count as number)}</Text>
-                <Text style={styles.debugDetail}>time: {(e.metadata.time_on_compose as number)}ms</Text>
-              </View>
-            ))
-          )}
-        </ScrollView>
+      {__DEV__ && (
+        <View style={styles.debugPanel}>
+          <Text style={styles.debugTitle}>Telemetry Events</Text>
+          <ScrollView style={styles.debugScroll}>
+            {events.length === 0 ? (
+              <Text style={styles.debugEmpty}>No events yet. Start typing.</Text>
+            ) : (
+              [...events].reverse().map((e: TelemetryEvent, i) => (
+                <View key={i} style={styles.debugEvent}>
+                  <Text style={styles.debugType}>{e.event_type}</Text>
+                  <Text style={styles.debugDetail}>user: {e.user ?? 'null'}</Text>
+                  <Text style={styles.debugDetail}>session_id: {e.session_id.slice(0, 8)}...</Text>
+                  <Text style={styles.debugDetail}>occurred_at: {e.occurred_at}</Text>
+                  <Text style={styles.debugDetail}>screen: {e.screen_name}</Text>
+                  <Text style={styles.debugDetail}>keystrokes: {(e.metadata.keystroke_count as number)}</Text>
+                  <Text style={styles.debugDetail}>deletes: {(e.metadata.delete_count as number)}</Text>
+                  <Text style={styles.debugDetail}>time: {(e.metadata.time_on_compose as number)}ms</Text>
+                </View>
+              ))
+            )}
+          </ScrollView>
+        </View>
+      )}
+
+      <View style={styles.footer}>
+        <TouchableOpacity
+          style={styles.logoutBtn}
+          hitSlop={{ top: 8, bottom: 8, left: 12, right: 12 }}
+          onPress={() => { flush(); logout(); }}
+        >
+          <Text style={styles.logoutBtnText}>Log out</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -139,12 +152,19 @@ const styles = StyleSheet.create({
     color: '#007AFF',
     fontSize: 13,
   },
+  footer: {
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+    paddingTop: 10,
+    paddingBottom: 56,
+  },
   logoutBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 20,
+    paddingVertical: 4,
+    paddingHorizontal: 16,
   },
   logoutBtnText: {
-    color: '#e00',
+    color: '#8a8a8e',
     fontSize: 13,
   },
   debugPanel: {
