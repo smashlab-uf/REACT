@@ -1,6 +1,7 @@
 import axios, { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse } from 'axios';
 import * as SecureStore from 'expo-secure-store';
 import { BASE_URL } from './config';
+import { log } from '../utils/logger';
 
 // Token storage — replaced by expo-secure-store when auth is wired up
 let accessToken: string | null = null;
@@ -35,18 +36,18 @@ client.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   if (accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`;
   }
-  console.log(`[API →] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`, config.data ?? '');
+  log(`[API →] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`, config.data ?? '');
   return config;
 });
 
 // Log response + auto-refresh on 401
 client.interceptors.response.use(
   (response: AxiosResponse) => {
-    console.log(`[API ←] ${response.status} ${response.config.url}`, response.data);
+    log(`[API ←] ${response.status} ${response.config.url}`, response.data);
     return response;
   },
   async (error) => {
-    console.log(`[API ✗] ${error.response?.status ?? 'ERR'} ${error.config?.url}`, error.response?.data ?? error.message);
+    log(`[API ✗] ${error.response?.status ?? 'ERR'} ${error.config?.url}`, error.response?.data ?? error.message);
     const original = error.config;
 
     // If accessToken is null, try loading tokens from SecureStore before giving up

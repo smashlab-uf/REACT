@@ -10,6 +10,7 @@ import { flushQueue, startNetworkListener } from './src/telemetry/offlineQueue';
 import { registerForPushNotifications } from './src/notifications/pushToken';
 import { jitai, user as userApi, telemetry } from './src/api/endpoints';
 import NotificationToast from './src/components/NotificationToast';
+import { log } from './src/utils/logger';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -54,7 +55,7 @@ export default function App() {
     registerForPushNotifications().then((token) => {
       if (token) {
         userApi.update(userId, { push_token: token }).catch((e) => {
-          console.log('[PushToken] Failed to register with backend:', e?.response?.status);
+          log('[PushToken] Failed to register with backend:', e?.response?.status);
         });
       }
     });
@@ -63,7 +64,7 @@ export default function App() {
       const title = notification.request.content.title ?? 'Notification';
       const body = notification.request.content.body ?? '';
       const data = notification.request.content.data as Record<string, unknown>;
-      console.log('[Push] Received in foreground:', JSON.stringify(data));
+      log('[Push] Received in foreground:', JSON.stringify(data));
 
       const rawJitaiLogId = data.jitai_log_id;
       const jitaiLogId = typeof rawJitaiLogId === 'number'
@@ -79,7 +80,7 @@ export default function App() {
           platform: Platform.OS,
           app_state: 'foreground',
         }).catch((e) => {
-          console.log('[Push] Receipt log failed:', e?.response?.status ?? e?.message);
+          log('[Push] Receipt log failed:', e?.response?.status ?? e?.message);
         });
       }
 
@@ -88,7 +89,7 @@ export default function App() {
 
     const tapSub = Notifications.addNotificationResponseReceivedListener((response) => {
       const data = response.notification.request.content.data as Record<string, unknown>;
-      console.log('[Push] Tapped:', JSON.stringify(data));
+      log('[Push] Tapped:', JSON.stringify(data));
 
       const jitaiLogId = data.jitai_log_id as number | undefined;
       telemetry.logEngagement({
@@ -100,7 +101,7 @@ export default function App() {
         showToast('✅ Engagement logged to backend');
       }).catch((e) => {
         showToast(`❌ Engagement log failed: ${e?.response?.status ?? 'Network error'}`);
-        console.log('[Push] Engagement log failed:', e?.response?.status);
+        log('[Push] Engagement log failed:', e?.response?.status);
       });
 
       if (data.type === 'ema_prompt') {

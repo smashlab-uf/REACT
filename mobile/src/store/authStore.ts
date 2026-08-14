@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
 import { setTokens, clearTokens, setOnAuthFailure } from '../api/client';
 import { auth } from '../api/endpoints';
+import { log } from '../utils/logger';
 
 const KEYS = {
   tokens: 'auth_tokens',
@@ -60,14 +61,14 @@ export const useAuthStore = create<AuthStore>((set) => ({
 
         // Refresh profile from server in the background
         try {
-          console.log('[Auth] Calling /auth/me/...');
+          log('[Auth] Calling /auth/me/...');
           const res = await auth.me();
           const freshUser = res.data as User;
           await SecureStore.setItemAsync(KEYS.user, JSON.stringify(freshUser));
           set({ user: freshUser, userId: freshUser.user_id });
-          console.log('[Auth] Profile refreshed:', freshUser.email);
+          log('[Auth] Profile refreshed:', freshUser.email);
         } catch (e: any) {
-          console.log('[Auth] /auth/me/ failed:', e?.response?.status, e?.message);
+          log('[Auth] /auth/me/ failed:', e?.response?.status, e?.message);
         }
       }
     } catch {

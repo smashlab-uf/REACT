@@ -13,6 +13,7 @@ import LikertScale from '../components/LikertScale';
 import { ema as emaApi, telemetry } from '../api/endpoints';
 import { EMAItem, EMANextShowResponse } from '../api/types';
 import { useAuthStore } from '../store/authStore';
+import { log } from '../utils/logger';
 
 const TITLE = 'How are you feeling right now?';
 
@@ -70,7 +71,7 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
           ...(linked !== undefined && linked !== null && { jitai_log: linked }),
         })
         .catch((e) => {
-          console.log(`[EMA] ${event_type} log failed:`, e?.response?.status ?? e?.message);
+          log(`[EMA] ${event_type} log failed:`, e?.response?.status ?? e?.message);
         });
     },
     [userId, jitaiLogId],
@@ -103,7 +104,7 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
       setPhase('form');
       logEngagement('ema_opened', data.jitai_log_id);
     } catch (e: any) {
-      console.log('[EMA] next failed:', e?.response?.status, e?.response?.data ?? e?.message);
+      log('[EMA] next failed:', e?.response?.status, e?.response?.data ?? e?.message);
       setPhase('error');
     }
   }, [logEngagement]);
@@ -148,7 +149,7 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
       onClose();
     } catch (e: any) {
       const status = e?.response?.status;
-      console.log('[EMA] submit failed:', status, e?.response?.data);
+      log('[EMA] submit failed:', status, e?.response?.data);
       Alert.alert(
         'Could not submit',
         status === 400 || status === 404

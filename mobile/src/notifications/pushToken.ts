@@ -2,10 +2,11 @@ import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
+import { log } from '../utils/logger';
 
 export async function registerForPushNotifications(): Promise<string | null> {
   if (!Device.isDevice) {
-    console.log('[PushToken] Skipping — not a physical device');
+    log('[PushToken] Skipping — not a physical device');
     return null;
   }
 
@@ -20,7 +21,7 @@ export async function registerForPushNotifications(): Promise<string | null> {
   }
 
   if (finalStatus !== 'granted') {
-    console.log('[PushToken] Permission denied');
+    log('[PushToken] Permission denied');
     return null;
   }
 
@@ -38,11 +39,11 @@ export async function registerForPushNotifications(): Promise<string | null> {
     Constants.easConfig?.projectId;
 
   if (!projectId) {
-    console.log('[PushToken] Missing EAS project ID');
+    log('[PushToken] Missing EAS project ID');
     return null;
   }
 
   const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
-  console.log('[PushToken] Registered:', token);
+  log('[PushToken] Registered:', token);
   return token;
 }
