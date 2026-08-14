@@ -9,7 +9,7 @@ from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from app.models import (
-    EMA, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
+    EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog, PhoneTelemetry,
     StressSample, User, WearableDevice,
 )
 from app.serializers import (
@@ -2565,3 +2565,177 @@ class DashboardAPIKeyAccessTests(TestCase):
             HTTP_X_DASHBOARD_API_KEY='wrong-key',
         )
         self.assertEqual(response.status_code, 401)
+
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMARotationEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='ema-rotation@test.com')
+        self.client = authenticated_client(self.user)
+
+    def test_next_returns_scheduled_items_without_active_jitai(self):
+        response = self.client.get('/ema/next/')
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['should_show'])
+        self.assertEqual(data['ema_type'], 'scheduled_check_in')
+        self.assertFalse(data['outcome_window_active'])
+        self.assertGreaterEqual(len(data['items']), 4)
+
+    def test_next_returns_post_prompt_items_during_outcome_window(self):
+        jitai_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='JITAI-EMA-1',
+            trigger_reason='test',
+            push_sent_at=timezone.now() - timedelta(minutes=10),
+            send_prompt=True,
+        )
+
+        response = self.client.get('/ema/next/')
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['should_show'])
+        self.assertTrue(data['outcome_window_active'])
+        self.assertEqual(data['jitai_log_id'], jitai_log.id)
+        self.assertEqual([item['item_id'] for item in data['items']], ['B1', 'B2', 'B4', 'B5', 'B6', 'B7'])
+
+    def test_submit_variable_ema_responses(self):
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-ROTATION-1',
+            'ema_type': 'scheduled_check_in',
+            'responses': [
+                {'item_id': 'B1', 'value': 5},
+                {'item_id': 'B2', 'value': 3},
+                {'item_id': 'B8', 'value': 7},
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+        self.assertEqual(data['prompt_id'], 'EMA-ROTATION-1')
+        self.assertEqual(data['status'], 'completed')
+        self.assertEqual(len(data['item_responses']), 3)
+        self.assertEqual(EMAItemResponse.objects.filter(ema_id=data['id']).count(), 3)
+
+    def test_submit_rejects_duplicate_items(self):
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-ROTATION-2',
+            'responses': [
+                {'item_id': 'B1', 'value': 5},
+                {'item_id': 'B1', 'value': 6},
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('responses', response.json())
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class TokenRefreshEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(
+            email='refresh-token@test.com',
+            password='testpass123',
+        )
+
+    def test_refresh_endpoint_returns_new_access_token(self):
+        login_response = self.client.post('/user/login/', {
+            'email': 'refresh-token@test.com',
+            'password': 'testpass123',
+        })
+        self.assertEqual(login_response.status_code, 200)
+        refresh = login_response.json()['refresh']
+
+        response = self.client.post('/auth/token/refresh/', {'refresh': refresh})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('access', response.json())
+
+    def test_refresh_endpoint_rejects_missing_token(self):
+        response = self.client.post('/auth/token/refresh/', {})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('refresh', response.json())
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class MeEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='me-endpoint@test.com')
+        self.client = authenticated_client(self.user)
+
+    def test_me_returns_authenticated_user_profile(self):
+        response = self.client.get('/auth/me/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['email'], 'me-endpoint@test.com')
+
+    def test_me_requires_auth(self):
+        response = APIClient().get('/auth/me/')
+
+        self.assertEqual(response.status_code, 401)
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMAScheduledItemSelectionTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='ema-selection@test.com')
+        self.client = authenticated_client(self.user)
+
+    def test_b3_absent_without_event_day(self):
+        response = self.client.get('/ema/next/')
+
+        item_ids = [item['item_id'] for item in response.json()['items']]
+        self.assertNotIn('B3', item_ids)
+
+    def test_b3_present_with_event_day(self):
+        EventDay.objects.create(date=timezone.localdate(), sport='football')
+
+        response = self.client.get('/ema/next/')
+
+        item_ids = [item['item_id'] for item in response.json()['items']]
+        self.assertIn('B3', item_ids)
+
+    def test_b8_only_on_first_check_in_of_day(self):
+        first = self.client.get('/ema/next/')
+        first_items = [item['item_id'] for item in first.json()['items']]
+        self.assertIn('B8', first_items)
+
+        self.client.post('/ema/responses/', {
+            'prompt_id': first.json()['prompt_id'],
+            'responses': [{'item_id': i, 'value': 4} for i in first_items],
+        }, format='json')
+
+        second = self.client.get('/ema/next/')
+        second_items = [item['item_id'] for item in second.json()['items']]
+        self.assertNotIn('B8', second_items)
+
+    def test_rotating_items_balance_across_check_ins(self):
+        EMA_ = EMA.objects.create(user=self.user, prompt_id='seed', status='completed')
+        EMAItemResponse.objects.create(ema=EMA_, item_id='B4', value=5)
+        EMAItemResponse.objects.create(ema=EMA_, item_id='B5', value=5)
+
+        response = self.client.get('/ema/next/')
+
+        item_ids = [item['item_id'] for item in response.json()['items']]
+        self.assertIn('B6', item_ids)
+        self.assertIn('B7', item_ids)
+        self.assertNotIn('B4', item_ids)
+        self.assertNotIn('B5', item_ids)
+
+    @patch('app.views.django_timezone.now')
+    def test_evening_check_in_forces_b6(self, mock_now):
+        from datetime import datetime, timezone as dt_timezone
+        mock_now.return_value = datetime(2026, 8, 13, 21, 0, 0, tzinfo=dt_timezone.utc)
+
+        response = self.client.get('/ema/next/')
+
+        item_ids = [item['item_id'] for item in response.json()['items']]
+        self.assertIn('B6', item_ids)

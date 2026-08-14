@@ -1,7 +1,7 @@
 from django.contrib import admin
 
 from .models import (
-    EMA, EngagementLog, HeartRateSample, JITAILog,
+    EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog,
     PhoneTelemetry, StressSample, User, WearableDevice,
 )
 
@@ -88,8 +88,14 @@ class StressSampleAdmin(ReadableAdminMixin, admin.ModelAdmin):
     autocomplete_fields = ("user",)
 
 
+class EMAItemResponseInline(admin.TabularInline):
+    model = EMAItemResponse
+    extra = 0
+
+
 @admin.register(EMA)
 class EMAAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    inlines = (EMAItemResponseInline,)
     list_display = (
         "id",
         "user",
@@ -97,11 +103,12 @@ class EMAAdmin(ReadableAdminMixin, admin.ModelAdmin):
         "sent_at",
         "responded_at",
         "status",
+        "ema_type",
         "mood",
         "energy",
         "stress",
     )
-    list_filter = ("status", "sent_at")
+    list_filter = ("status", "ema_type", "sent_at")
     search_fields = ("user__email", "user__first_name", "user__last_name", "prompt_id")
     date_hierarchy = "sent_at"
     ordering = ("-sent_at",)
@@ -109,12 +116,23 @@ class EMAAdmin(ReadableAdminMixin, admin.ModelAdmin):
     readonly_fields = ("sent_at",)
     fieldsets = (
         ("Respondent", {
-            "fields": ("user", "prompt_id", "sent_at", "responded_at", "status"),
+            "fields": ("user", "prompt_id", "sent_at", "responded_at", "status", "ema_type"),
+        }),
+        ("Outcome Window", {
+            "fields": ("source_jitai_log", "outcome_window_start", "outcome_window_end", "expires_at"),
         }),
         ("Response", {
             "fields": ("mood", "energy", "stress"),
         }),
     )
+
+
+@admin.register(EventDay)
+class EventDayAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    list_display = ("date", "sport", "description")
+    list_filter = ("sport",)
+    search_fields = ("sport", "description")
+    ordering = ("-date",)
 
 
 @admin.register(JITAILog)

@@ -73,12 +73,22 @@ class StressSample(models.Model):
 
 class EMA(models.Model):
     STATUS_CHOICES = [('pending', 'Pending'), ('completed', 'Completed'), ('expired', 'Expired')]
+    EMA_TYPE_CHOICES = [
+        ('scheduled_check_in', 'Scheduled Check-in'),
+        ('post_prompt', 'Post-prompt Outcome Window'),
+        ('extra_check_in', 'Extra Check-in'),
+    ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     prompt_id = models.CharField(max_length=64)
     sent_at = models.DateTimeField(auto_now_add=True)
     responded_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='pending')
+    ema_type = models.CharField(max_length=32, choices=EMA_TYPE_CHOICES, default='scheduled_check_in')
+    source_jitai_log = models.ForeignKey('JITAILog', on_delete=models.SET_NULL, null=True, blank=True, related_name='ema_prompts')
+    outcome_window_start = models.DateTimeField(null=True, blank=True)
+    outcome_window_end = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
     mood = models.PositiveSmallIntegerField(
         null=True, blank=True,
         validators=[MinValueValidator(1), MaxValueValidator(7)],
@@ -98,6 +108,34 @@ class EMA(models.Model):
     def __str__(self):
         return f"EMA for {self.user.email} at {self.sent_at}"
 
+
+class EMAItemResponse(models.Model):
+    ITEM_CHOICES = [(f'B{i}', f'B{i}') for i in range(1, 9)]
+
+    ema = models.ForeignKey(EMA, on_delete=models.CASCADE, related_name='item_responses')
+    item_id = models.CharField(max_length=8, choices=ITEM_CHOICES)
+    value = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(7)],
+    )
+
+    class Meta:
+        unique_together = ('ema', 'item_id')
+        ordering = ['item_id']
+
+    def __str__(self):
+        return f"{self.item_id}={self.value} for EMA {self.ema_id}"
+
+
+class EventDay(models.Model):
+    date = models.DateField(unique=True)
+    sport = models.CharField(max_length=64, blank=True, default='')
+    description = models.CharField(max_length=128, blank=True, default='')
+
+    class Meta:
+        ordering = ['-date']
+
+    def __str__(self):
+        return f"{self.date} ({self.sport or 'event'})"
 
 
 PHONE_EVENT_TYPES = (

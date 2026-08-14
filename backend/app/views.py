@@ -3,10 +3,12 @@ from datetime import timedelta
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
-from django.db.models import OuterRef, Subquery
+from django.db.models import Count, OuterRef, Subquery
 from .models import (
     EMA,
+    EMAItemResponse,
     EngagementLog,
+    EventDay,
     HeartRateSample,
     JITAILog,
     PhoneTelemetry,
@@ -18,6 +20,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, generics
 from .serializers import (
+    EMAResponseSubmitSerializer,
     EMASerializer,
     EngagementLogSerializer,
     HeartRateSampleSerializer,
@@ -60,6 +63,95 @@ class IsAdminUserOrDashboardAPIKey(BasePermission):
         provided_key = request.headers.get('X-Dashboard-API-Key', '')
         return bool(expected_key) and provided_key == expected_key
 
+
+EMA_ITEM_BANK = {
+    'B1': {'label': 'B1', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
+    'B2': {'label': 'B2', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
+    'B3': {'label': 'B3', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
+    'B4': {'label': 'B4', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
+    'B5': {'label': 'B5', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
+    'B6': {'label': 'B6', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
+    'B7': {'label': 'B7', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
+    'B8': {'label': 'B8', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
+}
+POST_PROMPT_ITEM_IDS = ['B1', 'B2', 'B4', 'B5', 'B6', 'B7']
+ROTATING_ITEM_IDS = ['B4', 'B5', 'B6', 'B7']
+EVENING_CHECK_IN_HOUR = 20
+OUTCOME_WINDOW_HOURS = 2
+EMA_DAILY_CHECK_IN_CAP = 4
+
+
+def _ema_items(item_ids):
+    return [{'item_id': item_id, **EMA_ITEM_BANK[item_id]} for item_id in item_ids]
+
+
+def _today_ema_count(user):
+    now = django_timezone.now()
+    return EMA.objects.filter(user=user, sent_at__date=now.date()).count()
+
+
+def _has_event_today(now):
+    return EventDay.objects.filter(date=django_timezone.localtime(now).date()).exists()
+
+
+def _today_rotating_item_counts(user, now):
+    counts = {item_id: 0 for item_id in ROTATING_ITEM_IDS}
+    rows = (
+        EMAItemResponse.objects
+        .filter(
+            ema__user=user,
+            ema__sent_at__date=django_timezone.localtime(now).date(),
+            item_id__in=ROTATING_ITEM_IDS,
+        )
+        .values('item_id')
+        .annotate(count=Count('id'))
+    )
+    for row in rows:
+        counts[row['item_id']] = row['count']
+    return counts
+
+
+def _select_scheduled_items(user, now, daily_count):
+    """Item selection for a scheduled (non-outcome-window) check-in.
+
+    Rules per REACT_IRB01_StudyTeam_Measures_v2.docx Part 1: B1/B2 every
+    check-in; B3 only on days with a UF sporting event; B4-B7 rotate so each
+    appears at least twice a day, picked here as the two least-used-today
+    rotating items so the count stays balanced regardless of how many
+    check-ins actually happen; B6 is additionally forced into every evening
+    check-in; B8 only on the first check-in of the day.
+    """
+    item_ids = ['B1', 'B2']
+
+    if _has_event_today(now):
+        item_ids.append('B3')
+
+    if daily_count == 0:
+        item_ids.append('B8')
+
+    counts = _today_rotating_item_counts(user, now)
+    rotating_pick = sorted(
+        ROTATING_ITEM_IDS,
+        key=lambda item_id: (counts[item_id], ROTATING_ITEM_IDS.index(item_id)),
+    )[:2]
+
+    if django_timezone.localtime(now).hour >= EVENING_CHECK_IN_HOUR and 'B6' not in rotating_pick:
+        drop = max(rotating_pick, key=lambda item_id: counts[item_id])
+        rotating_pick = [item_id for item_id in rotating_pick if item_id != drop] + ['B6']
+
+    item_ids.extend(rotating_pick)
+    return item_ids
+
+
+def _latest_active_jitai(user):
+    now = django_timezone.now()
+    window_start = now - timedelta(hours=OUTCOME_WINDOW_HOURS)
+    return (
+        JITAILog.objects
+        .filter(user=user, send_prompt=True, push_sent_at__gte=window_start, push_sent_at__lte=now)
+        .order_by('-push_sent_at', '-decision_made_at', '-id')
+        .first()
+    )
 
 # Create your views here.
 
@@ -163,6 +255,21 @@ class CheckEmailView(APIView):
 #                 }, status=status.HTTP_200_OK)
 #             return Response(user_data_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 #         return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+class MeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Get own profile",
+        operation_description="Return the profile of the currently authenticated user.",
+        responses={200: UserSerializer(many=False)},
+    )
+    def get(self, request):
+        app_user = _get_app_user(request)
+        if app_user is None:
+            return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
+        return Response(UserSerializer(app_user).data)
+
+
 class UserLoginView(APIView):
     permission_classes = (AllowAny,)
     @swagger_auto_schema(
@@ -453,6 +560,127 @@ class EMAView(APIView):
                 return Response(status=status.HTTP_403_FORBIDDEN)
         emas = EMA.objects.filter(user__user_id=user_id).order_by('-sent_at')
         return Response(EMASerializer(emas, many=True).data)
+
+
+class EMANextView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        app_user = _get_app_user(request)
+        if app_user is None:
+            return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
+
+        now = django_timezone.now()
+        active_jitai = _latest_active_jitai(app_user)
+        daily_count = _today_ema_count(app_user)
+
+        if active_jitai is not None:
+            outcome_start = active_jitai.push_sent_at
+            outcome_end = outcome_start + timedelta(hours=OUTCOME_WINDOW_HOURS)
+            has_window_response = EMA.objects.filter(
+                user=app_user,
+                source_jitai_log=active_jitai,
+                status='completed',
+            ).exists()
+            if has_window_response:
+                return Response({
+                    'should_show': False,
+                    'reason': 'outcome_window_already_completed',
+                    'outcome_window_active': True,
+                    'outcome_window_start': outcome_start,
+                    'outcome_window_end': outcome_end,
+                })
+
+            ema_type = 'post_prompt' if daily_count < EMA_DAILY_CHECK_IN_CAP else 'extra_check_in'
+            if daily_count >= EMA_DAILY_CHECK_IN_CAP:
+                return Response({
+                    'should_show': False,
+                    'reason': 'daily_cap_reached',
+                    'outcome_window_active': True,
+                    'outcome_window_start': outcome_start,
+                    'outcome_window_end': outcome_end,
+                    'daily_cap': EMA_DAILY_CHECK_IN_CAP,
+                    'daily_count': daily_count,
+                })
+
+            return Response({
+                'should_show': True,
+                'prompt_id': f'EMA-JITAI-{active_jitai.id}',
+                'ema_type': ema_type,
+                'jitai_log_id': active_jitai.id,
+                'outcome_window_active': True,
+                'outcome_window_start': outcome_start,
+                'outcome_window_end': outcome_end,
+                'expires_at': outcome_end,
+                'daily_cap': EMA_DAILY_CHECK_IN_CAP,
+                'daily_count': daily_count,
+                'items': _ema_items(POST_PROMPT_ITEM_IDS),
+            })
+
+        if daily_count >= EMA_DAILY_CHECK_IN_CAP:
+            return Response({
+                'should_show': False,
+                'reason': 'daily_cap_reached',
+                'outcome_window_active': False,
+                'daily_cap': EMA_DAILY_CHECK_IN_CAP,
+                'daily_count': daily_count,
+            })
+
+        item_ids = _select_scheduled_items(app_user, now, daily_count)
+        return Response({
+            'should_show': True,
+            'prompt_id': f'EMA-{app_user.user_id}-{now.strftime("%Y%m%d%H%M%S")}',
+            'ema_type': 'scheduled_check_in',
+            'jitai_log_id': None,
+            'outcome_window_active': False,
+            'expires_at': now + timedelta(hours=OUTCOME_WINDOW_HOURS),
+            'daily_cap': EMA_DAILY_CHECK_IN_CAP,
+            'daily_count': daily_count,
+            'items': _ema_items(item_ids),
+        })
+
+
+class EMAResponseView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        app_user = _get_app_user(request)
+        if app_user is None:
+            return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = EMAResponseSubmitSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        jitai_log = None
+        jitai_log_id = data.get('jitai_log_id')
+        if jitai_log_id is not None:
+            try:
+                jitai_log = JITAILog.objects.get(id=jitai_log_id, user=app_user)
+            except JITAILog.DoesNotExist:
+                return Response({"error": "JITAI log not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        now = django_timezone.now()
+        ema = EMA.objects.create(
+            user=app_user,
+            prompt_id=data['prompt_id'],
+            responded_at=now,
+            status='completed',
+            ema_type=data.get('ema_type', 'scheduled_check_in'),
+            source_jitai_log=jitai_log,
+            outcome_window_start=data.get('outcome_window_start'),
+            outcome_window_end=data.get('outcome_window_end'),
+            expires_at=data.get('outcome_window_end'),
+        )
+
+        responses = [
+            EMAItemResponse(ema=ema, item_id=item['item_id'], value=item['value'])
+            for item in data['responses']
+        ]
+        EMAItemResponse.objects.bulk_create(responses)
+
+        return Response(EMASerializer(ema).data, status=status.HTTP_201_CREATED)
 
 
 class JITAILogView(APIView):
