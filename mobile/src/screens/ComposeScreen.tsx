@@ -7,10 +7,13 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import ComposeInput from '../components/ComposeInput';
 import { emitDraftDeleted, emitDraftSubmitted } from '../telemetry/composeTelemetry';
 import { useTelemetryStore, TelemetryEvent } from '../telemetry/telemetryStore';
 import { useAuthStore } from '../store/authStore';
+import { jitai } from '../api/endpoints';
+import { log } from '../utils/logger';
 
 type Props = { onOpenEMA: () => void };
 
@@ -21,6 +24,33 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
   const logout = useAuthStore((s) => s.logout);
 
   const devNote = __DEV__ ? ' Check the console for telemetry.' : '';
+  const userId = useAuthStore((s) => s.userId);
+
+  async function simulateJitaiPush() {
+    if (!userId) return;
+    try {
+      const res = await jitai.create({
+        user: userId,
+        prompt_id: `PROMPT-SIM-${Date.now()}`,
+        trigger_reason: 'hr_elevated+stress_high',
+        hr_at_trigger: 112,
+        stress_at_trigger: 78,
+        send_prompt: true,
+        status: 'delivered',
+      });
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: 'Check-in',
+          body: 'Tap to respond',
+          data: { jitai_log_id: res.data.id, type: 'ema_prompt' },
+        },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 3 },
+      });
+    } catch (e: any) {
+      log('[SimPush] failed:', e?.response?.status ?? e?.message);
+      Alert.alert('Simulate failed', String(e?.response?.status ?? e?.message));
+    }
+  }
 
   function handleSubmit() {
     if (!text.trim()) {
@@ -54,6 +84,9 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
         <View style={styles.devRow}>
           <TouchableOpacity style={styles.devBtn} onPress={onOpenEMA}>
             <Text style={styles.devBtnText}>Open EMA survey (dev)</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.devBtn} onPress={simulateJitaiPush}>
+            <Text style={styles.devBtnText}>Simulate JITAI push (dev)</Text>
           </TouchableOpacity>
         </View>
       )}

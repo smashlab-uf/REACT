@@ -58,6 +58,16 @@ export const ema = {
 // ─── JITAI ───────────────────────────────────────────────────────────────────
 
 export const jitai = {
+  create: (body: {
+    user: number;
+    prompt_id: string;
+    trigger_reason: string;
+    hr_at_trigger?: number;
+    stress_at_trigger?: number;
+    send_prompt?: boolean;
+    status?: string;
+  }) => client.post<{ id: number }>('/jitai/', body),
+
   receipt: (body: {
     jitai_log_id: number;
     device_received_at: string;
