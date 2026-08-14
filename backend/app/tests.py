@@ -9,7 +9,7 @@ from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from app.models import (
-    EMA, EMAItemResponse, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
+    EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog, PhoneTelemetry,
     StressSample, User, WearableDevice,
 )
 from app.serializers import (
@@ -265,6 +265,69 @@ class UserLoginViewTests(TestCase):
     def test_missing_password_returns_400(self):
         response = self.client.post('/user/login/', {'email': 'gator@ufl.edu'}, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# API: POST /auth/token/refresh/ and GET /auth/me/
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class AuthTokenRefreshViewTests(TestCase):
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = make_user(email='gator@ufl.edu', password='chomp1234')
+        login_response = self.client.post('/user/login/', {
+            'email': 'gator@ufl.edu',
+            'password': 'chomp1234',
+        }, format='json')
+        self.refresh_token = login_response.data['refresh']
+
+    def test_valid_refresh_token_returns_new_access_token(self):
+        response = self.client.post('/auth/token/refresh/', {
+            'refresh': self.refresh_token,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertIn('access', response.data)
+
+    def test_new_access_token_authenticates_subsequent_request(self):
+        response = self.client.post('/auth/token/refresh/', {
+            'refresh': self.refresh_token,
+        }, format='json')
+        new_access = response.data['access']
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {new_access}')
+        me_response = client.get('/auth/me/')
+        self.assertEqual(me_response.status_code, http_status.HTTP_200_OK)
+
+    def test_invalid_refresh_token_returns_401(self):
+        response = self.client.post('/auth/token/refresh/', {
+            'refresh': 'not-a-real-token',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_missing_refresh_token_returns_400(self):
+        response = self.client.post('/auth/token/refresh/', {}, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class MeViewTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='gator@ufl.edu', password='chomp1234', first_name='Al')
+
+    def test_authenticated_request_returns_own_profile(self):
+        client = authenticated_client(self.user)
+        response = client.get('/auth/me/')
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.assertEqual(response.data['email'], 'gator@ufl.edu')
+        self.assertEqual(response.data['first_name'], 'Al')
+
+    def test_unauthenticated_request_returns_401(self):
+        client = APIClient()
+        response = client.get('/auth/me/')
+        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
 
 
 # ---------------------------------------------------------------------------
@@ -2569,3 +2632,110 @@ class EMARotationEndpointTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn('responses', response.json())
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class TokenRefreshEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(
+            email='refresh-token@test.com',
+            password='testpass123',
+        )
+
+    def test_refresh_endpoint_returns_new_access_token(self):
+        login_response = self.client.post('/user/login/', {
+            'email': 'refresh-token@test.com',
+            'password': 'testpass123',
+        })
+        self.assertEqual(login_response.status_code, 200)
+        refresh = login_response.json()['refresh']
+
+        response = self.client.post('/auth/token/refresh/', {'refresh': refresh})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('access', response.json())
+
+    def test_refresh_endpoint_rejects_missing_token(self):
+        response = self.client.post('/auth/token/refresh/', {})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('refresh', response.json())
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class MeEndpointTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='me-endpoint@test.com')
+        self.client = authenticated_client(self.user)
+
+    def test_me_returns_authenticated_user_profile(self):
+        response = self.client.get('/auth/me/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['email'], 'me-endpoint@test.com')
+
+    def test_me_requires_auth(self):
+        response = APIClient().get('/auth/me/')
+
+        self.assertEqual(response.status_code, 401)
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMAScheduledItemSelectionTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='ema-selection@test.com')
+        self.client = authenticated_client(self.user)
+
+    def test_b3_absent_without_event_day(self):
+        response = self.client.get('/ema/next/')
+
+        item_ids = [item['item_id'] for item in response.json()['items']]
+        self.assertNotIn('B3', item_ids)
+
+    def test_b3_present_with_event_day(self):
+        EventDay.objects.create(date=timezone.localdate(), sport='football')
+
+        response = self.client.get('/ema/next/')
+
+        item_ids = [item['item_id'] for item in response.json()['items']]
+        self.assertIn('B3', item_ids)
+
+    def test_b8_only_on_first_check_in_of_day(self):
+        first = self.client.get('/ema/next/')
+        first_items = [item['item_id'] for item in first.json()['items']]
+        self.assertIn('B8', first_items)
+
+        self.client.post('/ema/responses/', {
+            'prompt_id': first.json()['prompt_id'],
+            'responses': [{'item_id': i, 'value': 4} for i in first_items],
+        }, format='json')
+
+        second = self.client.get('/ema/next/')
+        second_items = [item['item_id'] for item in second.json()['items']]
+        self.assertNotIn('B8', second_items)
+
+    def test_rotating_items_balance_across_check_ins(self):
+        EMA_ = EMA.objects.create(user=self.user, prompt_id='seed', status='completed')
+        EMAItemResponse.objects.create(ema=EMA_, item_id='B4', value=5)
+        EMAItemResponse.objects.create(ema=EMA_, item_id='B5', value=5)
+
+        response = self.client.get('/ema/next/')
+
+        item_ids = [item['item_id'] for item in response.json()['items']]
+        self.assertIn('B6', item_ids)
+        self.assertIn('B7', item_ids)
+        self.assertNotIn('B4', item_ids)
+        self.assertNotIn('B5', item_ids)
+
+    @patch('app.views.django_timezone.now')
+    def test_evening_check_in_forces_b6(self, mock_now):
+        from datetime import datetime, timezone as dt_timezone
+        mock_now.return_value = datetime(2026, 8, 13, 21, 0, 0, tzinfo=dt_timezone.utc)
+
+        response = self.client.get('/ema/next/')
+
+        item_ids = [item['item_id'] for item in response.json()['items']]
+        self.assertIn('B6', item_ids)

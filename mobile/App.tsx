@@ -5,10 +5,12 @@ import { useAuthStore } from './src/store/authStore';
 import LoginScreen from './src/screens/LoginScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
 import ComposeScreen from './src/screens/ComposeScreen';
+import EMAScreen from './src/screens/EMAScreen';
 import { flushQueue, startNetworkListener } from './src/telemetry/offlineQueue';
 import { registerForPushNotifications } from './src/notifications/pushToken';
 import { jitai, user as userApi, telemetry } from './src/api/endpoints';
 import NotificationToast from './src/components/NotificationToast';
+import { log } from './src/utils/logger';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -21,11 +23,13 @@ Notifications.setNotificationHandler({
 });
 
 type Screen = 'login' | 'register' | 'app';
+type ActiveEMA = { jitaiLogId?: number };
 
 export default function App() {
   const { isAuthenticated, isLoading, restoreSession, userId } = useAuthStore();
   const [screen, setScreen] = useState<Screen>('login');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [activeEMA, setActiveEMA] = useState<ActiveEMA | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function showToast(message: string) {
@@ -51,7 +55,7 @@ export default function App() {
     registerForPushNotifications().then((token) => {
       if (token) {
         userApi.update(userId, { push_token: token }).catch((e) => {
-          console.log('[PushToken] Failed to register with backend:', e?.response?.status);
+          log('[PushToken] Failed to register with backend:', e?.response?.status);
         });
       }
     });
@@ -60,7 +64,7 @@ export default function App() {
       const title = notification.request.content.title ?? 'Notification';
       const body = notification.request.content.body ?? '';
       const data = notification.request.content.data as Record<string, unknown>;
-      console.log('[Push] Received in foreground:', JSON.stringify(data));
+      log('[Push] Received in foreground:', JSON.stringify(data));
 
       const rawJitaiLogId = data.jitai_log_id;
       const jitaiLogId = typeof rawJitaiLogId === 'number'
@@ -76,7 +80,7 @@ export default function App() {
           platform: Platform.OS,
           app_state: 'foreground',
         }).catch((e) => {
-          console.log('[Push] Receipt log failed:', e?.response?.status ?? e?.message);
+          log('[Push] Receipt log failed:', e?.response?.status ?? e?.message);
         });
       }
 
@@ -85,7 +89,7 @@ export default function App() {
 
     const tapSub = Notifications.addNotificationResponseReceivedListener((response) => {
       const data = response.notification.request.content.data as Record<string, unknown>;
-      console.log('[Push] Tapped:', JSON.stringify(data));
+      log('[Push] Tapped:', JSON.stringify(data));
 
       const jitaiLogId = data.jitai_log_id as number | undefined;
       telemetry.logEngagement({
@@ -97,8 +101,12 @@ export default function App() {
         showToast('✅ Engagement logged to backend');
       }).catch((e) => {
         showToast(`❌ Engagement log failed: ${e?.response?.status ?? 'Network error'}`);
-        console.log('[Push] Engagement log failed:', e?.response?.status);
+        log('[Push] Engagement log failed:', e?.response?.status);
       });
+
+      if (data.type === 'ema_prompt') {
+        setActiveEMA({ jitaiLogId });
+      }
     });
 
     return () => {
@@ -119,12 +127,18 @@ export default function App() {
     <View style={{ flex: 1 }}>
       <NotificationToast message={toastMessage} />
       {isAuthenticated ? (
-        <ComposeScreen />
+        <ComposeScreen onOpenEMA={() => setActiveEMA({})} />
       ) : screen === 'register' ? (
         <RegisterScreen onGoToLogin={() => setScreen('login')} />
       ) : (
         <LoginScreen onGoToRegister={() => setScreen('register')} />
       )}
+
+      <EMAScreen
+        visible={activeEMA !== null}
+        jitaiLogId={activeEMA?.jitaiLogId}
+        onClose={() => setActiveEMA(null)}
+      />
     </View>
   );
 }

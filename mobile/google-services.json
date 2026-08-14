@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "1088980839697",
-    "project_id": "react-expo-2041c",
-    "storage_bucket": "react-expo-2041c.firebasestorage.app"
+    "project_number": "870545095288",
+    "project_id": "react-6f826",
+    "storage_bucket": "react-6f826.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:1088980839697:android:17ede873daae529cee70b0",
+        "mobilesdk_app_id": "1:870545095288:android:ccfd3c2b23c577d7ff0b8d",
         "android_client_info": {
           "package_name": "com.smashlab.react"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyDJA9LaH-pRPRhTh0kLUKZVo_LLO2Uy16Y"
+          "current_key": "AIzaSyD80EjPqfpWOpVia-nw4n8h4kQwcOFz36s"
         }
       ],
       "services": {

@@ -1,4 +1,5 @@
 import client from './client';
+import { EMANextResponse, EMASubmitRequest, EMASubmitResponse } from './types';
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
@@ -46,19 +47,27 @@ export const user = {
 // ─── EMA ──────────────────────────────────────────────────────────────────────
 
 export const ema = {
-  submit: (body: {
-    user: number;
-    prompt_id: string;
-    mood?: number;
-    stress?: number;
-    energy?: number;
-  }) => client.post('/ema/', body),
+  next: () =>
+    client.get<EMANextResponse>('/ema/next/'),
+
+  submitResponses: (body: EMASubmitRequest) =>
+    client.post<EMASubmitResponse>('/ema/responses/', body),
 };
 
 
 // ─── JITAI ───────────────────────────────────────────────────────────────────
 
 export const jitai = {
+  create: (body: {
+    user: number;
+    prompt_id: string;
+    trigger_reason: string;
+    hr_at_trigger?: number;
+    stress_at_trigger?: number;
+    send_prompt?: boolean;
+    status?: string;
+  }) => client.post<{ id: number }>('/jitai/', body),
+
   receipt: (body: {
     jitai_log_id: number;
     device_received_at: string;

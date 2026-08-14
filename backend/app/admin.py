@@ -1,7 +1,7 @@
 from django.contrib import admin
 
 from .models import (
-    EMA, EMAItemResponse, EngagementLog, HeartRateSample, JITAILog,
+    EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog,
     PhoneTelemetry, StressSample, User, WearableDevice,
 )
 
@@ -125,6 +125,14 @@ class EMAAdmin(ReadableAdminMixin, admin.ModelAdmin):
             "fields": ("mood", "energy", "stress"),
         }),
     )
+
+
+@admin.register(EventDay)
+class EventDayAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    list_display = ("date", "sport", "description")
+    list_filter = ("sport",)
+    search_fields = ("sport", "description")
+    ordering = ("-date",)
 
 
 @admin.register(JITAILog)

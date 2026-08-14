@@ -3,11 +3,12 @@ from datetime import timedelta
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
-from django.db.models import OuterRef, Subquery
+from django.db.models import Count, OuterRef, Subquery
 from .models import (
     EMA,
     EMAItemResponse,
     EngagementLog,
+    EventDay,
     HeartRateSample,
     JITAILog,
     PhoneTelemetry,
@@ -74,8 +75,8 @@ EMA_ITEM_BANK = {
     'B8': {'label': 'B8', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
 }
 POST_PROMPT_ITEM_IDS = ['B1', 'B2', 'B4', 'B5', 'B6', 'B7']
-SCHEDULED_ITEM_IDS = ['B1', 'B2', 'B3']
-EXTRA_CHECK_IN_ITEM_IDS = ['B1', 'B2']
+ROTATING_ITEM_IDS = ['B4', 'B5', 'B6', 'B7']
+EVENING_CHECK_IN_HOUR = 20
 OUTCOME_WINDOW_HOURS = 2
 EMA_DAILY_CHECK_IN_CAP = 4
 
@@ -87,6 +88,59 @@ def _ema_items(item_ids):
 def _today_ema_count(user):
     now = django_timezone.now()
     return EMA.objects.filter(user=user, sent_at__date=now.date()).count()
+
+
+def _has_event_today(now):
+    return EventDay.objects.filter(date=django_timezone.localtime(now).date()).exists()
+
+
+def _today_rotating_item_counts(user, now):
+    counts = {item_id: 0 for item_id in ROTATING_ITEM_IDS}
+    rows = (
+        EMAItemResponse.objects
+        .filter(
+            ema__user=user,
+            ema__sent_at__date=django_timezone.localtime(now).date(),
+            item_id__in=ROTATING_ITEM_IDS,
+        )
+        .values('item_id')
+        .annotate(count=Count('id'))
+    )
+    for row in rows:
+        counts[row['item_id']] = row['count']
+    return counts
+
+
+def _select_scheduled_items(user, now, daily_count):
+    """Item selection for a scheduled (non-outcome-window) check-in.
+
+    Rules per REACT_IRB01_StudyTeam_Measures_v2.docx Part 1: B1/B2 every
+    check-in; B3 only on days with a UF sporting event; B4-B7 rotate so each
+    appears at least twice a day, picked here as the two least-used-today
+    rotating items so the count stays balanced regardless of how many
+    check-ins actually happen; B6 is additionally forced into every evening
+    check-in; B8 only on the first check-in of the day.
+    """
+    item_ids = ['B1', 'B2']
+
+    if _has_event_today(now):
+        item_ids.append('B3')
+
+    if daily_count == 0:
+        item_ids.append('B8')
+
+    counts = _today_rotating_item_counts(user, now)
+    rotating_pick = sorted(
+        ROTATING_ITEM_IDS,
+        key=lambda item_id: (counts[item_id], ROTATING_ITEM_IDS.index(item_id)),
+    )[:2]
+
+    if django_timezone.localtime(now).hour >= EVENING_CHECK_IN_HOUR and 'B6' not in rotating_pick:
+        drop = max(rotating_pick, key=lambda item_id: counts[item_id])
+        rotating_pick = [item_id for item_id in rotating_pick if item_id != drop] + ['B6']
+
+    item_ids.extend(rotating_pick)
+    return item_ids
 
 
 def _latest_active_jitai(user):
@@ -201,6 +255,21 @@ class CheckEmailView(APIView):
 #                 }, status=status.HTTP_200_OK)
 #             return Response(user_data_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 #         return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+class MeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Get own profile",
+        operation_description="Return the profile of the currently authenticated user.",
+        responses={200: UserSerializer(many=False)},
+    )
+    def get(self, request):
+        app_user = _get_app_user(request)
+        if app_user is None:
+            return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
+        return Response(UserSerializer(app_user).data)
+
+
 class UserLoginView(APIView):
     permission_classes = (AllowAny,)
     @swagger_auto_schema(
@@ -262,7 +331,8 @@ class UserLoginView(APIView):
             "refresh": str(refresh),
             "data": serializer.data
         }, status=status.HTTP_200_OK)
-    
+
+
     # def get(self, request):
     #     email = request.query_params.get('email')
     #     password = request.query_params.get('password')
@@ -304,7 +374,23 @@ class UserLoginView(APIView):
 #             return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
 #     def logout_view(request):
 #         logout(request)
-    
+
+
+class MeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Get current user's profile",
+        operation_description="Returns the authenticated participant's profile, resolved from the JWT.",
+        responses={200: UserSerializer(many=False)}
+    )
+    def get(self, request):
+        app_user = _get_app_user(request)
+        if app_user is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        serializer = UserSerializer(app_user)
+        return Response(serializer.data)
+
 
 class TelemetryIngestView(APIView):
     permission_classes = [IsAuthenticated]
@@ -540,7 +626,7 @@ class EMANextView(APIView):
                 'daily_count': daily_count,
             })
 
-        item_ids = SCHEDULED_ITEM_IDS + [f'B{4 + (now.weekday() % 5)}']
+        item_ids = _select_scheduled_items(app_user, now, daily_count)
         return Response({
             'should_show': True,
             'prompt_id': f'EMA-{app_user.user_id}-{now.strftime("%Y%m%d%H%M%S")}',

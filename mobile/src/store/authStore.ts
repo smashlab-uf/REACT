@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
-import { setTokens, clearTokens } from '../api/client';
+import { setTokens, clearTokens, setOnAuthFailure } from '../api/client';
 import { auth } from '../api/endpoints';
+import { log } from '../utils/logger';
 
 const KEYS = {
   tokens: 'auth_tokens',
@@ -60,14 +61,14 @@ export const useAuthStore = create<AuthStore>((set) => ({
 
         // Refresh profile from server in the background
         try {
-          console.log('[Auth] Calling /auth/me/...');
+          log('[Auth] Calling /auth/me/...');
           const res = await auth.me();
           const freshUser = res.data as User;
           await SecureStore.setItemAsync(KEYS.user, JSON.stringify(freshUser));
           set({ user: freshUser, userId: freshUser.user_id });
-          console.log('[Auth] Profile refreshed:', freshUser.email);
+          log('[Auth] Profile refreshed:', freshUser.email);
         } catch (e: any) {
-          console.log('[Auth] /auth/me/ failed:', e?.response?.status, e?.message);
+          log('[Auth] /auth/me/ failed:', e?.response?.status, e?.message);
         }
       }
     } catch {
@@ -77,3 +78,10 @@ export const useAuthStore = create<AuthStore>((set) => ({
     }
   },
 }));
+
+// A session the client can't refresh (expired/invalid refresh token, or no
+// refresh token at all) must also log the app out — otherwise the UI keeps
+// showing "logged in" while every request 401s silently.
+setOnAuthFailure(() => {
+  useAuthStore.getState().logout();
+});

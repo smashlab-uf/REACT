@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { telemetry } from '../api/endpoints';
 import { enqueue } from './offlineQueue';
+import { log } from '../utils/logger';
 
 export type TelemetryEvent = {
   user: number | null;
@@ -21,18 +22,18 @@ export const useTelemetryStore = create<TelemetryStore>((set, get) => ({
   events: [],
 
   push: (event) => {
-    console.log('[Telemetry]', JSON.stringify(event, null, 2));
+    log('[Telemetry]', JSON.stringify(event, null, 2));
     set((state) => ({ events: [...state.events, event] }));
 
     telemetry.logPhone(event).catch((e) => {
-      console.log('[Telemetry] API error, queuing offline:', e?.response?.status, e?.message);
+      log('[Telemetry] API error, queuing offline:', e?.response?.status, e?.message);
       enqueue(event);
     });
   },
 
   flush: () => {
     const { events } = get();
-    console.log('[Telemetry] Flushing', events.length, 'events');
+    log('[Telemetry] Flushing', events.length, 'events');
     set({ events: [] });
   },
 }));

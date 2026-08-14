@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import { telemetry } from '../api/endpoints';
 import { TelemetryEvent } from './telemetryStore';
+import { log } from '../utils/logger';
 
 const QUEUE_KEY = 'telemetry_offline_queue';
 let isFlushing = false;
@@ -12,9 +13,9 @@ export async function enqueue(event: TelemetryEvent): Promise<void> {
     const queue: TelemetryEvent[] = raw ? JSON.parse(raw) : [];
     queue.push(event);
     await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
-    console.log('[OfflineQueue] Queued event:', event.event_type);
+    log('[OfflineQueue] Queued event:', event.event_type);
   } catch (e) {
-    console.log('[OfflineQueue] Failed to enqueue:', e);
+    log('[OfflineQueue] Failed to enqueue:', e);
   }
 }
 
@@ -27,22 +28,22 @@ export async function flushQueue(): Promise<void> {
     const queue: TelemetryEvent[] = raw ? JSON.parse(raw) : [];
     if (queue.length === 0) return;
 
-    console.log('[OfflineQueue] Flushing', queue.length, 'events');
+    log('[OfflineQueue] Flushing', queue.length, 'events');
     const failed: TelemetryEvent[] = [];
 
     for (const event of queue) {
       try {
         await telemetry.logPhone(event);
       } catch (e) {
-        console.log('[OfflineQueue] Event failed, keeping:', (e as any)?.message);
+        log('[OfflineQueue] Event failed, keeping:', (e as any)?.message);
         failed.push(event);
       }
     }
 
     await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(failed));
-    console.log('[OfflineQueue] Done —', failed.length, 'still pending');
+    log('[OfflineQueue] Done —', failed.length, 'still pending');
   } catch (e) {
-    console.log('[OfflineQueue] Flush error:', e);
+    log('[OfflineQueue] Flush error:', e);
   } finally {
     isFlushing = false;
   }
@@ -51,7 +52,7 @@ export async function flushQueue(): Promise<void> {
 export function startNetworkListener(): () => void {
   const unsubscribe = NetInfo.addEventListener((state) => {
     const online = !!state.isConnected;
-    console.log('[Network]', online ? 'ONLINE' : 'OFFLINE', state.type);
+    log('[Network]', online ? 'ONLINE' : 'OFFLINE', state.type);
 
     if (online) {
       setTimeout(flushQueue, 5000);

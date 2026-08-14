@@ -126,6 +126,18 @@ class EMAItemResponse(models.Model):
         return f"{self.item_id}={self.value} for EMA {self.ema_id}"
 
 
+class EventDay(models.Model):
+    date = models.DateField(unique=True)
+    sport = models.CharField(max_length=64, blank=True, default='')
+    description = models.CharField(max_length=128, blank=True, default='')
+
+    class Meta:
+        ordering = ['-date']
+
+    def __str__(self):
+        return f"{self.date} ({self.sport or 'event'})"
+
+
 PHONE_EVENT_TYPES = (
     ('draft_started', 'Draft Started'),
     ('draft_deleted', 'Draft Deleted'),
