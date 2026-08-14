@@ -9,9 +9,10 @@
 
 Active development branch: **`mobile-app-gaps`** (`mobile-code-replacement` is retired —
 its content is merged into `main`, don't develop there). Full current gap list, kept up to date
-as work lands: `docs/mobile-app-gaps.md` / `Resources/REACT_Mobile_App_Gaps.docx`. Top priority
-right now: the mobile app doesn't build at all (missing `babel-preset-expo`), then no EMA
-submission UI, then the broken auth-refresh flow.
+as work lands: `docs/mobile-app-gaps.md` / `Resources/REACT_Mobile_App_Gaps.docx`. Build is fixed
+as of 2026-07-31. Top priority right now: no EMA submission UI, then pushes never showing real
+prompt content (no local prompt catalog on the mobile side — every push just says
+"📩 Notification"), then the broken auth-refresh flow.
 
 ---
 

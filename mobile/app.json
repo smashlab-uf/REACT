@@ -1,9 +1,9 @@
 {
   "expo": {
     "name": "REACT",
-    "slug": "react-smash-lab",
+    "slug": "reactapp",
     "version": "1.0.0",
-    "owner": "sai_puneeth",
+    "owner": "smashlab-uf",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -30,7 +30,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "f0fc7be5-bec6-4665-a49f-a63de4e71a93"
+        "projectId": "2fb6977b-d72d-4501-b869-c4ec11fa2d1b"
       }
     }
   }

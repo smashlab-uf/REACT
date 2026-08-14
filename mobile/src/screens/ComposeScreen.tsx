@@ -7,16 +7,50 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import ComposeInput from '../components/ComposeInput';
 import { emitDraftDeleted, emitDraftSubmitted } from '../telemetry/composeTelemetry';
 import { useTelemetryStore, TelemetryEvent } from '../telemetry/telemetryStore';
 import { useAuthStore } from '../store/authStore';
+import { jitai } from '../api/endpoints';
+import { log } from '../utils/logger';
 
-export default function ComposeScreen() {
+type Props = { onOpenEMA: () => void };
+
+export default function ComposeScreen({ onOpenEMA }: Props) {
   const [text, setText] = useState('');
   const events = useTelemetryStore((s) => s.events);
   const flush = useTelemetryStore((s) => s.flush);
   const logout = useAuthStore((s) => s.logout);
+
+  const devNote = __DEV__ ? ' Check the console for telemetry.' : '';
+  const userId = useAuthStore((s) => s.userId);
+
+  async function simulateJitaiPush() {
+    if (!userId) return;
+    try {
+      const res = await jitai.create({
+        user: userId,
+        prompt_id: `PROMPT-SIM-${Date.now()}`,
+        trigger_reason: 'hr_elevated+stress_high',
+        hr_at_trigger: 112,
+        stress_at_trigger: 78,
+        send_prompt: true,
+        status: 'delivered',
+      });
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: 'Check-in',
+          body: 'Tap to respond',
+          data: { jitai_log_id: res.data.id, type: 'ema_prompt' },
+        },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 3 },
+      });
+    } catch (e: any) {
+      log('[SimPush] failed:', e?.response?.status ?? e?.message);
+      Alert.alert('Simulate failed', String(e?.response?.status ?? e?.message));
+    }
+  }
 
   function handleSubmit() {
     if (!text.trim()) {
@@ -25,13 +59,13 @@ export default function ComposeScreen() {
     }
     emitDraftSubmitted();
     setText('');
-    Alert.alert('Submitted', 'Your draft was submitted. Check the console for telemetry.');
+    Alert.alert('Submitted', `Your draft was submitted.${devNote}`);
   }
 
   function handleDelete() {
     emitDraftDeleted();
     setText('');
-    Alert.alert('Deleted', 'Draft cleared. Check the console for telemetry.');
+    Alert.alert('Deleted', `Draft cleared.${devNote}`);
   }
 
   return (
@@ -46,32 +80,51 @@ export default function ComposeScreen() {
         </TouchableOpacity>
       </View>
 
-      <TouchableOpacity style={styles.logoutBtn} onPress={() => { flush(); logout(); }}>
-        <Text style={styles.logoutBtnText}>Logout</Text>
-      </TouchableOpacity>
+      {__DEV__ && (
+        <View style={styles.devRow}>
+          <TouchableOpacity style={styles.devBtn} onPress={onOpenEMA}>
+            <Text style={styles.devBtnText}>Open EMA survey (dev)</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.devBtn} onPress={simulateJitaiPush}>
+            <Text style={styles.devBtnText}>Simulate JITAI push (dev)</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       <ComposeInput value={text} onChangeText={setText} />
 
-      <View style={styles.debugPanel}>
-        <Text style={styles.debugTitle}>Telemetry Events</Text>
-        <ScrollView style={styles.debugScroll}>
-          {events.length === 0 ? (
-            <Text style={styles.debugEmpty}>No events yet. Start typing.</Text>
-          ) : (
-            [...events].reverse().map((e: TelemetryEvent, i) => (
-              <View key={i} style={styles.debugEvent}>
-                <Text style={styles.debugType}>{e.event_type}</Text>
-                <Text style={styles.debugDetail}>user: {e.user ?? 'null'}</Text>
-                <Text style={styles.debugDetail}>session_id: {e.session_id.slice(0, 8)}...</Text>
-                <Text style={styles.debugDetail}>occurred_at: {e.occurred_at}</Text>
-                <Text style={styles.debugDetail}>screen: {e.screen_name}</Text>
-                <Text style={styles.debugDetail}>keystrokes: {(e.metadata.keystroke_count as number)}</Text>
-                <Text style={styles.debugDetail}>deletes: {(e.metadata.delete_count as number)}</Text>
-                <Text style={styles.debugDetail}>time: {(e.metadata.time_on_compose as number)}ms</Text>
-              </View>
-            ))
-          )}
-        </ScrollView>
+      {__DEV__ && (
+        <View style={styles.debugPanel}>
+          <Text style={styles.debugTitle}>Telemetry Events</Text>
+          <ScrollView style={styles.debugScroll}>
+            {events.length === 0 ? (
+              <Text style={styles.debugEmpty}>No events yet. Start typing.</Text>
+            ) : (
+              [...events].reverse().map((e: TelemetryEvent, i) => (
+                <View key={i} style={styles.debugEvent}>
+                  <Text style={styles.debugType}>{e.event_type}</Text>
+                  <Text style={styles.debugDetail}>user: {e.user ?? 'null'}</Text>
+                  <Text style={styles.debugDetail}>session_id: {e.session_id.slice(0, 8)}...</Text>
+                  <Text style={styles.debugDetail}>occurred_at: {e.occurred_at}</Text>
+                  <Text style={styles.debugDetail}>screen: {e.screen_name}</Text>
+                  <Text style={styles.debugDetail}>keystrokes: {(e.metadata.keystroke_count as number)}</Text>
+                  <Text style={styles.debugDetail}>deletes: {(e.metadata.delete_count as number)}</Text>
+                  <Text style={styles.debugDetail}>time: {(e.metadata.time_on_compose as number)}ms</Text>
+                </View>
+              ))
+            )}
+          </ScrollView>
+        </View>
+      )}
+
+      <View style={styles.footer}>
+        <TouchableOpacity
+          style={styles.logoutBtn}
+          hitSlop={{ top: 8, bottom: 8, left: 12, right: 12 }}
+          onPress={() => { flush(); logout(); }}
+        >
+          <Text style={styles.logoutBtnText}>Log out</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -114,14 +167,37 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 15,
   },
-  logoutBtn: {
-    alignSelf: 'center',
-    paddingVertical: 6,
-    paddingHorizontal: 20,
+  devRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
     marginBottom: 4,
   },
+  devBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#007AFF',
+  },
+  devBtnText: {
+    color: '#007AFF',
+    fontSize: 13,
+  },
+  footer: {
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+    paddingTop: 10,
+    paddingBottom: 56,
+  },
+  logoutBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 16,
+  },
   logoutBtnText: {
-    color: '#e00',
+    color: '#8a8a8e',
     fontSize: 13,
   },
   debugPanel: {
