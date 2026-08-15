@@ -11,7 +11,9 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.smashlab.react",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSLocalNetworkUsageDescription": "REACT uses the local network to load the development server.",
+        "NSBonjourServices": ["_expo._tcp", "_metro._tcp"]
       }
     },
     "android": {
