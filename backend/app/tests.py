@@ -1862,6 +1862,8 @@ class EvaluateJITAITriggersTests(TestCase):
         t = timezone.now() - timedelta(seconds=3600) + timedelta(seconds=offset_seconds)
         EMA.objects.filter(pk=ema.pk).update(sent_at=t)
         ema.refresh_from_db()
+        EMAItemResponse.objects.create(ema=ema, item_id='B1', value=energy)
+        EMAItemResponse.objects.create(ema=ema, item_id='B2', value=stress)
         return ema
 
     def test_no_enrolled_users_creates_no_logs(self):
@@ -1987,6 +1989,29 @@ class EvaluateJITAITriggersTests(TestCase):
             self.assertNotEqual(log.prompt_id, '')
         else:
             self.assertEqual(log.prompt_id, '')
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_b1_b2_snapshot_stored_on_jitai_log(self, mock_send):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._make_ema(user, mood=4, stress=6, energy=3, offset_seconds=0)
+        evaluate_jitai_triggers()
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.ema_energy, 3)
+        self.assertEqual(log.ema_stress, 6)
+        self.assertIsNone(log.ema_mood)
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_ema_without_b2_excluded_from_signal(self, mock_send):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        ema = EMA.objects.create(
+            user=user, prompt_id='P1', status='completed', responded_at=timezone.now()
+        )
+        EMAItemResponse.objects.create(ema=ema, item_id='B1', value=4)
+        evaluate_jitai_triggers()
+        self.assertEqual(JITAILog.objects.count(), 0)
+        mock_send.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2240,7 +2265,7 @@ class EvaluateUserMRTTests(TestCase):
         )
         base = timezone.now() - timedelta(hours=12)
         for i in range(5):
-            EMA.objects.create(
+            ema_obj = EMA.objects.create(
                 user=self.user,
                 prompt_id='default',
                 sent_at=base + timedelta(hours=i * 2),
@@ -2250,6 +2275,8 @@ class EvaluateUserMRTTests(TestCase):
                 stress=((i + 2) % 7) + 1,
                 energy=((i + 4) % 7) + 1,
             )
+            EMAItemResponse.objects.create(ema=ema_obj, item_id='B1', value=((i + 4) % 7) + 1)
+            EMAItemResponse.objects.create(ema=ema_obj, item_id='B2', value=((i + 2) % 7) + 1)
 
     def _latest_ema(self):
         return EMA.objects.filter(user=self.user, status='completed').order_by('-sent_at').first()

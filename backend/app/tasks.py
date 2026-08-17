@@ -51,25 +51,32 @@ def _evaluate_user(user, p):
 
     decision_point_id = f"ema_{latest_new_ema.pk}"
 
-    all_emas = list(
-        EMA.objects.filter(
-            user=user,
-            status='completed',
-            mood__isnull=False,
-            stress__isnull=False,
-            energy__isnull=False,
-        )
+    SIGNAL_ITEMS = ('B1', 'B2')
+
+    ema_qs = (
+        EMA.objects.filter(user=user, status='completed')
+        .prefetch_related('item_responses')
         .order_by('sent_at')
-        .values('sent_at', 'mood', 'stress', 'energy')
     )
 
-    if not all_emas:
+    rows = []
+    for ema_obj in ema_qs:
+        item_vals = {
+            r.item_id: r.value
+            for r in ema_obj.item_responses.all()
+            if r.item_id in SIGNAL_ITEMS
+        }
+        if all(k in item_vals for k in SIGNAL_ITEMS):
+            rows.append({
+                'timestamp': ema_obj.sent_at,
+                'ema': sum(item_vals[k] for k in SIGNAL_ITEMS) / len(SIGNAL_ITEMS),
+            })
+
+    if not rows:
         return
 
-    df = pd.DataFrame(all_emas)
+    df = pd.DataFrame(rows)
     df['user_id'] = user.user_id
-    df = df.rename(columns={'sent_at': 'timestamp'})
-    df['ema'] = df[['mood', 'stress', 'energy']].mean(axis=1)
 
     hr_rows = list(
         HeartRateSample.objects
@@ -119,6 +126,11 @@ def _evaluate_user(user, p):
     recent_hr = HeartRateSample.objects.filter(user=user).order_by('-timestamp').first()
     recent_stress = StressSample.objects.filter(user=user).order_by('-timestamp').first()
 
+    _snap = {
+        r.item_id: r.value
+        for r in latest_new_ema.item_responses.filter(item_id__in=SIGNAL_ITEMS)
+    }
+
     try:
         jitai_log, created = JITAILog.objects.get_or_create(
             decision_point_id=decision_point_id,
@@ -136,9 +148,9 @@ def _evaluate_user(user, p):
                 'status': 'pending' if send_prompt else 'not_sent',
                 'delivery_status': 'pending' if send_prompt else 'not_sent',
                 'trigger_signal': trigger_signal,
-                'ema_mood': latest_new_ema.mood,
-                'ema_stress': latest_new_ema.stress,
-                'ema_energy': latest_new_ema.energy,
+                'ema_mood': None,
+                'ema_stress': _snap.get('B2'),
+                'ema_energy': _snap.get('B1'),
                 'eligible_prompt_ids': eligible_ids,
             },
         )
