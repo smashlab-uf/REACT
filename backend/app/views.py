@@ -1,9 +1,18 @@
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
 from django.db.models import Count, OuterRef, Subquery
+from .ema_catalog import (
+    AFTERNOON_START_HOUR,
+    EMA_DAILY_CHECK_IN_CAP,
+    EVENING_CHECK_IN_HOUR,
+    POST_PROMPT_ITEM_IDS,
+    ROTATING_ITEM_IDS,
+    ema_items,
+)
 from .models import (
     EMA,
     EMAItemResponse,
@@ -64,25 +73,13 @@ class IsAdminUserOrDashboardAPIKey(BasePermission):
         return bool(expected_key) and provided_key == expected_key
 
 
-EMA_ITEM_BANK = {
-    'B1': {'label': 'B1', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
-    'B2': {'label': 'B2', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
-    'B3': {'label': 'B3', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
-    'B4': {'label': 'B4', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
-    'B5': {'label': 'B5', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
-    'B6': {'label': 'B6', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
-    'B7': {'label': 'B7', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
-    'B8': {'label': 'B8', 'response_type': 'likert', 'min_value': 1, 'max_value': 7},
-}
-POST_PROMPT_ITEM_IDS = ['B1', 'B2', 'B4', 'B5', 'B6', 'B7']
-ROTATING_ITEM_IDS = ['B4', 'B5', 'B6', 'B7']
-EVENING_CHECK_IN_HOUR = 20
 OUTCOME_WINDOW_HOURS = 2
-EMA_DAILY_CHECK_IN_CAP = 4
+PARTICIPANT_TZ = ZoneInfo('America/New_York')
+_ema_items = ema_items
 
 
-def _ema_items(item_ids):
-    return [{'item_id': item_id, **EMA_ITEM_BANK[item_id]} for item_id in item_ids]
+def _participant_time(now):
+    return now.astimezone(PARTICIPANT_TZ)
 
 
 def _today_ema_count(user):
@@ -91,7 +88,7 @@ def _today_ema_count(user):
 
 
 def _has_event_today(now):
-    return EventDay.objects.filter(date=django_timezone.localtime(now).date()).exists()
+    return EventDay.objects.filter(date=_participant_time(now).date()).exists()
 
 
 def _today_rotating_item_counts(user, now):
@@ -100,15 +97,43 @@ def _today_rotating_item_counts(user, now):
         EMAItemResponse.objects
         .filter(
             ema__user=user,
-            ema__sent_at__date=django_timezone.localtime(now).date(),
+            ema__sent_at__date=_participant_time(now).date(),
             item_id__in=ROTATING_ITEM_IDS,
         )
         .values('item_id')
-        .annotate(count=Count('id'))
+        .annotate(count=Count('ema_id', distinct=True))
     )
     for row in rows:
         counts[row['item_id']] = row['count']
     return counts
+
+
+def _is_first_afternoon_check_in(user, now):
+    """True once per day: the first check-in at or after noon Eastern."""
+    participant_now = _participant_time(now)
+    if participant_now.hour < AFTERNOON_START_HOUR:
+        return False
+    afternoon_start = participant_now.replace(hour=AFTERNOON_START_HOUR, minute=0, second=0, microsecond=0)
+    return not EMA.objects.filter(user=user, sent_at__gte=afternoon_start).exists()
+
+
+def _satisfied_schedule_conditions(user, now):
+    satisfied = set()
+    if _is_first_afternoon_check_in(user, now):
+        satisfied.add('first_afternoon_check_in')
+    return satisfied
+
+
+def _filter_conditional_sub_items(items, satisfied_conditions):
+    """Drop sub-items whose schedule_condition isn't satisfied for this check-in."""
+    filtered = []
+    for item in items:
+        sub_items = [
+            sub for sub in item['sub_items']
+            if 'schedule_condition' not in sub or sub['schedule_condition'] in satisfied_conditions
+        ]
+        filtered.append({**item, 'sub_items': sub_items})
+    return filtered
 
 
 def _select_scheduled_items(user, now, daily_count):
@@ -119,7 +144,8 @@ def _select_scheduled_items(user, now, daily_count):
     appears at least twice a day, picked here as the two least-used-today
     rotating items so the count stays balanced regardless of how many
     check-ins actually happen; B6 is additionally forced into every evening
-    check-in; B8 only on the first check-in of the day.
+    check-in; B8 only on the first check-in of the day. All day/hour
+    boundaries are evaluated in US/Eastern, since TIME_ZONE is UTC.
     """
     item_ids = ['B1', 'B2']
 
@@ -135,7 +161,7 @@ def _select_scheduled_items(user, now, daily_count):
         key=lambda item_id: (counts[item_id], ROTATING_ITEM_IDS.index(item_id)),
     )[:2]
 
-    if django_timezone.localtime(now).hour >= EVENING_CHECK_IN_HOUR and 'B6' not in rotating_pick:
+    if _participant_time(now).hour >= EVENING_CHECK_IN_HOUR and 'B6' not in rotating_pick:
         drop = max(rotating_pick, key=lambda item_id: counts[item_id])
         rotating_pick = [item_id for item_id in rotating_pick if item_id != drop] + ['B6']
 
@@ -614,7 +640,9 @@ class EMANextView(APIView):
                 'expires_at': outcome_end,
                 'daily_cap': EMA_DAILY_CHECK_IN_CAP,
                 'daily_count': daily_count,
-                'items': _ema_items(POST_PROMPT_ITEM_IDS),
+                'items': _filter_conditional_sub_items(
+                    _ema_items(POST_PROMPT_ITEM_IDS), _satisfied_schedule_conditions(app_user, now)
+                ),
             })
 
         if daily_count >= EMA_DAILY_CHECK_IN_CAP:
@@ -636,7 +664,9 @@ class EMANextView(APIView):
             'expires_at': now + timedelta(hours=OUTCOME_WINDOW_HOURS),
             'daily_cap': EMA_DAILY_CHECK_IN_CAP,
             'daily_count': daily_count,
-            'items': _ema_items(item_ids),
+            'items': _filter_conditional_sub_items(
+                _ema_items(item_ids), _satisfied_schedule_conditions(app_user, now)
+            ),
         })
 
 
@@ -675,7 +705,15 @@ class EMAResponseView(APIView):
         )
 
         responses = [
-            EMAItemResponse(ema=ema, item_id=item['item_id'], value=item['value'])
+            EMAItemResponse(
+                ema=ema,
+                item_id=item['item_id'],
+                sub_item_id=item['sub_item_id'],
+                response_type=item['response_type'],
+                value_numeric=item.get('value_numeric'),
+                value_choice=item.get('value_choice'),
+                value_choices=item.get('value_choices'),
+            )
             for item in data['responses']
         ]
         EMAItemResponse.objects.bulk_create(responses)

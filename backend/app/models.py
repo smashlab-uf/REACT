@@ -110,20 +110,28 @@ class EMA(models.Model):
 
 
 class EMAItemResponse(models.Model):
-    ITEM_CHOICES = [(f'B{i}', f'B{i}') for i in range(1, 9)]
+    RESPONSE_TYPE_CHOICES = [
+        ('likert', 'Likert'),
+        ('single_choice', 'Single choice'),
+        ('multi_choice', 'Multiple choice'),
+        ('number', 'Number'),
+        ('yes_no', 'Yes/No'),
+    ]
 
     ema = models.ForeignKey(EMA, on_delete=models.CASCADE, related_name='item_responses')
-    item_id = models.CharField(max_length=8, choices=ITEM_CHOICES)
-    value = models.PositiveSmallIntegerField(
-        validators=[MinValueValidator(1), MaxValueValidator(7)],
-    )
+    item_id = models.CharField(max_length=8)
+    sub_item_id = models.CharField(max_length=32)
+    response_type = models.CharField(max_length=16, choices=RESPONSE_TYPE_CHOICES)
+    value_numeric = models.IntegerField(null=True, blank=True)
+    value_choice = models.CharField(max_length=64, null=True, blank=True)
+    value_choices = models.JSONField(null=True, blank=True)
 
     class Meta:
-        unique_together = ('ema', 'item_id')
-        ordering = ['item_id']
+        unique_together = ('ema', 'sub_item_id')
+        ordering = ['sub_item_id']
 
     def __str__(self):
-        return f"{self.item_id}={self.value} for EMA {self.ema_id}"
+        return f"{self.sub_item_id} for EMA {self.ema_id}"
 
 
 class EventDay(models.Model):

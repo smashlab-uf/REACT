@@ -51,7 +51,11 @@ def _evaluate_user(user, p):
 
     decision_point_id = f"ema_{latest_new_ema.pk}"
 
-    SIGNAL_ITEMS = ('B1', 'B2')
+    # Volatility mapping confirmed by Dr. Chang 2026-08-17 (copied to Celia/Tien):
+    # mood -> B1 valence rating, stress -> B2 stress rating, energy -> B1
+    # calm-to-excited rating. Averaged the same way the old mood/stress/energy
+    # fields were, so Tien's calibration stays comparable.
+    SIGNAL_SUB_ITEMS = {'mood': 'B1_valence', 'stress': 'B2_stress', 'energy': 'B1_arousal'}
 
     ema_qs = (
         EMA.objects.filter(user=user, status='completed')
@@ -61,15 +65,15 @@ def _evaluate_user(user, p):
 
     rows = []
     for ema_obj in ema_qs:
-        item_vals = {
-            r.item_id: r.value
+        sub_vals = {
+            r.sub_item_id: r.value_numeric
             for r in ema_obj.item_responses.all()
-            if r.item_id in SIGNAL_ITEMS
+            if r.sub_item_id in SIGNAL_SUB_ITEMS.values()
         }
-        if all(k in item_vals for k in SIGNAL_ITEMS):
+        if all(sub_id in sub_vals for sub_id in SIGNAL_SUB_ITEMS.values()):
             rows.append({
                 'timestamp': ema_obj.sent_at,
-                'ema': sum(item_vals[k] for k in SIGNAL_ITEMS) / len(SIGNAL_ITEMS),
+                'ema': sum(sub_vals.values()) / len(sub_vals),
             })
 
     if not rows:
@@ -127,8 +131,8 @@ def _evaluate_user(user, p):
     recent_stress = StressSample.objects.filter(user=user).order_by('-timestamp').first()
 
     _snap = {
-        r.item_id: r.value
-        for r in latest_new_ema.item_responses.filter(item_id__in=SIGNAL_ITEMS)
+        r.sub_item_id: r.value_numeric
+        for r in latest_new_ema.item_responses.filter(sub_item_id__in=SIGNAL_SUB_ITEMS.values())
     }
 
     try:
@@ -148,9 +152,9 @@ def _evaluate_user(user, p):
                 'status': 'pending' if send_prompt else 'not_sent',
                 'delivery_status': 'pending' if send_prompt else 'not_sent',
                 'trigger_signal': trigger_signal,
-                'ema_mood': None,
-                'ema_stress': _snap.get('B2'),
-                'ema_energy': _snap.get('B1'),
+                'ema_mood': _snap.get(SIGNAL_SUB_ITEMS['mood']),
+                'ema_stress': _snap.get(SIGNAL_SUB_ITEMS['stress']),
+                'ema_energy': _snap.get(SIGNAL_SUB_ITEMS['energy']),
                 'eligible_prompt_ids': eligible_ids,
             },
         )

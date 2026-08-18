@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from .ema_catalog import EMA_SUB_ITEM_INDEX
 from .models import (
     EMA, EMAItemResponse, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
     StressSample, User, WearableDevice,
@@ -67,10 +68,19 @@ class StressSampleSerializer(serializers.ModelSerializer):
 
 
 class EMAItemResponseSerializer(serializers.ModelSerializer):
+    value = serializers.SerializerMethodField()
+
     class Meta:
         model = EMAItemResponse
-        fields = ['id', 'item_id', 'value']
+        fields = ['id', 'item_id', 'sub_item_id', 'response_type', 'value']
         read_only_fields = ('id',)
+
+    def get_value(self, obj):
+        if obj.response_type == 'multi_choice':
+            return obj.value_choices
+        if obj.response_type in ('single_choice', 'yes_no'):
+            return obj.value_choice
+        return obj.value_numeric
 
 
 class EMASerializer(serializers.ModelSerializer):
@@ -234,8 +244,43 @@ class EngagementLogSerializer(serializers.ModelSerializer):
 
 
 class EMAAnswerSerializer(serializers.Serializer):
-    item_id = serializers.ChoiceField(choices=[f'B{i}' for i in range(1, 9)])
-    value = serializers.IntegerField(min_value=1, max_value=7)
+    sub_item_id = serializers.CharField()
+    value = serializers.JSONField()
+
+    def validate(self, data):
+        catalog_entry = EMA_SUB_ITEM_INDEX.get(data['sub_item_id'])
+        if catalog_entry is None:
+            raise serializers.ValidationError({'sub_item_id': 'unknown sub_item_id'})
+
+        response_type = catalog_entry['response_type']
+        value = data['value']
+        cleaned = {
+            'sub_item_id': data['sub_item_id'],
+            'item_id': catalog_entry['item_id'],
+            'response_type': response_type,
+            'value_numeric': None,
+            'value_choice': None,
+            'value_choices': None,
+        }
+
+        if response_type in ('likert', 'number'):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise serializers.ValidationError({'value': 'must be an integer'})
+            if value < catalog_entry['min_value']:
+                raise serializers.ValidationError({'value': 'below minimum'})
+            if 'max_value' in catalog_entry and value > catalog_entry['max_value']:
+                raise serializers.ValidationError({'value': 'above maximum'})
+            cleaned['value_numeric'] = value
+        elif response_type in ('single_choice', 'yes_no'):
+            if value not in catalog_entry['choices']:
+                raise serializers.ValidationError({'value': 'not a valid choice'})
+            cleaned['value_choice'] = value
+        elif response_type == 'multi_choice':
+            if not isinstance(value, list) or not value or not set(value).issubset(catalog_entry['choices']):
+                raise serializers.ValidationError({'value': 'must be a non-empty list of valid choices'})
+            cleaned['value_choices'] = value
+
+        return cleaned
 
 
 class EMAResponseSubmitSerializer(serializers.Serializer):
@@ -247,7 +292,7 @@ class EMAResponseSubmitSerializer(serializers.Serializer):
     outcome_window_end = serializers.DateTimeField(required=False, allow_null=True)
 
     def validate_responses(self, value):
-        item_ids = [item['item_id'] for item in value]
-        if len(item_ids) != len(set(item_ids)):
-            raise serializers.ValidationError('response item_id values must be unique')
+        sub_item_ids = [item['sub_item_id'] for item in value]
+        if len(sub_item_ids) != len(set(sub_item_ids)):
+            raise serializers.ValidationError('response sub_item_id values must be unique')
         return value
