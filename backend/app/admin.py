@@ -91,6 +91,7 @@ class StressSampleAdmin(ReadableAdminMixin, admin.ModelAdmin):
 class EMAItemResponseInline(admin.TabularInline):
     model = EMAItemResponse
     extra = 0
+    fields = ('sub_item_id', 'response_type', 'value_numeric', 'value_choice', 'value_choices')
 
 
 @admin.register(EMA)

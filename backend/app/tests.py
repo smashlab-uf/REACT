@@ -1862,6 +1862,9 @@ class EvaluateJITAITriggersTests(TestCase):
         t = timezone.now() - timedelta(seconds=3600) + timedelta(seconds=offset_seconds)
         EMA.objects.filter(pk=ema.pk).update(sent_at=t)
         ema.refresh_from_db()
+        EMAItemResponse.objects.create(ema=ema, item_id='B1', sub_item_id='B1_valence', response_type='likert', value_numeric=mood)
+        EMAItemResponse.objects.create(ema=ema, item_id='B1', sub_item_id='B1_arousal', response_type='likert', value_numeric=energy)
+        EMAItemResponse.objects.create(ema=ema, item_id='B2', sub_item_id='B2_stress', response_type='likert', value_numeric=stress)
         return ema
 
     def test_no_enrolled_users_creates_no_logs(self):
@@ -1987,6 +1990,29 @@ class EvaluateJITAITriggersTests(TestCase):
             self.assertNotEqual(log.prompt_id, '')
         else:
             self.assertEqual(log.prompt_id, '')
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_b1_b2_snapshot_stored_on_jitai_log(self, mock_send):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._make_ema(user, mood=4, stress=6, energy=3, offset_seconds=0)
+        evaluate_jitai_triggers()
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.ema_energy, 3)
+        self.assertEqual(log.ema_stress, 6)
+        self.assertEqual(log.ema_mood, 4)
+
+    @patch('app.tasks.send_jitai_prompt')
+    def test_ema_without_b2_excluded_from_signal(self, mock_send):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        ema = EMA.objects.create(
+            user=user, prompt_id='P1', status='completed', responded_at=timezone.now()
+        )
+        EMAItemResponse.objects.create(ema=ema, item_id='B1', sub_item_id='B1_arousal', response_type='likert', value_numeric=4)
+        evaluate_jitai_triggers()
+        self.assertEqual(JITAILog.objects.count(), 0)
+        mock_send.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2240,7 +2266,7 @@ class EvaluateUserMRTTests(TestCase):
         )
         base = timezone.now() - timedelta(hours=12)
         for i in range(5):
-            EMA.objects.create(
+            ema_obj = EMA.objects.create(
                 user=self.user,
                 prompt_id='default',
                 sent_at=base + timedelta(hours=i * 2),
@@ -2250,6 +2276,9 @@ class EvaluateUserMRTTests(TestCase):
                 stress=((i + 2) % 7) + 1,
                 energy=((i + 4) % 7) + 1,
             )
+            EMAItemResponse.objects.create(ema=ema_obj, item_id='B1', sub_item_id='B1_valence', response_type='likert', value_numeric=(i % 7) + 1)
+            EMAItemResponse.objects.create(ema=ema_obj, item_id='B1', sub_item_id='B1_arousal', response_type='likert', value_numeric=((i + 4) % 7) + 1)
+            EMAItemResponse.objects.create(ema=ema_obj, item_id='B2', sub_item_id='B2_stress', response_type='likert', value_numeric=((i + 2) % 7) + 1)
 
     def _latest_ema(self):
         return EMA.objects.filter(user=self.user, status='completed').order_by('-sent_at').first()
@@ -2608,9 +2637,9 @@ class EMARotationEndpointTests(TestCase):
             'prompt_id': 'EMA-ROTATION-1',
             'ema_type': 'scheduled_check_in',
             'responses': [
-                {'item_id': 'B1', 'value': 5},
-                {'item_id': 'B2', 'value': 3},
-                {'item_id': 'B8', 'value': 7},
+                {'sub_item_id': 'B1_valence', 'value': 5},
+                {'sub_item_id': 'B2_stress', 'value': 3},
+                {'sub_item_id': 'B8_sleep', 'value': 7},
             ],
         }, format='json')
 
@@ -2625,8 +2654,8 @@ class EMARotationEndpointTests(TestCase):
         response = self.client.post('/ema/responses/', {
             'prompt_id': 'EMA-ROTATION-2',
             'responses': [
-                {'item_id': 'B1', 'value': 5},
-                {'item_id': 'B1', 'value': 6},
+                {'sub_item_id': 'B1_valence', 'value': 5},
+                {'sub_item_id': 'B1_valence', 'value': 6},
             ],
         }, format='json')
 
@@ -2704,13 +2733,17 @@ class EMAScheduledItemSelectionTests(TestCase):
         self.assertIn('B3', item_ids)
 
     def test_b8_only_on_first_check_in_of_day(self):
+        representative_sub_item = {
+            'B1': 'B1_valence', 'B2': 'B2_stress', 'B3': 'B3_importance', 'B4': 'B4_urge',
+            'B5': 'B5_success', 'B6': 'B6_urge', 'B7': 'B7_urge', 'B8': 'B8_sleep',
+        }
         first = self.client.get('/ema/next/')
         first_items = [item['item_id'] for item in first.json()['items']]
         self.assertIn('B8', first_items)
 
         self.client.post('/ema/responses/', {
             'prompt_id': first.json()['prompt_id'],
-            'responses': [{'item_id': i, 'value': 4} for i in first_items],
+            'responses': [{'sub_item_id': representative_sub_item[i], 'value': 4} for i in first_items],
         }, format='json')
 
         second = self.client.get('/ema/next/')
@@ -2719,8 +2752,8 @@ class EMAScheduledItemSelectionTests(TestCase):
 
     def test_rotating_items_balance_across_check_ins(self):
         EMA_ = EMA.objects.create(user=self.user, prompt_id='seed', status='completed')
-        EMAItemResponse.objects.create(ema=EMA_, item_id='B4', value=5)
-        EMAItemResponse.objects.create(ema=EMA_, item_id='B5', value=5)
+        EMAItemResponse.objects.create(ema=EMA_, item_id='B4', sub_item_id='B4_urge', response_type='likert', value_numeric=5)
+        EMAItemResponse.objects.create(ema=EMA_, item_id='B5', sub_item_id='B5_success', response_type='likert', value_numeric=5)
 
         response = self.client.get('/ema/next/')
 
@@ -2732,10 +2765,67 @@ class EMAScheduledItemSelectionTests(TestCase):
 
     @patch('app.views.django_timezone.now')
     def test_evening_check_in_forces_b6(self, mock_now):
-        from datetime import datetime, timezone as dt_timezone
-        mock_now.return_value = datetime(2026, 8, 13, 21, 0, 0, tzinfo=dt_timezone.utc)
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        mock_now.return_value = datetime(2026, 8, 13, 21, 0, 0, tzinfo=ZoneInfo('America/New_York'))
 
         response = self.client.get('/ema/next/')
 
         item_ids = [item['item_id'] for item in response.json()['items']]
         self.assertIn('B6', item_ids)
+
+    def _seed_rotation_usage(self, sent_at):
+        """Create a completed EMA with B4/B5/B7 answered, so B6 (unused) becomes
+        the least-used rotating item and is guaranteed to be picked next."""
+        seed = EMA.objects.create(user=self.user, prompt_id='seed', status='completed')
+        EMA.objects.filter(pk=seed.pk).update(sent_at=sent_at)
+        for item_id, sub_id in [('B4', 'B4_urge'), ('B5', 'B5_success'), ('B7', 'B7_urge')]:
+            EMAItemResponse.objects.create(ema=seed, item_id=item_id, sub_item_id=sub_id, response_type='likert', value_numeric=4)
+
+    def _b6_sub_item_ids(self, response_data):
+        b6 = next(item for item in response_data['items'] if item['item_id'] == 'B6')
+        return [s['sub_item_id'] for s in b6['sub_items']]
+
+    @patch('app.views.django_timezone.now')
+    def test_first_afternoon_check_in_includes_b6_plan(self, mock_now):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo('America/New_York')
+        mock_now.return_value = datetime(2026, 8, 13, 13, 0, 0, tzinfo=tz)
+        self._seed_rotation_usage(datetime(2026, 8, 13, 9, 0, 0, tzinfo=tz))
+
+        response = self.client.get('/ema/next/')
+        data = response.json()
+
+        self.assertIn('B6', [item['item_id'] for item in data['items']])
+        self.assertIn('B6_plan', self._b6_sub_item_ids(data))
+
+    @patch('app.views.django_timezone.now')
+    def test_second_afternoon_check_in_excludes_b6_plan(self, mock_now):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo('America/New_York')
+        mock_now.return_value = datetime(2026, 8, 13, 14, 0, 0, tzinfo=tz)
+        self._seed_rotation_usage(datetime(2026, 8, 13, 9, 0, 0, tzinfo=tz))
+        already_afternoon = EMA.objects.create(user=self.user, prompt_id='seed2', status='completed')
+        EMA.objects.filter(pk=already_afternoon.pk).update(sent_at=datetime(2026, 8, 13, 12, 30, 0, tzinfo=tz))
+
+        response = self.client.get('/ema/next/')
+        data = response.json()
+
+        self.assertIn('B6', [item['item_id'] for item in data['items']])
+        self.assertNotIn('B6_plan', self._b6_sub_item_ids(data))
+
+    @patch('app.views.django_timezone.now')
+    def test_morning_check_in_excludes_b6_plan(self, mock_now):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo('America/New_York')
+        mock_now.return_value = datetime(2026, 8, 13, 9, 0, 0, tzinfo=tz)
+        self._seed_rotation_usage(datetime(2026, 8, 13, 7, 0, 0, tzinfo=tz))
+
+        response = self.client.get('/ema/next/')
+        data = response.json()
+
+        self.assertIn('B6', [item['item_id'] for item in data['items']])
+        self.assertNotIn('B6_plan', self._b6_sub_item_ids(data))

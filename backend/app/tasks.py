@@ -51,25 +51,36 @@ def _evaluate_user(user, p):
 
     decision_point_id = f"ema_{latest_new_ema.pk}"
 
-    all_emas = list(
-        EMA.objects.filter(
-            user=user,
-            status='completed',
-            mood__isnull=False,
-            stress__isnull=False,
-            energy__isnull=False,
-        )
+    # Volatility mapping confirmed by Dr. Chang 2026-08-17 (copied to Celia/Tien):
+    # mood -> B1 valence rating, stress -> B2 stress rating, energy -> B1
+    # calm-to-excited rating. Averaged the same way the old mood/stress/energy
+    # fields were, so Tien's calibration stays comparable.
+    SIGNAL_SUB_ITEMS = {'mood': 'B1_valence', 'stress': 'B2_stress', 'energy': 'B1_arousal'}
+
+    ema_qs = (
+        EMA.objects.filter(user=user, status='completed')
+        .prefetch_related('item_responses')
         .order_by('sent_at')
-        .values('sent_at', 'mood', 'stress', 'energy')
     )
 
-    if not all_emas:
+    rows = []
+    for ema_obj in ema_qs:
+        sub_vals = {
+            r.sub_item_id: r.value_numeric
+            for r in ema_obj.item_responses.all()
+            if r.sub_item_id in SIGNAL_SUB_ITEMS.values()
+        }
+        if all(sub_id in sub_vals for sub_id in SIGNAL_SUB_ITEMS.values()):
+            rows.append({
+                'timestamp': ema_obj.sent_at,
+                'ema': sum(sub_vals.values()) / len(sub_vals),
+            })
+
+    if not rows:
         return
 
-    df = pd.DataFrame(all_emas)
+    df = pd.DataFrame(rows)
     df['user_id'] = user.user_id
-    df = df.rename(columns={'sent_at': 'timestamp'})
-    df['ema'] = df[['mood', 'stress', 'energy']].mean(axis=1)
 
     hr_rows = list(
         HeartRateSample.objects
@@ -119,6 +130,11 @@ def _evaluate_user(user, p):
     recent_hr = HeartRateSample.objects.filter(user=user).order_by('-timestamp').first()
     recent_stress = StressSample.objects.filter(user=user).order_by('-timestamp').first()
 
+    _snap = {
+        r.sub_item_id: r.value_numeric
+        for r in latest_new_ema.item_responses.filter(sub_item_id__in=SIGNAL_SUB_ITEMS.values())
+    }
+
     try:
         jitai_log, created = JITAILog.objects.get_or_create(
             decision_point_id=decision_point_id,
@@ -136,9 +152,9 @@ def _evaluate_user(user, p):
                 'status': 'pending' if send_prompt else 'not_sent',
                 'delivery_status': 'pending' if send_prompt else 'not_sent',
                 'trigger_signal': trigger_signal,
-                'ema_mood': latest_new_ema.mood,
-                'ema_stress': latest_new_ema.stress,
-                'ema_energy': latest_new_ema.energy,
+                'ema_mood': _snap.get(SIGNAL_SUB_ITEMS['mood']),
+                'ema_stress': _snap.get(SIGNAL_SUB_ITEMS['stress']),
+                'ema_energy': _snap.get(SIGNAL_SUB_ITEMS['energy']),
                 'eligible_prompt_ids': eligible_ids,
             },
         )

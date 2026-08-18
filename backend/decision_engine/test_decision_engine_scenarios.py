@@ -69,6 +69,37 @@ class DecisionEngineScenarioTests(unittest.TestCase):
         self.assertGreater(missing_and_late["minutes_late"].max(), 0)
 
 
+class PromptFiringTests(unittest.TestCase):
+
+    def _volatile_df(self):
+        base = pd.Timestamp('2026-01-01 09:00:00')
+        stable = [
+            {'user_id': 1, 'timestamp': base + pd.Timedelta(hours=i), 'ema': 4.0}
+            for i in range(5)
+        ]
+        spike = {'user_id': 1, 'timestamp': base + pd.Timedelta(hours=5), 'ema': 1.0}
+        return pd.DataFrame(stable + [spike])
+
+    def test_high_volatility_fires_at_least_one_prompt(self):
+        result = apply_decision_rules(calculate_mssd(self._volatile_df()))
+        self.assertTrue(result['send_prompt'].any())
+        self.assertIn('prompt sent', result['decision_reason'].values)
+
+    def test_stable_signal_fires_no_prompts(self):
+        base = pd.Timestamp('2026-01-01 09:00:00')
+        df = pd.DataFrame([
+            {'user_id': 1, 'timestamp': base + pd.Timedelta(hours=i), 'ema': 4.0}
+            for i in range(8)
+        ])
+        result = apply_decision_rules(calculate_mssd(df))
+        self.assertFalse(result['send_prompt'].any())
+
+    def test_send_prompt_true_only_when_decision_reason_is_prompt_sent(self):
+        result = apply_decision_rules(calculate_mssd(self._volatile_df()))
+        expected = result['decision_reason'] == 'prompt sent'
+        self.assertTrue((result['send_prompt'] == expected).all())
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     unittest.main(verbosity=2)
