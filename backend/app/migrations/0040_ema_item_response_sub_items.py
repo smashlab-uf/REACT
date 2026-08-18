@@ -1,6 +1,15 @@
 from django.db import migrations, models
 
 
+def clear_legacy_item_responses(apps, schema_editor):
+    # Pre-redesign rows only ever stored one flat value per item_id, with no
+    # sub-item distinction — not convertible to the new schema. Safe to drop:
+    # no real participant data exists yet (collection hasn't started), this
+    # is leftover local/synthetic test data.
+    EMAItemResponse = apps.get_model('app', 'EMAItemResponse')
+    EMAItemResponse.objects.all().delete()
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -8,6 +17,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunPython(clear_legacy_item_responses, migrations.RunPython.noop),
         migrations.RemoveField(
             model_name='emaitemresponse',
             name='value',
