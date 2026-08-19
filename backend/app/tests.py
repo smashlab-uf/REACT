@@ -1,12 +1,19 @@
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
+from zoneinfo import ZoneInfo
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework import status as http_status
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
+
+EASTERN = ZoneInfo('America/New_York')
+
+
+def eastern_today():
+    return timezone.now().astimezone(EASTERN).date()
 
 from app.models import (
     EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog, PhoneTelemetry,
@@ -2725,7 +2732,7 @@ class EMAScheduledItemSelectionTests(TestCase):
         self.assertNotIn('B3', item_ids)
 
     def test_b3_present_with_event_day(self):
-        EventDay.objects.create(date=timezone.localdate(), sport='football')
+        EventDay.objects.create(date=eastern_today(), sport='football')
 
         response = self.client.get('/ema/next/')
 

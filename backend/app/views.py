@@ -82,9 +82,21 @@ def _participant_time(now):
     return now.astimezone(PARTICIPANT_TZ)
 
 
+def _participant_day_bounds(now):
+    """Start/end of the participant's (Eastern) calendar day, as aware datetimes.
+
+    Used instead of a `__date` ORM lookup: `__date` truncates at the database
+    level using Django's active timezone (settings.TIME_ZONE, UTC here), which
+    would silently ignore this Eastern conversion and truncate in UTC instead.
+    """
+    day_start = _participant_time(now).replace(hour=0, minute=0, second=0, microsecond=0)
+    return day_start, day_start + timedelta(days=1)
+
+
 def _today_ema_count(user):
     now = django_timezone.now()
-    return EMA.objects.filter(user=user, sent_at__date=now.date()).count()
+    day_start, day_end = _participant_day_bounds(now)
+    return EMA.objects.filter(user=user, sent_at__gte=day_start, sent_at__lt=day_end).count()
 
 
 def _has_event_today(now):
@@ -92,12 +104,14 @@ def _has_event_today(now):
 
 
 def _today_rotating_item_counts(user, now):
+    day_start, day_end = _participant_day_bounds(now)
     counts = {item_id: 0 for item_id in ROTATING_ITEM_IDS}
     rows = (
         EMAItemResponse.objects
         .filter(
             ema__user=user,
-            ema__sent_at__date=_participant_time(now).date(),
+            ema__sent_at__gte=day_start,
+            ema__sent_at__lt=day_end,
             item_id__in=ROTATING_ITEM_IDS,
         )
         .values('item_id')
