@@ -1,6 +1,6 @@
 import axios, { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse } from 'axios';
 import * as SecureStore from 'expo-secure-store';
-import { BASE_URL } from './config';
+import { API_KEY, BASE_URL } from './config';
 import { log } from '../utils/logger';
 
 // Token storage — replaced by expo-secure-store when auth is wired up
@@ -27,12 +27,15 @@ export function setOnAuthFailure(fn: () => void) {
 
 const client: AxiosInstance = axios.create({
   baseURL: BASE_URL,
-  headers: { 'Content-Type': 'application/json' },
+  headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
   timeout: 10000,
 });
 
 // Attach access token + log request
 client.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+  if (API_KEY) {
+    config.headers['X-API-Key'] = API_KEY;
+  }
   if (accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`;
   }
@@ -64,9 +67,11 @@ client.interceptors.response.use(
       if (!original._retry && refreshToken) {
         original._retry = true;
         try {
-          const res = await axios.post(`${BASE_URL}/auth/token/refresh/`, {
-            refresh: refreshToken,
-          });
+          const res = await axios.post(
+            `${BASE_URL}/auth/token/refresh/`,
+            { refresh: refreshToken },
+            { headers: { 'X-API-Key': API_KEY } },
+          );
           accessToken = res.data.access;
           // Persist the new access token back to SecureStore
           const stored = await SecureStore.getItemAsync('auth_tokens').catch(() => null);

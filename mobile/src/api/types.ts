@@ -1,11 +1,34 @@
 export type EMAType = 'scheduled_check_in' | 'post_prompt' | 'extra_check_in';
 
+export type EMAResponseType = 'likert' | 'single_choice' | 'multi_choice' | 'yes_no' | 'number';
+
+export type EMAAnswerValue = number | string | string[];
+
+export type EMADependsOn = {
+  sub_item_id: string;
+  equals?: string;
+  not_equals?: string;
+};
+
+export type EMASubItem = {
+  sub_item_id: string;
+  text: string;
+  response_type: EMAResponseType | string;
+  min_value?: number;
+  max_value?: number;
+  low_label?: string;
+  high_label?: string;
+  choices?: string[];
+  group?: string;
+  group_text?: string;
+  depends_on?: EMADependsOn;
+  schedule_condition?: string;
+};
+
 export type EMAItem = {
   item_id: string;
-  label: string;
-  response_type: string;
-  min_value: number;
-  max_value: number;
+  title: string;
+  sub_items: EMASubItem[];
 };
 
 export type EMANextShowResponse = {
@@ -35,8 +58,8 @@ export type EMANextNoShowResponse = {
 export type EMANextResponse = EMANextShowResponse | EMANextNoShowResponse;
 
 export type EMAAnswer = {
-  item_id: string;
-  value: number;
+  sub_item_id: string;
+  value: EMAAnswerValue;
 };
 
 export type EMASubmitRequest = {
@@ -51,7 +74,9 @@ export type EMASubmitRequest = {
 export type EMAStoredAnswer = {
   id: number;
   item_id: string;
-  value: number;
+  sub_item_id: string;
+  response_type: string;
+  value: EMAAnswerValue;
 };
 
 export type EMASubmitResponse = {

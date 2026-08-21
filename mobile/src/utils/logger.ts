@@ -8,6 +8,9 @@ const SENSITIVE_KEYS = [
   'push_token',
   'authorization',
   'auth_tokens',
+  'api_key',
+  'api-key',
+  'x-api-key',
 ];
 
 function isSensitiveKey(key: string): boolean {

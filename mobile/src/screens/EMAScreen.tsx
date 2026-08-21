@@ -9,13 +9,12 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import LikertScale from '../components/LikertScale';
+import EMASubItemField from '../components/EMASubItemField';
 import { ema as emaApi, telemetry } from '../api/endpoints';
-import { EMAItem, EMANextShowResponse } from '../api/types';
+import { EMAAnswerValue, EMAItem, EMANextShowResponse, EMASubItem } from '../api/types';
+import { isAnswered, isSubItemVisible, pruneHiddenAnswers, visibleSubItems } from '../ema/visibility';
 import { useAuthStore } from '../store/authStore';
 import { log } from '../utils/logger';
-
-const TITLE = 'How are you feeling right now?';
 
 const NO_SHOW_COPY: Record<string, string> = {
   daily_cap_reached: 'You have completed all of your check-ins for today.',
@@ -34,14 +33,14 @@ type Props = {
   onClose: () => void;
 };
 
-function isAnswerable(item: EMAItem) {
-  return item.response_type === 'likert';
-}
-
-function msUntil(iso: string | null | undefined) {
-  if (!iso) return null;
-  const at = new Date(iso).getTime();
-  return Number.isFinite(at) ? at - Date.now() : null;
+function isSupported(sub: EMASubItem) {
+  return (
+    sub.response_type === 'likert' ||
+    sub.response_type === 'single_choice' ||
+    sub.response_type === 'multi_choice' ||
+    sub.response_type === 'yes_no' ||
+    sub.response_type === 'number'
+  );
 }
 
 export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
@@ -50,14 +49,13 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
   const [phase, setPhase] = useState<Phase>('loading');
   const [survey, setSurvey] = useState<EMANextShowResponse | null>(null);
   const [noShowReason, setNoShowReason] = useState<string | null>(null);
-  const [answers, setAnswers] = useState<Record<string, number>>({});
+  const [answers, setAnswers] = useState<Record<string, EMAAnswerValue>>({});
   const [submitting, setSubmitting] = useState(false);
 
   const items = survey?.items ?? [];
-  const answerable = items.filter(isAnswerable);
-  const unsupported = items.filter((i) => !isAnswerable(i));
+  const visibleItems = visibleSubItems(items, answers).filter(isSupported);
   const complete =
-    answerable.length > 0 && answerable.every((i) => answers[i.item_id] !== undefined);
+    visibleItems.length > 0 && visibleItems.every((sub) => isAnswered(answers[sub.sub_item_id]));
 
   const logEngagement = useCallback(
     (event_type: 'ema_opened' | 'ema_dismissed' | 'ema_completed', logId?: number | null) => {
@@ -126,6 +124,10 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     return () => clearTimeout(timer);
   }, [phase, survey]);
 
+  function setAnswer(subItemId: string, value: EMAAnswerValue) {
+    setAnswers((prev) => pruneHiddenAnswers(items, { ...prev, [subItemId]: value }));
+  }
+
   function handleDismiss() {
     if (submitting) return;
     if (phase === 'form') logEngagement('ema_dismissed', survey?.jitai_log_id);
@@ -143,7 +145,10 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
         jitai_log_id: survey.jitai_log_id ?? jitaiLogId ?? null,
         outcome_window_start: survey.outcome_window_start ?? null,
         outcome_window_end: survey.outcome_window_end ?? null,
-        responses: answerable.map((i) => ({ item_id: i.item_id, value: answers[i.item_id] })),
+        responses: visibleItems.map((sub) => ({
+          sub_item_id: sub.sub_item_id,
+          value: answers[sub.sub_item_id],
+        })),
       });
       logEngagement('ema_completed', survey.jitai_log_id);
       onClose();
@@ -158,6 +163,58 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
       );
       setSubmitting(false);
     }
+  }
+
+  function renderSection(item: EMAItem) {
+    const visible = (item.sub_items ?? []).filter((sub) => isSubItemVisible(sub, answers));
+    if (visible.length === 0) return null;
+
+    const blocks: React.ReactNode[] = [];
+    let i = 0;
+    while (i < visible.length) {
+      const sub = visible[i];
+      if (sub.group) {
+        const groupId = sub.group;
+        const groupText =
+          sub.group_text ?? visible.find((entry) => entry.group === groupId && entry.group_text)?.group_text;
+        const grouped: EMASubItem[] = [];
+        while (i < visible.length && visible[i].group === groupId) {
+          grouped.push(visible[i]);
+          i += 1;
+        }
+        blocks.push(
+          <View key={groupId} style={styles.group}>
+            {groupText ? <Text style={styles.groupText}>{groupText}</Text> : null}
+            {grouped.map((entry) => (
+              <EMASubItemField
+                key={entry.sub_item_id}
+                sub={entry}
+                value={answers[entry.sub_item_id]}
+                onChange={(value) => setAnswer(entry.sub_item_id, value)}
+              />
+            ))}
+          </View>,
+        );
+        continue;
+      }
+
+      blocks.push(
+        <EMASubItemField
+          key={sub.sub_item_id}
+          sub={sub}
+          value={answers[sub.sub_item_id]}
+          onChange={(value) => setAnswer(sub.sub_item_id, value)}
+        />,
+      );
+      i += 1;
+    }
+
+    return (
+      <View key={item.item_id} style={styles.section}>
+        <Text style={styles.sectionTitle}>{item.title}</Text>
+        {blocks}
+      </View>
+    );
   }
 
   function renderBody() {
@@ -204,35 +261,18 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     }
 
     return (
-      <ScrollView contentContainerStyle={styles.body}>
+      <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
         {typeof survey?.daily_cap === 'number' && (
           <Text style={styles.progress}>
             Check-in {survey.daily_count + 1} of {survey.daily_cap}
           </Text>
         )}
 
-        <Text style={styles.title}>{TITLE}</Text>
-
         {survey?.outcome_window_active && (
           <Text style={styles.windowNote}>Follow-up check-in</Text>
         )}
 
-        {answerable.map((item) => (
-          <LikertScale
-            key={item.item_id}
-            label={item.label}
-            minValue={item.min_value}
-            maxValue={item.max_value}
-            value={answers[item.item_id] ?? null}
-            onChange={(v) => setAnswers((prev) => ({ ...prev, [item.item_id]: v }))}
-          />
-        ))}
-
-        {unsupported.length > 0 && (
-          <Text style={styles.unsupported}>
-            {unsupported.length} item(s) could not be displayed. Please update the app.
-          </Text>
-        )}
+        {items.map(renderSection)}
       </ScrollView>
     );
   }
@@ -271,6 +311,12 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
   );
 }
 
+function msUntil(iso: string | null | undefined) {
+  if (!iso) return null;
+  const at = new Date(iso).getTime();
+  return Number.isFinite(at) ? at - Date.now() : null;
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff', paddingTop: 60 },
   header: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 16 },
@@ -279,11 +325,13 @@ const styles = StyleSheet.create({
   body: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: 24 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 },
   progress: { fontSize: 13, color: '#888', fontWeight: '600', marginBottom: 8 },
-  title: { fontSize: 22, fontWeight: '700', color: '#111', marginBottom: 24 },
   windowNote: { fontSize: 13, color: '#007AFF', fontWeight: '600', marginBottom: 20 },
+  section: { marginBottom: 12 },
+  sectionTitle: { fontSize: 20, fontWeight: '700', color: '#111', marginBottom: 16 },
+  group: { marginBottom: 8 },
+  groupText: { fontSize: 16, fontWeight: '600', color: '#111', marginBottom: 12 },
   messageTitle: { fontSize: 18, fontWeight: '700', color: '#111', marginBottom: 8, textAlign: 'center' },
   messageBody: { fontSize: 15, color: '#666', textAlign: 'center', lineHeight: 21 },
-  unsupported: { fontSize: 13, color: '#a15c00', marginTop: 8 },
   retry: { marginTop: 20, paddingVertical: 10, paddingHorizontal: 24 },
   retryText: { fontSize: 16, color: '#007AFF', fontWeight: '600' },
   footer: { paddingHorizontal: 24, paddingBottom: 40, paddingTop: 8 },
