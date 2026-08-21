@@ -8,3 +8,4 @@ const ACTIVE_ENV: keyof typeof BASE_URLS = 'prod';
 
 export const BASE_URL = BASE_URLS[ACTIVE_ENV];
 export const ENV = ACTIVE_ENV;
+export const API_KEY = process.env.EXPO_PUBLIC_API_KEY ?? '';
