@@ -41,6 +41,43 @@ def authenticated_client(app_user):
 
 
 # ---------------------------------------------------------------------------
+# Middleware: API key gate
+# ---------------------------------------------------------------------------
+
+@override_settings(API_KEY='test-api-key', PASSWORD_HASHERS=FAST_HASHERS)
+class APIKeyMiddlewareTests(TestCase):
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_missing_api_key_returns_403(self):
+        response = self.client.post('/user/checkemail/', {'email': 'x@example.com'}, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+    def test_wrong_api_key_returns_403(self):
+        response = self.client.post(
+            '/user/checkemail/',
+            {'email': 'x@example.com'},
+            format='json',
+            HTTP_X_API_KEY='wrong-key',
+        )
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+    def test_valid_api_key_allows_api_request(self):
+        response = self.client.post(
+            '/user/checkemail/',
+            {'email': 'x@example.com'},
+            format='json',
+            HTTP_X_API_KEY='test-api-key',
+        )
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+
+    def test_admin_is_not_blocked_by_api_key_middleware(self):
+        response = self.client.get('/admin/')
+        self.assertNotEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
 # Model: password hashing
 # ---------------------------------------------------------------------------
 
