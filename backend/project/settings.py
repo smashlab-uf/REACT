@@ -43,6 +43,7 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
 
 DASHBOARD_API_KEY = os.getenv('DASHBOARD_API_KEY', '')
+API_KEY = os.getenv('API_KEY', '')
 
 SENTRY_DSN = os.getenv('SENTRY_DSN')
 if SENTRY_DSN:
@@ -113,6 +114,7 @@ PASSWORD_HASHERS = [
 ]
 
 MIDDLEWARE = [
+    'app.middleware.APIKeyMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
