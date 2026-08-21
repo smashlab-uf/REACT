@@ -151,6 +151,42 @@ def load_wearable_devices() -> pd.DataFrame:
     """
 
 
+def load_ema_item_responses(
+    user_id: Optional[int] = None,
+    start_date: Optional[datetime.date] = None,
+    end_date: Optional[datetime.date] = None,
+) -> pd.DataFrame:
+    """
+    Purpose:
+        Load per-item EMA responses from app_emaitemresponse. Required to
+        reconstruct the exact MSSD trigger signal used by the decision engine,
+        which reads value_numeric where item_id = 'B1' (energy) and item_id =
+        'B2' (stress). Filtering on item_id and pivoting on sub_item_id gives
+        the per-prompt EMA series that calculate_mssd() consumed.
+
+    Inputs:
+        user_id    - int or None. If None, returns records for all participants.
+        start_date - datetime.date or None. Inclusive lower bound on the
+                     parent EMA's sent_at timestamp.
+        end_date   - datetime.date or None. Inclusive upper bound on the
+                     parent EMA's sent_at timestamp.
+
+    Outputs:
+        pd.DataFrame with columns matching app_emaitemresponse:
+            id, ema_id, item_id, sub_item_id, response_type,
+            value_numeric, value_choice, value_choices.
+        Also includes user_id and sent_at joined from the parent app_ema row
+        so callers can group and sort by participant and prompt time without a
+        second join.
+        One row per (ema_id, sub_item_id). Timestamps are timezone-aware (UTC).
+
+    Usage example (reconstruct B1 energy series for MSSD audit):
+        item_df = load_ema_item_responses(user_id=42)
+        b1 = item_df[item_df['item_id'] == 'B1'].sort_values('sent_at')
+        mssd_series = b1['value_numeric']
+    """
+
+
 #  EMA FEASIBILITY METRICS
 # Preregistered feasibility benchmark: 75% completed check-in rate.
 # Analytic requirement for AR(1) parameter recovery: 80% (reported separately).
@@ -220,7 +256,11 @@ def compute_item_missingness(ema_df: pd.DataFrame) -> pd.DataFrame:
     """
     Purpose:
         Compute the per-item (mood, stress, energy) missingness rate across all
-        delivered EMA prompts, broken down by participant.
+        delivered EMA prompts, broken down by participant. These are the
+        top-level denormalized fields on app_ema.
+
+        For per-B-item (B1–B8) missingness matching the analysis plan, use a
+        separate function operating on load_ema_item_responses() instead.
 
     Inputs:
         ema_df - pd.DataFrame from load_ema(). Must contain columns:
@@ -268,8 +308,12 @@ def compute_run_in_mssd(ema_df: pd.DataFrame) -> pd.DataFrame:
         to calibrate individual thresholds for Weeks 2-5.
 
     Inputs:
-        ema_df - pd.DataFrame from load_ema() joined with user enrolled_at.
-                 Must contain columns: user_id, sent_at, mood, enrolled_at.
+        ema_df - pd.DataFrame from load_ema_item_responses() filtered to
+                 item_id = 'B1' (energy) or 'B2' (stress), joined with user
+                 enrolled_at. Must contain columns: user_id, sent_at,
+                 value_numeric, enrolled_at.
+                 Do NOT use mood from load_ema() — the decision engine reads
+                 B1/B2 from app_emaitemresponse, not EMA.mood.
 
     Outputs:
         pd.DataFrame with columns: user_id, run_in_mssd.
@@ -289,8 +333,13 @@ def compute_within_person_threshold(
         is estimated only from data before t, preventing look-ahead bias.
 
     Inputs:
-        ema_df   - pd.DataFrame from load_ema(). Must contain columns:
-                   user_id, sent_at, mood.
+        ema_df   - pd.DataFrame from load_ema_item_responses() filtered to
+                   item_id = 'B1' (energy) or 'B2' (stress). Must contain
+                   columns: user_id, sent_at, value_numeric.
+                   Do NOT use mood from load_ema() — the live decision engine
+                   reads B1/B2 from app_emaitemresponse to compute observed_mssd
+                   stored in JITAILog. Using mood would produce threshold values
+                   that disagree with what the engine actually computed.
         quantile - float in (0, 1). Threshold percentile (default 0.80,
                    PI sign-off 2026-07-06).
 
@@ -298,6 +347,12 @@ def compute_within_person_threshold(
         pd.Series of float, indexed by ema_df index.
         Value at row i = quantile of MSSD distribution computed from all
         answered EMA pairs before row i for that participant.
+
+    Note on MSSD formulation: the live engine uses a rolling(window=3) MSSD
+    rather than cumulative MSSD over all answered pairs. For an exact audit
+    against JITAILog.observed_mssd, match the rolling formulation. For the
+    overall feasibility report, cumulative MSSD is acceptable and aligns with
+    the construct-validity harness in mssd_validation.py.
     """
 
 
@@ -700,8 +755,12 @@ def compute_hr_ema_concordance(
     Inputs:
         hr_df  - pd.DataFrame from load_heart_rate(). Must contain columns:
                  user_id, timestamp, bpm.
-        ema_df - pd.DataFrame from load_ema(). Must contain columns:
-                 user_id, sent_at, mood, responded_at.
+        ema_df - pd.DataFrame from load_ema_item_responses() filtered to
+                 item_id = 'B1' (energy) or 'B2' (stress). Must contain
+                 columns: user_id, sent_at, value_numeric, responded_at.
+                 Do NOT use mood from load_ema() — use the same B1/B2 signal
+                 the decision engine uses so HR concordance reflects the actual
+                 trigger signal, not a different EMA construct.
 
     Outputs:
         pd.DataFrame with columns:

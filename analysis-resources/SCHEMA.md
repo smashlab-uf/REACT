@@ -124,11 +124,17 @@ app_eventday  (standalone — no foreign keys)
 |---|---|---|---|
 | `id` | `SERIAL` | **PK** | |
 | `ema_id` | `INTEGER` | **FK** → `app_ema.id` NOT NULL ON DELETE CASCADE | |
-| `item_id` | `VARCHAR(8)` | NOT NULL | Choices: `B1` / `B2` / `B3` / `B4` / `B5` / `B6` / `B7` / `B8` |
-| `value` | `SMALLINT` | NOT NULL CHECK (1–7) | Likert response. |
+| `item_id` | `VARCHAR(8)` | NOT NULL | Block identifier: `B1` / `B2` / `B3` / `B4` / `B5` / `B6` / `B7` / `B8` |
+| `sub_item_id` | `VARCHAR(32)` | NOT NULL | Specific sub-question within the block. Unique per EMA. |
+| `response_type` | `VARCHAR(16)` | NOT NULL | Choices: `likert` / `single_choice` / `multi_choice` / `number` / `yes_no` |
+| `value_numeric` | `INTEGER` | nullable | Likert or numeric response (1–7 for Likert items). |
+| `value_choice` | `VARCHAR(64)` | nullable | Single-choice text response. |
+| `value_choices` | `JSONB` | nullable | Multi-choice response array. |
 
-**Constraints:** `UNIQUE (ema_id, item_id)` — one response per item per EMA.
-**Ordering:** `item_id`
+**Constraints:** `UNIQUE (ema_id, sub_item_id)` — one response per sub-item per EMA.
+**Ordering:** `sub_item_id`
+
+JITAI trigger signal: the decision engine reads `value_numeric` from rows where `item_id = 'B1'` (energy) and `item_id = 'B2'` (stress) to compute MSSD.
 
 ---
 
@@ -239,7 +245,8 @@ One row per JITAI decision point. Captures the full decision pipeline: eligibili
 | `User` | `gender` | `male` · `female` · `other` |
 | `EMA` | `status` | `pending` · `completed` · `expired` |
 | `EMA` | `ema_type` | `scheduled_check_in` · `post_prompt` · `extra_check_in` |
-| `EMAItemResponse` | `item_id` | `B1` · `B2` · `B3` · `B4` · `B5` · `B6` · `B7` · `B8` |
+| `EMAItemResponse` | `item_id` | `B1` · `B2` · `B3` · `B4` · `B5` · `B6` · `B7` · `B8` (block; `B1`=energy, `B2`=stress per decision engine) |
+| `EMAItemResponse` | `response_type` | `likert` · `single_choice` · `multi_choice` · `number` · `yes_no` |
 | `JITAILog` | `status` | `pending` · `delivered` · `opened` · `interacted` · `failed` · `not_sent` |
 | `JITAILog` | `delivery_status` | `pending` · `not_sent` · `accepted_by_expo` · `received_on_device` · `failed` |
 | `PhoneTelemetry` | `event_type` | `draft_started` · `draft_deleted` · `draft_submitted` · `session_start` · `session_end` |
@@ -279,7 +286,8 @@ These two tables are specified in the updated IRB-01 protocol (`REACT Biomarker 
 ## Notes
 
 - **Django table naming:** `app_<lowercasemodel>` (e.g. `JITAILog` → `app_jitailog`).
-- **Likert scale:** `mood`, `stress`, `energy`, and all `EMAItemResponse.value` fields are validated `SMALLINT` 1–7. The synthetic data generator uses 1–5; confirm against deployed protocol before analysis.
+- **Likert scale:** `mood`, `stress`, `energy` on `EMA` and `EMAItemResponse.value_numeric` are validated 1–7 in production. The synthetic data generator and validation harness (`mssd_validation.py`) use 1–5; construct-validity benchmarks should be re-run at the deployed 1–7 scale before the feasibility report.
+- **JITAI trigger signal:** The decision engine reads `EMAItemResponse.value_numeric` where `item_id = 'B1'` (energy) and `item_id = 'B2'` (stress). Offline MSSD analysis in `analytics/scripts.py` must use the same B1/B2 source — not `EMA.mood` — to replicate trigger decisions.
 - **IRB constraint — no free text:** notification body and EMA notes are never stored. Only `prompt_id` (a template reference) appears in `jitai_log`. See `data-dictionary.md` for full IRB notes.
 - **Idempotency:** `JITAILog.decision_point_id` is UNIQUE; Celery tasks set this before writing to prevent duplicate decision rows on retry.
 - **Non-wear inference:** `HeartRateSample.bpm = 0` or NULL is treated as inferred non-wear. Garmin exports carry no explicit `is_worn` flag.

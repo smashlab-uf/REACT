@@ -1,0 +1,46 @@
+[
+  {
+    "user_id": 101,
+    "participant_id": "P001",
+    "last_sync_at": "2026-07-23T18:40:00Z",
+    "decision_made_at": "2026-07-23T18:42:08Z",
+    "push_sent_at": "2026-07-23T18:42:10Z",
+    "device_received_at": "2026-07-23T18:42:13Z",
+    "receipt_reported_at": "2026-07-23T18:42:14Z",
+    "delivery_status": "received_on_device",
+    "delivery_error": null
+  },
+  {
+    "user_id": 102,
+    "participant_id": "P002",
+    "last_sync_at": "2026-07-23T18:34:00Z",
+    "decision_made_at": "2026-07-23T18:35:18Z",
+    "push_sent_at": "2026-07-23T18:35:20Z",
+    "device_received_at": null,
+    "receipt_reported_at": null,
+    "delivery_status": "accepted_by_expo",
+    "delivery_error": null
+  },
+  {
+    "user_id": 103,
+    "participant_id": "P003",
+    "last_sync_at": "2026-07-23T17:45:00Z",
+    "decision_made_at": "2026-07-23T18:00:00Z",
+    "push_sent_at": "2026-07-23T18:00:02Z",
+    "device_received_at": null,
+    "receipt_reported_at": null,
+    "delivery_status": "received_on_device",
+    "delivery_error": "null"
+  },
+  {
+    "user_id": 104,
+    "participant_id": "P004",
+    "last_sync_at": null,
+    "decision_made_at": null,
+    "push_sent_at": null,
+    "device_received_at": null,
+    "receipt_reported_at": null,
+    "delivery_status": "not_sent",
+    "delivery_error": null
+  }
+]

@@ -7,29 +7,10 @@ Author: Celia Mercier
 import pandas as pd
 
 
-def merge_hr_to_prompts(ema_df, hr_df, hr_col="hr"):
-    if hr_col not in hr_df.columns:
-        raise ValueError(f"HR column '{hr_col}' not found in heart-rate data")
-
-    hr_cols = ["user_id", "timestamp", hr_col]
-    return ema_df.merge(hr_df[hr_cols], on=["user_id", "timestamp"], how="left")
-
-
-def add_hr_features(df):
-    df = df.copy()
-
-    if "hr" not in df.columns:
-        return df
-
-    df["baseline_hr"] = df.groupby("user_id")["hr"].transform("median")
-    df["hr_delta"] = df["hr"] - df["baseline_hr"]
-    df["hr_score"] = (df["hr_delta"] / 20.0).clip(lower=0).fillna(0.0)
-    df["adjusted_mssd"] = df["observed_mssd"] + df["hr_score"]
-
-    return df
-
-
 def calculate_mssd(df, window=3):
+    # Rolling window (default 3) gives a recency-weighted MSSD signal suitable
+    # for real-time triggering. Offline analysis using cumulative MSSD will
+    # produce different values; use JITAILog.observed_mssd as the audit source.
     df = df.copy()
     df = df.sort_values(["user_id", "timestamp"])
 
