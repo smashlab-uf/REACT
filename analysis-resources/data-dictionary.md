@@ -2,9 +2,12 @@
 
 Author: Tien Tyler Le
 
-Date: 08/13/2026
+Date: 08/20/2026
 
-[Github](https://github.com/Geaboi/HealthyGatorSportFan/tree/data-dictionary/analysis-plan)
+[Github](https://github.com/smashlab-uf/REACT/blob/data-analysis/analysis-resources/data-dictionary.md)
+
+The authoritative
+schema is `Resources/react_schema.csv`.
 
 This document defines every table and column used in the REACT / JITAI feasibility
 analysis so that **anyone** can understand
@@ -41,7 +44,7 @@ Database and modeling is based on Dustin's [Django model.](https://www.dropbox.c
 - **Study window:** ~35-day protocol (5 weeks). **Week 1 is a non-interventional run-in baseline** — no JITAI randomization; used exclusively to establish each participant's within-person MSSD threshold. Micro-randomization runs **Weeks 2–5**. **5–6 EMA check-ins per participant per day** (expected N ≈ 175–210 prompts/participant). Feasibility thresholds are calibrated from the synthetic sensitivity analysis. (`JITAI-analysis-plan.md`)
 - **Daily prompt cap:** Hard limit of **4 JITAI prompts per day** with a minimum **60-minute cooldown** between triggers (projected ~2–3 prompts delivered/day when eligible).
 - **Synthetic epoch:** synthetic cohorts start at **YYYY-MM-DD 00:00**; EMA and HR rows are at 1-minute frequency, HRV is one row per night. (`syntheticData/SCHEMA.md`)
-- **Authoritative schema:** this dictionary documents the **REACT analysis schema** (`analysis-plan/schema.md` + the current `syntheticData/db_seed.py`) ; the tables actually analyzed per `JITAI-analysis-plan.md`. The production Django backend (`HealthyGatorSportsFanDjango/app/models.py`) currently differs; those differences are catalogued in the [Schema reconciliation appendix](#appendix--schema-reconciliation--known-gaps). **No Django migrations exist yet for this schema** -- see the appendix.
+- **Authoritative schema:** this dictionary is kept in sync with `Resources/react_schema.csv` (machine-readable column definitions) and `Resources/Database Schema v4.pdf` (ERD). The production Django backend may differ; divergences are catalogued in the [Schema reconciliation appendix](#appendix--schema-reconciliation--known-gaps).
 - **Canonical prose definitions** live in `analysis-plan/Feasibility Definitions (2).docx` (binary; not reproduced here). This dictionary is intended to stay consistent with it.
 
 ---
@@ -52,10 +55,11 @@ Three data streams are collected during the study period:
 
 | Stream | Delivery mechanism | Tables |
 |--------|--------------------|--------|
-| **EMA survey responses** | Push notification to in-app survey | [`ema`](#22-ema), [`user`](#21-user) |
-| **JITAI interventions & engagement** | Decision engine + phone app | [`jitai_log`](#26-jitai_log), [`engagement_log`](#27-engagement_log), [`phone_telemetry`](#28-phone_telemetry) |
-| **Garmin wearable telemetry** | Labfront import | [`heart_rate_sample`](#23-heart_rate_sample), [`stress_sample`](#24-stress_sample), [`wearable_device`](#25-wearable_device) |
-| **Biomarker sub-study (Tier 2)** | Kertes Lab hair assay + Qualtrics hygiene intake | [`hair_sample`](#29-hair_sample), [`hair_hygiene_covariates`](#210-hair_hygiene_covariates) |
+| **EMA survey responses** | Push notification to in-app survey | [`ema`](#22-ema), [`ema_item_response`](#23-ema_item_response), [`user`](#21-user) |
+| **JITAI interventions & engagement** | Decision engine + phone app | [`jitai_log`](#28-jitai_log), [`engagement_log`](#29-engagement_log), [`phone_telemetry`](#210-phone_telemetry) |
+| **Garmin wearable telemetry** | Labfront import | [`heart_rate_sample`](#25-heart_rate_sample), [`stress_sample`](#26-stress_sample), [`wearable_device`](#27-wearable_device) |
+| **Study calendar** | Backend / admin | [`event_day`](#24-event_day) |
+| **Biomarker sub-study (Tier 2)** | Kertes Lab hair assay + Qualtrics hygiene intake | [`hair_sample`](#211-hair_sample), [`hair_hygiene_covariates`](#212-hair_hygiene_covariates) |
 
 ---
 
@@ -91,7 +95,7 @@ study management but shapes the meaning of every
 
 ## 2. Persisted tables (REACT analysis schema)
 
-Column names, types, and foreign keys follow `analysis-plan/schema.md`; meanings
+Column names, types, and foreign keys follow `Resources/react_schema.csv`; meanings
 are enriched from `JITAI-analysis-plan.md` and `syntheticData/db_seed.py`.
 
 ### 2.1 `user`
@@ -116,7 +120,9 @@ Participant record and enrollment status.
 One row per EMA prompt (delivered via push notification). A prompt is
 **completed** when all required items are submitted within the 60-minute response
 window; **responded (partial)** when ≥1 item is submitted in-window
-(`JITAI-analysis-plan.md:21-27`).
+(`JITAI-analysis-plan.md:21-27`). Per-item Likert responses are stored in
+[`ema_item_response`](#23-ema_item_response); the fields below are top-level
+prompt metadata.
 
 | Name | Type | Source stream | Meaning |
 |------|------|---------------|---------|
@@ -126,36 +132,53 @@ window; **responded (partial)** when ≥1 item is submitted in-window
 | `sent_at` | DATETIME | EMA push | When the prompt was delivered. |
 | `responded_at` | DATETIME | EMA push | When the participant submitted; NULL if unanswered. Response latency = `responded_at − sent_at`. |
 | `status` | VARCHAR(16) | EMA push | Response status, e.g. `completed`, `responded`, `not_responded` (seeder writes `completed`, `db_seed.py:231`). |
-| `mood` | SMALLINT | EMA push | Self-reported mood (Likert item). |
-| `stress` | SMALLINT | EMA push | Self-reported stress (Likert item). Not currently populated by the seeder (NULL, `db_seed.py:233`). |
-| `energy` | SMALLINT | EMA push | Self-reported energy (Likert item). Not currently populated by the seeder (NULL, `db_seed.py:234`). |
-| `high_arousal_anger` | SMALLINT | EMA push | Discrete affect: high-arousal anger (Likert). Maps to `high_arousal_anger` JITAI trigger tag. |
-| `high_arousal_anxiety` | SMALLINT | EMA push | Discrete affect: high-arousal anxiety (Likert). Maps to `high_arousal_anxiety` JITAI trigger tag. |
-| `low_mood_withdrawal` | SMALLINT | EMA push | Discrete affect: low mood / social withdrawal (Likert). Maps to `low_mood_withdrawal` JITAI trigger tag. |
+| `ema_type` | VARCHAR(32) | Decision engine | Prompt category, e.g. `jitai_triggered` vs `scheduled`. Determines which item blocks are presented. |
+| `source_jitai_log_id` | INT (FK → `jitai_log.id`, nullable) | Decision engine | The JITAI decision point that triggered this prompt, if applicable; NULL for scheduled check-ins. |
+| `outcome_window_start` | DATETIME | Decision engine | Start of the outcome measurement window for this prompt (used to identify post-JITAI EMA outcomes). |
+| `outcome_window_end` | DATETIME | Decision engine | End of the outcome measurement window. |
+| `expires_at` | DATETIME | EMA push | When the response window closes; typically `sent_at + 60 min`. Responses after this are out-of-window. |
+| `mood` | SMALLINT | EMA push | Top-level self-reported mood (Likert, 1–7). Denormalized summary field; detailed per-item responses are in `ema_item_response`. |
+| `stress` | SMALLINT | EMA push | Top-level self-reported stress (Likert, 1–7). |
+| `energy` | SMALLINT | EMA push | Top-level self-reported energy (Likert, 1–7). |
 
-**Domain rotation fields** — only the domain active in this prompt's rotation slot is non-NULL; all others are NULL.
+> **Scale note:** production `models.py` validates Likert items as **1–7**
+> (`MinValueValidator(1)`, `MaxValueValidator(7)`). The synthetic generator
+> produces values on a **1–5** scale. Confirm the deployed item scale against
+> the protocol before analysis. The JITAI trigger signal uses B1/B2 from
+> `ema_item_response.value_numeric`, not these top-level summary fields.
+
+### 2.3 `ema_item_response`
+
+One row per individual item response within an EMA prompt. This is the
+authoritative source for the JITAI trigger signal: `calculate_mssd()` in the
+decision engine reads `value_numeric` where `item_id = 'B1'` (energy) and
+`item_id = 'B2'` (stress). Do not use `ema.mood` for offline MSSD audit.
 
 | Name | Type | Source stream | Meaning |
 |------|------|---------------|---------|
-| `domain_eating` | SMALLINT | EMA push | Emotional / uncontrolled eating domain item; NULL if domain not active for this prompt. |
-| `domain_emotion_reg` | SMALLINT | EMA push | Emotion regulation strategies domain item; NULL if domain not active. |
-| `domain_alcohol` | SMALLINT | EMA push | Drinking motives / urges domain item; NULL if domain not active. |
-| `domain_online_activity` | SMALLINT | EMA push | Reactive posting / digital behavior domain item; NULL if domain not active. |
+| `id` | INT (PK) | EMA push | Primary key. |
+| `ema_id` | INT (FK → `ema.id`) | EMA push | Parent prompt. |
+| `item_id` | VARCHAR(8) | EMA push | Block identifier (e.g. `B1` = energy, `B2` = stress, `B3`–`B8` = other blocks). |
+| `sub_item_id` | VARCHAR(32) | EMA push | Specific sub-question within the block. **UNIQUE** with `ema_id` — the constraint is `UNIQUE(ema_id, sub_item_id)`, not `item_id`. |
+| `response_type` | VARCHAR(16) | EMA push | Item format: `likert` \| `single_choice` \| `multi_choice` \| `number` \| `yes_no`. |
+| `value_numeric` | INT | EMA push | Numeric response value (populated for `likert` and `number` items; NULL otherwise). Likert range: 1–7 in production. |
+| `value_choice` | VARCHAR(64) | EMA push | Single-choice response text; NULL if not applicable. |
+| `value_choices` | JSONB | EMA push | Multi-choice response array; NULL if not applicable. |
 
-**Context flags**
+### 2.4 `event_day`
+
+One row per study-calendar event (e.g. game day, bye week). Used by the prompt
+scheduler to adjust EMA timing and context, and by the JITAI engine to set
+game-day context for prompt selection.
 
 | Name | Type | Source stream | Meaning |
 |------|------|---------------|---------|
-| `is_morning_checkin` | BOOLEAN | EMA push | TRUE for the first check-in of each day; captures sleep quality and prior-evening recall. |
-| `is_game_day_context` | BOOLEAN | EMA push | TRUE on relevant sporting-event days; activates win/loss context and fandom items. |
-| `is_timelocked_outcome` | BOOLEAN | EMA push | TRUE if this check-in is the first prompt within 2 hours following a JITAI decision point; all 4 outcome domains are presented together in this window. |
+| `id` | INT (PK) | Study/enrollment | Primary key. |
+| `date` | DATE (UNIQUE) | Study/enrollment | The calendar date of the event. |
+| `sport` | VARCHAR(64) | Study/enrollment | Sport or event category (e.g. `football`, `basketball`). |
+| `description` | VARCHAR(128) | Study/enrollment | Human-readable label (e.g. `UF vs Georgia — home`). |
 
-> **Scale note:** the analysis schema stores these as `SMALLINT` (Likert items).
-> The synthetic generator produces mood on a **1–5** scale; the production
-> `models.py` `EMA` model validates **1–10**. Confirm the deployed item scale
-> against the protocol before analysis.
-
-### 2.3 `heart_rate_sample`
+### 2.5 `heart_rate_sample`
 
 Heart-rate samples imported from Garmin via Labfront.
 
@@ -167,7 +190,7 @@ Heart-rate samples imported from Garmin via Labfront.
 | `bpm` | SMALLINT | Labfront/Garmin | Heart rate in beats per minute. `0`/NULL ≈ **inferred non-wear** (no explicit wear flag -- see [collection caveats](#how-labfrontgarmin-data-is-actually-produced-collection-mechanics--caveats)). |
 | `source` | VARCHAR(32) | Labfront/Garmin | Import/provenance tag; seeder writes `garmin_labfront` (`db_seed.py:191`). |
 
-### 2.4 `stress_sample`
+### 2.6 `stress_sample`
 
 Garmin Stress Score time series imported from Labfront.
 
@@ -179,19 +202,19 @@ Garmin Stress Score time series imported from Labfront.
 | `stress_score` | SMALLINT | Labfront/Garmin | **Garmin proprietary stress score, 0–100**, derived from HRV by a black-box algorithm -- **not** raw and **not** a function of HR. Synthetic proxy only: `50 + (hr − 70) × 2` (`db_seed.py:208`). |
 | `source` | VARCHAR(32) | Labfront/Garmin | Import/provenance tag; seeder writes `garmin_labfront` (`db_seed.py:213`). |
 
-### 2.5 `wearable_device`
+### 2.7 `wearable_device`
 
 One device record per participant (the Garmin linked through Labfront).
 
 | Name | Type | Source stream | Meaning |
 |------|------|---------------|---------|
 | `id` | INT (PK) | Labfront/Garmin | Primary key. |
-| `user_id` | INT (FK → `user.user_id`) | Labfront/Garmin | Owner. |
+| `user_id` | INT (FK → `user.user_id`, UNIQUE) | Labfront/Garmin | Owner (one-to-one). |
 | `labfront_participant_id` | VARCHAR(64) | Labfront/Garmin | Labfront platform participant identifier (`labfront-<uuid[:8]>`, `db_seed.py:173`). |
 | `is_active` | BOOLEAN | Labfront/Garmin | Whether the device is active in the study. |
 | `last_synced_at` | DATETIME | Labfront/Garmin | Most recent successful sync. Flag as stale if > 24 h old; note the inherent 2–5 min sync latency. |
 
-### 2.6 `jitai_log`
+### 2.8 `jitai_log`
 
 One row per JITAI **decision point**. The decision is **two-stage**: (1) an
 **eligibility** check (`observed_mssd` crosses the participant's within-person
@@ -207,11 +230,11 @@ randomization_probability`). These stages must not be conflated in reporting.
 | `user_id` | INT (FK → `user.user_id`) | Decision engine | Participant. |
 | `prompt_id` | VARCHAR(64) | Decision engine | Prompt template evaluated. |
 | `triggered_at` | DATETIME | Decision engine | When the decision point was evaluated. |
-| `decision_point_id` | VARCHAR(64) | Decision engine | Unique ID for this decision point. |
+| `decision_point_id` | VARCHAR(64) | Decision engine | Unique ID for this decision point (UNIQUE constraint). |
 | `trigger_signal` | VARCHAR(32) | Decision engine | Signal that triggered evaluation (e.g. `mssd`). |
 | `trigger_reason` | VARCHAR(128) | Decision engine | Human-readable trigger explanation (documents both stages). |
 | `observed_mssd` | FLOAT | Decision engine | Within-person MSSD at decision time (see [§3](#3-derived--analysis-metrics)). |
-| `randomization_probability` | FLOAT | Decision engine | Configured P(send \| eligible), e.g. 0.7. |
+| `randomization_probability` | FLOAT | Decision engine | Configured P(send \| eligible). Fixed at **0.50** per PI sign-off 2026-07-06. |
 | `randomization_draw` | FLOAT | Decision engine | Uniform(0,1) draw; send if `< randomization_probability`. |
 | `send_prompt` | BOOLEAN | Decision engine | TRUE only if eligibility **and** randomization pass. |
 | `eligible_prompt_ids` | JSONB | Decision engine | Prompt IDs eligible at this decision point. |
@@ -241,18 +264,7 @@ randomization_probability`). These stages must not be conflated in reporting.
 | `delivery_status` | VARCHAR(32) | App telemetry | Push delivery outcome (`delivered`/`failed`). |
 | `delivery_error` | TEXT | App telemetry | Error message if delivery failed. |
 
-**Intervention message classification**
-
-The 26-message bank (P001–P026) plus 4 active controls (C001–C004) are classified by therapeutic technique and trigger context.
-
-| Name | Type | Source stream | Meaning |
-|------|------|---------------|---------|
-| `message_technique` | VARCHAR(32) | Decision engine | Therapeutic technique label. Values: `CBT: Thought record`, `CBT: Perspective-taking`, `CBT: Decatastrophizing`, `CBT: Cost-benefit check`, `CBT: Implementation intention`, `CBT: Behavioral redirect`, `ACT: Cognitive defusion`, `ACT: Acceptance`, `ACT: Values anchor`, `ACT: Urge surfing`, `ACT: Present-moment grounding`, `Active Control`. |
-| `trigger_context_tag` | VARCHAR(32) | Decision engine | Emotional / behavioral context that warranted the prompt. Values: `high_arousal_anger`, `high_arousal_anxiety`, `interpersonal_conflict`, `urge_craving`, `low_mood_withdrawal`, `general_stress`, `drinking_context`, `celebration`. |
-| `is_active_control` | BOOLEAN | Decision engine | TRUE if the assigned message is a neutral active-control message (C001–C004). |
-| `distress_override_active` | BOOLEAN | Decision engine | TRUE if normal prompt delivery was suspended and replaced by the emergency resource card due to a distress signal or safety alert. |
-
-### 2.7 `engagement_log`
+### 2.9 `engagement_log`
 
 User interactions with a delivered JITAI prompt.
 
@@ -265,7 +277,7 @@ User interactions with a delivered JITAI prompt.
 | `occurred_at` | DATETIME | App telemetry | When the interaction happened (device clock). |
 | `recorded_at` | DATETIME | App telemetry | When the event was persisted server-side. |
 
-### 2.8 `phone_telemetry`
+### 2.10 `phone_telemetry`
 
 Raw app-usage events for diagnostics and latency analysis.
 
@@ -281,9 +293,11 @@ Raw app-usage events for diagnostics and latency analysis.
 | `latency_ms` | INT | App telemetry | Event/interaction latency in milliseconds. |
 | `metadata` | JSONB | App telemetry | Free-form event payload. |
 
-### 2.9 `hair_sample`
+### 2.11 `hair_sample`
 
 One row per hair specimen collected during the enrollment visit (optional Tier 2 biomarker sub-study). Concentrations reflect cumulative steroid exposure over approximately the prior 1–3 months based on hair growth rate (~1 cm/month).
+
+> **Planned table** — not yet in production schema as of 2026-08-20. No Django migration exists.
 
 | Name | Type | Source stream | Meaning |
 |------|------|---------------|---------|
@@ -296,9 +310,11 @@ One row per hair specimen collected during the enrollment visit (optional Tier 2
 | `cortisol_pg_mg` | FLOAT | REACT-Bio Lab | Hair cortisol concentration (pg/mg); values should be log-transformed and winsorized before analysis. |
 | `testosterone_pg_mg` | FLOAT | REACT-Bio Lab | Hair testosterone concentration (pg/mg); values should be log-transformed and winsorized before analysis. |
 
-### 2.10 `hair_hygiene_covariates`
+### 2.12 `hair_hygiene_covariates`
 
 One row per participant capturing biological covariates required to interpret steroid assay concentrations. Collected via Qualtrics at the baseline/enrollment visit.
+
+> **Planned table** — not yet in production schema as of 2026-08-20. No Django migration exists.
 
 | Name | Type | Source stream | Meaning |
 |------|------|---------------|---------|
@@ -308,12 +324,14 @@ One row per participant capturing biological covariates required to interpret st
 | `hormonal_contraception` | BOOLEAN | Qualtrics / Baseline | Current use of hormonal contraceptives (affects cortisol and testosterone metabolism). |
 | `steroid_medications` | BOOLEAN | Qualtrics / Baseline | Current use of synthetic glucocorticoid or androgen medications. |
 
-### 2.11 Relationships (foreign keys)
+### 2.13 Relationships (foreign keys)
 
-- `wearable_device.user_id` → `user.user_id` (one-to-one / one-to-many)
+- `wearable_device.user_id` → `user.user_id` (one-to-one)
 - `heart_rate_sample.user_id` → `user.user_id` (many-to-one)
 - `stress_sample.user_id` → `user.user_id` (many-to-one)
 - `ema.user_id` → `user.user_id` (many-to-one)
+- `ema.source_jitai_log_id` → `jitai_log.id` (many-to-one, nullable)
+- `ema_item_response.ema_id` → `ema.id` (many-to-one); UNIQUE on `(ema_id, sub_item_id)`
 - `jitai_log.user_id` → `user.user_id` (many-to-one)
 - `jitai_log.ema_id` → `ema.id` (many-to-one)
 - `phone_telemetry.user_id` → `user.user_id` (many-to-one)
@@ -331,7 +349,7 @@ follow `JITAI-analysis-plan.md` and `syntheticData/decision/`.
 
 | Metric | Type | Definition / formula | Notes & benchmarks |
 |--------|------|----------------------|--------------------|
-| **Within-person MSSD** (`observed_mssd`) | FLOAT | Mean of squared successive differences: `mean((x_t − x_{t-1})²)` over **consecutive answered** EMA items. | The core JITAI trigger signal. Missing EMAs suppress the difference for both the missing observation and the immediately following prompt (`JITAI-analysis-plan.md:83`). |
+| **Within-person MSSD** (`observed_mssd`) | FLOAT | Mean of squared successive differences: `mean((x_t − x_{t-1})²)` over **consecutive answered** EMA items. | The core JITAI trigger signal. Input is `ema_item_response.value_numeric` where `item_id = 'B1'` (energy) or `'B2'` (stress). Missing EMAs suppress the difference for both the missing observation and the immediately following prompt. |
 | **Expected MSSD** | FLOAT | `2·σ²·(1−ρ)` from latent AR(1) parameters. | Ground-truth benchmark used to validate recovery (`syntheticData/SCHEMA.md`). |
 | **AR(1) ρ̂** (autocorrelation) | FLOAT | Lag-1 autocorrelation over consecutive answered EMA pairs. | Recovery **degrades below ~80%** response rate -- an analytic requirement, distinct from the 75% feasibility benchmark. |
 | **AR(1) σ̂** (residual SD) | FLOAT | Sample SD of demeaned answered EMA. | More robust than ρ̂ across response rates. |
@@ -411,9 +429,8 @@ summarized here.
 | Name | Type | Source stream | Meaning |
 |------|------|---------------|---------|
 | `observed_mssd` | float | Derived | Rolling MSSD estimate (volatility proxy). |
-| `adjusted_mssd` | float | Derived | `observed_mssd + hr_score` (arousal-adjusted). |
 | `user_threshold` | float | Derived | Within-person 80th-pct threshold (expanding, shifted). |
-| `send_prompt` | bool | Derived | Decision outcome. |
+| `send_prompt` | bool | Derived | Decision outcome (eligibility gate only; coin-flip randomization is applied in the Celery task layer). |
 | `decision_reason` | str | Derived | Rule that produced the decision (e.g. `prompt sent`, `below within-person threshold`, `cooldown active`, `daily cap reached`). |
 | `recovered_sigma` / `recovered_rho` | float | Derived | Per-user σ̂ / ρ̂ recovered from the realised EMA series. |
 | `sigma_recovery_pct` / `rho_recovery_pct` | float | Derived | `100 · recovered / true` (100% = perfect recovery). |
@@ -422,20 +439,19 @@ summarized here.
 
 ## Appendix : Schema reconciliation & known gaps
 
-The production Django backend (`HealthyGatorSportsFanDjango/app/models.py`,
-migrations through `0024_jitailog`) does **not** match the REACT analysis schema
-documented above. Analysts and backend engineers should be aware of these
-divergences.
+The production Django backend may not match the REACT analysis schema documented above.
+Analysts and backend engineers should be aware of these divergences. The authoritative
+schema is `Resources/react_schema.csv`.
 
 | REACT analysis schema (this doc) | Production `models.py` | Divergence |
 |----------------------------------|------------------------|------------|
 | `stress_sample` table | *(none)* | No `StressSample` model or migration exists in production. |
 | `heart_rate_sample.user_id` (FK → user), `source` | `HeartRateSample.device` (FK → `WearableDevice`), `zone` (out_of_range/fat_burn/cardio/peak) | Different parent (user vs device) and different columns (`source` vs `zone`). |
 | `wearable_device.labfront_participant_id` | `WearableDevice.fitbit_device_id`, `device_type`, `device_name`, `created_at` | Labfront vs Fitbit orientation; different identifier fields. |
-| `ema`: `prompt_id`, `sent_at`, `responded_at`, `status`; mood/stress/energy | `EMA`: `timestamp`, `physical_activity`, `weight_lbs`, `notes`; mood/energy/stress **1–10** | REACT tracks prompt lifecycle; production tracks richer self-report on a 1–10 scale. |
+| `ema`: `prompt_id`, `sent_at`, `responded_at`, `status`, `ema_type`, `expires_at`; mood/stress/energy **1–7** | `EMA`: `timestamp`, `physical_activity`, `weight_lbs`, `notes`; mood/energy/stress **1–7** | REACT tracks prompt lifecycle and type; production tracks richer self-report. |
 | `user.is_enrolled`, `enrolled_at` | *(none)* | Not present in production `User`. Production adds height/goal/Fitbit-token fields not used by the analysis. |
-| `jitai_log`: randomization + delivery-funnel columns (~28) | `JITAILog`: `title`, `message`, `volatility_score`, `threshold_used`, `prompt_status`, `prompt_count`, `opened_at`, `interacted_at` | Production is a simpler notification audit; REACT captures the full decision + delivery lifecycle. |
-| `phone_telemetry`, `engagement_log` tables | *(none)* | No production models. |
+| `jitai_log`: randomization + delivery-funnel columns (~27) | `JITAILog`: `title`, `message`, `volatility_score`, `threshold_used`, `prompt_status`, `prompt_count`, `opened_at`, `interacted_at` | Production is a simpler notification audit; REACT captures the full decision + delivery lifecycle. |
+| `phone_telemetry`, `engagement_log`, `ema_item_response`, `event_day` tables | *(none)* | No production models. |
 
 **Known gaps / follow-ups:**
 
@@ -445,6 +461,6 @@ divergences.
    against the committed backend until migrations are authored.
 2. **`syntheticData/SCHEMA.md` §4 is stale** and should be refreshed to match the
    current seeder (see [§4](#4-synthetic-generator-columns-provenance-for-seeded-data)).
-3. **EMA item scale** differs (synthetic 1–5 vs production 1–10 vs schema
-   `SMALLINT`); confirm the deployed scale against the study protocol / the
-   `Feasibility Definitions` document before analysis.
+3. **EMA item scale** — synthetic generator produces 1–5; production `models.py`
+   enforces **1–7** (`MinValueValidator(1)`, `MaxValueValidator(7)`). Confirm the
+   deployed scale against the study protocol before analysis.
