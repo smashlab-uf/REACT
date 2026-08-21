@@ -17,7 +17,9 @@ export function visibleSubItems(
   items: EMAItem[],
   answers: Record<string, EMAAnswerValue>,
 ): EMASubItem[] {
-  return items.flatMap((item) => item.sub_items.filter((sub) => isSubItemVisible(sub, answers)));
+  return items.flatMap((item) =>
+    (item.sub_items ?? []).filter((sub) => isSubItemVisible(sub, answers)),
+  );
 }
 
 export function isAnswered(value: EMAAnswerValue | undefined): boolean {
@@ -33,7 +35,7 @@ export function pruneHiddenAnswers(
 ): Record<string, EMAAnswerValue> {
   const next = { ...answers };
   for (const item of items) {
-    for (const sub of item.sub_items) {
+    for (const sub of item.sub_items ?? []) {
       if (!isSubItemVisible(sub, next)) {
         delete next[sub.sub_item_id];
       }

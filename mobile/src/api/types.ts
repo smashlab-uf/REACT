@@ -29,10 +29,6 @@ export type EMAItem = {
   item_id: string;
   title: string;
   sub_items: EMASubItem[];
-  label?: string;
-  response_type?: string;
-  min_value?: number;
-  max_value?: number;
 };
 
 export type EMANextShowResponse = {
@@ -62,8 +58,7 @@ export type EMANextNoShowResponse = {
 export type EMANextResponse = EMANextShowResponse | EMANextNoShowResponse;
 
 export type EMAAnswer = {
-  item_id?: string;
-  sub_item_id?: string;
+  sub_item_id: string;
   value: EMAAnswerValue;
 };
 
@@ -79,8 +74,8 @@ export type EMASubmitRequest = {
 export type EMAStoredAnswer = {
   id: number;
   item_id: string;
-  sub_item_id?: string;
-  response_type?: string;
+  sub_item_id: string;
+  response_type: string;
   value: EMAAnswerValue;
 };
 
