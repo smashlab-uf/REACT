@@ -86,6 +86,10 @@ react_db,public,phone_telemetry,recorded_at,6,DATETIME,,,,,
 react_db,public,phone_telemetry,screen_name,7,VARCHAR,64,,,,
 react_db,public,phone_telemetry,latency_ms,8,INT,,,,,
 react_db,public,phone_telemetry,metadata,9,JSONB,,,,,
+react_db,public,checkin_reminder,id,1,INT,8,PRIMARY KEY,,,
+react_db,public,checkin_reminder,user_id,2,INT,4,FOREIGN KEY,public,user,user_id
+react_db,public,checkin_reminder,sent_at,3,DATETIME,,,,,
+react_db,public,checkin_reminder,daily_count_at_send,4,SMALLINT,,,,,
 react_db,public,engagement_log,id,1,INT,8,PRIMARY KEY,,,
 react_db,public,engagement_log,user_id,2,INT,4,FOREIGN KEY,public,user,user_id
 react_db,public,engagement_log,jitai_log_id,3,INT,4,FOREIGN KEY,public,jitai_log,id

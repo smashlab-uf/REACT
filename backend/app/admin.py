@@ -1,7 +1,7 @@
 from django.contrib import admin
 
 from .models import (
-    EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog,
+    CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog,
     PhoneTelemetry, StressSample, User, WearableDevice,
 )
 
@@ -134,6 +134,15 @@ class EventDayAdmin(ReadableAdminMixin, admin.ModelAdmin):
     list_filter = ("sport",)
     search_fields = ("sport", "description")
     ordering = ("-date",)
+
+
+@admin.register(CheckinReminder)
+class CheckinReminderAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    list_display = ("user", "sent_at", "daily_count_at_send")
+    list_filter = ("sent_at",)
+    search_fields = ("user__email",)
+    ordering = ("-sent_at",)
+    autocomplete_fields = ("user",)
 
 
 @admin.register(JITAILog)

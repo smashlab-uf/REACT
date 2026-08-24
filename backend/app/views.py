@@ -579,20 +579,6 @@ class WearableDeviceView(APIView):
 class EMAView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def post(self, request):
-        app_user = _get_app_user(request)
-        if app_user is None:
-            return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
-        serializer = EMASerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        ema = serializer.save(user=app_user)
-        if ema.mood is not None and ema.stress is not None and ema.energy is not None:
-            ema.status = 'completed'
-            ema.responded_at = django_timezone.now()
-            ema.save(update_fields=['status', 'responded_at'])
-        return Response(EMASerializer(ema).data, status=status.HTTP_201_CREATED)
-
     def get(self, request, user_id):
         if not request.user.is_staff:
             app_user = _get_app_user(request)

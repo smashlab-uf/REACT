@@ -148,3 +148,45 @@ def send_jitai_prompt(user, jitai_log) -> bool:
 
     mark_delivery_failed(jitai_log, 'Expo push failed')
     return False
+
+
+def build_checkin_reminder_message(user) -> PushMessage:
+    # Unlike the JITAI push, this carries a visible title/body — it's a
+    # neutral scheduling nudge, not intervention content, so it isn't
+    # subject to the silent-push/no-message-text IRB constraint.
+    return PushMessage(
+        to=user.push_token,
+        title='REACT',
+        body='Time for your check-in.',
+        data={'type': 'checkin_reminder'},
+    )
+
+
+def send_checkin_reminder(user) -> bool:
+    if not is_valid_expo_push_token(user.push_token):
+        if user.push_token:
+            logger.warning(
+                "Invalid Expo push token for user_id=%s — clearing push_token",
+                user.user_id,
+            )
+            user.push_token = None
+            user.save(update_fields=['push_token'])
+        return False
+
+    message = build_checkin_reminder_message(user)
+    try:
+        response = PushClient().publish(message)
+        response.validate_response()
+        logger.info("Check-in reminder sent: user_id=%s", user.user_id)
+        return True
+    except DeviceNotRegisteredError:
+        logger.warning(
+            "Expo: device not registered for user_id=%s — clearing push_token",
+            user.user_id,
+        )
+        user.push_token = None
+        user.save(update_fields=['push_token'])
+        return False
+    except Exception as exc:
+        logger.warning("Check-in reminder push failed for user_id=%s: %s", user.user_id, exc)
+        return False

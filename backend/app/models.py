@@ -134,6 +134,23 @@ class EMAItemResponse(models.Model):
         return f"{self.sub_item_id} for EMA {self.ema_id}"
 
 
+class CheckinReminder(models.Model):
+    """A record that a 'time to check in' push was sent — distinct from EMA,
+    which only gets a row once the participant actually responds. Lets staff
+    tell 'we prompted them and they didn't respond' apart from 'we never
+    prompted them at all'."""
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    sent_at = models.DateTimeField(auto_now_add=True)
+    daily_count_at_send = models.PositiveSmallIntegerField()
+
+    class Meta:
+        ordering = ['-sent_at']
+
+    def __str__(self):
+        return f"Reminder for {self.user.email} at {self.sent_at}"
+
+
 class EventDay(models.Model):
     date = models.DateField(unique=True)
     sport = models.CharField(max_length=64, blank=True, default='')

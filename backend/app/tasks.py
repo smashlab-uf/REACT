@@ -1,17 +1,26 @@
 import logging
 import os
 import random
+from datetime import timedelta
 
 import pandas as pd
 from celery import shared_task
 from django.db import IntegrityError
 from django.db.models import Exists, OuterRef
+from django.utils import timezone as django_timezone
 
-from app.models import EMA, HeartRateSample, JITAILog, StressSample, User
-from app.notification_service import mark_delivery_failed, select_prompt, send_jitai_prompt
+from app.ema_catalog import EMA_DAILY_CHECK_IN_CAP
+from app.models import CheckinReminder, EMA, HeartRateSample, JITAILog, StressSample, User
+from app.notification_service import mark_delivery_failed, select_prompt, send_checkin_reminder, send_jitai_prompt
+from app.views import PARTICIPANT_TZ, _latest_active_jitai, _today_ema_count
 from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
 
 logger = logging.getLogger(__name__)
+
+# Placeholders pending Dr. Chang's confirmation — see Resources/TODO.docx.
+CHECKIN_REMINDER_COOLDOWN_MINUTES = 120
+CHECKIN_REMINDER_WINDOW_START_HOUR = 9
+CHECKIN_REMINDER_WINDOW_END_HOUR = 21
 
 
 @shared_task
@@ -177,3 +186,43 @@ def _evaluate_user(user, p):
                 user.user_id,
             )
             mark_delivery_failed(jitai_log, 'missing push token')
+
+
+@shared_task
+def send_checkin_reminders():
+    now = django_timezone.now()
+    participant_hour = now.astimezone(PARTICIPANT_TZ).hour
+    if not (CHECKIN_REMINDER_WINDOW_START_HOUR <= participant_hour < CHECKIN_REMINDER_WINDOW_END_HOUR):
+        return
+
+    enrolled_users = User.objects.filter(
+        is_enrolled=True,
+        wearabledevice__is_active=True,
+    )
+
+    for user in enrolled_users:
+        try:
+            _maybe_send_reminder(user, now)
+        except Exception:
+            logger.exception(
+                "send_checkin_reminders failed for user_id=%s", user.user_id
+            )
+
+
+def _maybe_send_reminder(user, now):
+    if not user.push_token:
+        return
+
+    if _latest_active_jitai(user) is not None:
+        return
+
+    daily_count = _today_ema_count(user)
+    if daily_count >= EMA_DAILY_CHECK_IN_CAP:
+        return
+
+    last_reminder = CheckinReminder.objects.filter(user=user).order_by('-sent_at').first()
+    if last_reminder and (now - last_reminder.sent_at) < timedelta(minutes=CHECKIN_REMINDER_COOLDOWN_MINUTES):
+        return
+
+    if send_checkin_reminder(user):
+        CheckinReminder.objects.create(user=user, daily_count_at_send=daily_count)
