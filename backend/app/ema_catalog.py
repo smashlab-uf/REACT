@@ -159,7 +159,13 @@ POST_PROMPT_ITEM_IDS = ['B1', 'B2', 'B4', 'B5', 'B6', 'B7']
 ROTATING_ITEM_IDS = ['B4', 'B5', 'B6', 'B7']
 EVENING_CHECK_IN_HOUR = 20
 AFTERNOON_START_HOUR = 12
-EMA_DAILY_CHECK_IN_CAP = 4
+
+# Two distinct caps, confirmed by Dr. Chang 2026-08-21 — do not merge them.
+# SCHEDULED governs the B1-B8 rotation check-ins spread through the day.
+# POST_PROMPT governs the JITAI-triggered outcome-window check-ins (both the
+# 'post_prompt' type and the inserted 'extra_check_in' type share this cap).
+SCHEDULED_CHECK_IN_DAILY_CAP = 6
+POST_PROMPT_CHECK_IN_DAILY_CAP = 4
 
 
 def ema_items(item_ids):

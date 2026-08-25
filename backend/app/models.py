@@ -142,6 +142,8 @@ class CheckinReminder(models.Model):
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     sent_at = models.DateTimeField(auto_now_add=True)
+    # Which of the day's fixed check-in slots (0-indexed) this reminder was
+    # for — one reminder per slot, at most, per Dr. Chang 2026-08-21.
     daily_count_at_send = models.PositiveSmallIntegerField()
 
     class Meta:

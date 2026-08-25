@@ -2114,6 +2114,11 @@ class SendJITAIPromptTests(TestCase):
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class SendCheckinRemindersTests(TestCase):
+    """6 fixed slots across the 9am-9pm Eastern notification window, 2 hours
+    apart: slot 0 = [9,11), 1 = [11,13), 2 = [13,15), 3 = [15,17), 4 = [17,19),
+    5 = [19,21). Each slot's reminder fires once, 30 min after it opens, and
+    lapses (no catch-up) once the slot's window closes. Confirmed by
+    Dr. Chang 2026-08-21."""
 
     def _make_enrolled_user(self, email='reminder@ufl.edu', push_token='ExponentPushToken[test123]'):
         user = make_user(email=email, push_token=push_token)
@@ -2122,32 +2127,30 @@ class SendCheckinRemindersTests(TestCase):
         WearableDevice.objects.create(user=user, labfront_participant_id=f'LF_{email}')
         return user
 
-    def _in_window_now(self):
-        return datetime(2026, 8, 20, 14, 0, 0, tzinfo=EASTERN)
-
-    def _out_of_window_now(self):
-        return datetime(2026, 8, 20, 3, 0, 0, tzinfo=EASTERN)
+    def _at(self, hour, minute=0):
+        return datetime(2026, 8, 20, hour, minute, 0, tzinfo=EASTERN)
 
     @patch('app.tasks.django_timezone.now')
     @patch('app.notification_service.PushClient')
-    def test_sends_reminder_and_logs_it(self, MockPushClient, mock_now):
+    def test_sends_reminder_for_due_slot_and_logs_it(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        mock_now.return_value = self._in_window_now()
+        mock_now.return_value = self._at(9, 35)  # 30 min after slot 0 opens
         MockPushClient.return_value.publish.return_value = MagicMock()
         user = self._make_enrolled_user()
 
         send_checkin_reminders()
 
-        self.assertEqual(CheckinReminder.objects.filter(user=user).count(), 1)
+        reminder = CheckinReminder.objects.get(user=user)
+        self.assertEqual(reminder.daily_count_at_send, 0)
         message = MockPushClient.return_value.publish.call_args[0][0]
         self.assertEqual(message.data['type'], 'checkin_reminder')
         self.assertEqual(message.title, 'REACT')
 
     @patch('app.tasks.django_timezone.now')
     @patch('app.notification_service.PushClient')
-    def test_skips_outside_waking_hours(self, MockPushClient, mock_now):
+    def test_skips_outside_notification_window(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        mock_now.return_value = self._out_of_window_now()
+        mock_now.return_value = self._at(3)
         user = self._make_enrolled_user()
 
         send_checkin_reminders()
@@ -2157,13 +2160,38 @@ class SendCheckinRemindersTests(TestCase):
 
     @patch('app.tasks.django_timezone.now')
     @patch('app.notification_service.PushClient')
-    def test_respects_cooldown(self, MockPushClient, mock_now):
+    def test_skips_slot_not_yet_due(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        now = self._in_window_now()
+        mock_now.return_value = self._at(9, 15)  # slot 0 open, but < 30 min in
+        user = self._make_enrolled_user()
+
+        send_checkin_reminders()
+
+        MockPushClient.return_value.publish.assert_not_called()
+        self.assertEqual(CheckinReminder.objects.filter(user=user).count(), 0)
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_skips_slot_already_completed(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        mock_now.return_value = self._at(9, 35)
+        user = self._make_enrolled_user()
+        ema = EMA.objects.create(user=user, prompt_id='p', ema_type='scheduled_check_in', status='completed')
+        EMA.objects.filter(pk=ema.pk).update(sent_at=self._at(9, 10))  # inside slot 0's window
+
+        send_checkin_reminders()
+
+        MockPushClient.return_value.publish.assert_not_called()
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_one_reminder_per_slot_no_repeat(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        now = self._at(9, 45)
         mock_now.return_value = now
         user = self._make_enrolled_user()
         reminder = CheckinReminder.objects.create(user=user, daily_count_at_send=0)
-        CheckinReminder.objects.filter(pk=reminder.pk).update(sent_at=now - timedelta(minutes=30))
+        CheckinReminder.objects.filter(pk=reminder.pk).update(sent_at=self._at(9, 35))
 
         send_checkin_reminders()
 
@@ -2172,29 +2200,12 @@ class SendCheckinRemindersTests(TestCase):
 
     @patch('app.tasks.django_timezone.now')
     @patch('app.notification_service.PushClient')
-    def test_sends_again_after_cooldown_elapses(self, MockPushClient, mock_now):
+    def test_reminder_lapses_after_slot_closes_no_catch_up(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        now = self._in_window_now()
-        mock_now.return_value = now
-        MockPushClient.return_value.publish.return_value = MagicMock()
+        # slot 0 closed at 11:00 with no reminder ever sent; slot 1's own
+        # window doesn't open until 11:30 — neither should fire at 11:05.
+        mock_now.return_value = self._at(11, 5)
         user = self._make_enrolled_user()
-        reminder = CheckinReminder.objects.create(user=user, daily_count_at_send=0)
-        CheckinReminder.objects.filter(pk=reminder.pk).update(sent_at=now - timedelta(minutes=121))
-
-        send_checkin_reminders()
-
-        self.assertEqual(CheckinReminder.objects.filter(user=user).count(), 2)
-
-    @patch('app.tasks.django_timezone.now')
-    @patch('app.notification_service.PushClient')
-    def test_skips_when_daily_cap_reached(self, MockPushClient, mock_now):
-        from app.tasks import send_checkin_reminders
-        now = self._in_window_now()
-        mock_now.return_value = now
-        user = self._make_enrolled_user()
-        for i in range(4):
-            ema = EMA.objects.create(user=user, prompt_id=f'p{i}', status='completed')
-            EMA.objects.filter(pk=ema.pk).update(sent_at=now)
 
         send_checkin_reminders()
 
@@ -2202,9 +2213,22 @@ class SendCheckinRemindersTests(TestCase):
 
     @patch('app.tasks.django_timezone.now')
     @patch('app.notification_service.PushClient')
+    def test_later_slot_reminds_independently_of_a_missed_earlier_one(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        mock_now.return_value = self._at(11, 35)  # slot 0 lapsed, slot 1 now due
+        MockPushClient.return_value.publish.return_value = MagicMock()
+        user = self._make_enrolled_user()
+
+        send_checkin_reminders()
+
+        reminder = CheckinReminder.objects.get(user=user)
+        self.assertEqual(reminder.daily_count_at_send, 1)
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
     def test_skips_during_active_jitai_outcome_window(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        now = self._in_window_now()
+        now = self._at(9, 35)
         mock_now.return_value = now
         user = self._make_enrolled_user()
         JITAILog.objects.create(
@@ -2220,7 +2244,7 @@ class SendCheckinRemindersTests(TestCase):
     @patch('app.notification_service.PushClient')
     def test_skips_without_push_token(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        mock_now.return_value = self._in_window_now()
+        mock_now.return_value = self._at(9, 35)
         self._make_enrolled_user(push_token='')
 
         send_checkin_reminders()
@@ -2231,7 +2255,7 @@ class SendCheckinRemindersTests(TestCase):
     @patch('app.notification_service.PushClient')
     def test_failed_send_does_not_log_reminder(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        mock_now.return_value = self._in_window_now()
+        mock_now.return_value = self._at(9, 35)
         MockPushClient.return_value.publish.side_effect = Exception('network error')
         user = self._make_enrolled_user()
 

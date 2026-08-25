@@ -7,10 +7,11 @@ from django.shortcuts import render
 from django.db.models import Count, OuterRef, Subquery
 from .ema_catalog import (
     AFTERNOON_START_HOUR,
-    EMA_DAILY_CHECK_IN_CAP,
     EVENING_CHECK_IN_HOUR,
+    POST_PROMPT_CHECK_IN_DAILY_CAP,
     POST_PROMPT_ITEM_IDS,
     ROTATING_ITEM_IDS,
+    SCHEDULED_CHECK_IN_DAILY_CAP,
     ema_items,
 )
 from .models import (
@@ -93,10 +94,21 @@ def _participant_day_bounds(now):
     return day_start, day_start + timedelta(days=1)
 
 
-def _today_ema_count(user):
-    now = django_timezone.now()
+def _today_scheduled_check_in_count(user, now=None):
+    now = now or django_timezone.now()
     day_start, day_end = _participant_day_bounds(now)
-    return EMA.objects.filter(user=user, sent_at__gte=day_start, sent_at__lt=day_end).count()
+    return EMA.objects.filter(
+        user=user, ema_type='scheduled_check_in', sent_at__gte=day_start, sent_at__lt=day_end,
+    ).count()
+
+
+def _today_post_prompt_count(user, now=None):
+    now = now or django_timezone.now()
+    day_start, day_end = _participant_day_bounds(now)
+    return EMA.objects.filter(
+        user=user, ema_type__in=['post_prompt', 'extra_check_in'],
+        sent_at__gte=day_start, sent_at__lt=day_end,
+    ).count()
 
 
 def _has_event_today(now):
@@ -598,7 +610,6 @@ class EMANextView(APIView):
 
         now = django_timezone.now()
         active_jitai = _latest_active_jitai(app_user)
-        daily_count = _today_ema_count(app_user)
 
         if active_jitai is not None:
             outcome_start = active_jitai.push_sent_at
@@ -617,16 +628,17 @@ class EMANextView(APIView):
                     'outcome_window_end': outcome_end,
                 })
 
-            ema_type = 'post_prompt' if daily_count < EMA_DAILY_CHECK_IN_CAP else 'extra_check_in'
-            if daily_count >= EMA_DAILY_CHECK_IN_CAP:
+            post_prompt_count = _today_post_prompt_count(app_user, now)
+            ema_type = 'post_prompt' if post_prompt_count < POST_PROMPT_CHECK_IN_DAILY_CAP else 'extra_check_in'
+            if post_prompt_count >= POST_PROMPT_CHECK_IN_DAILY_CAP:
                 return Response({
                     'should_show': False,
                     'reason': 'daily_cap_reached',
                     'outcome_window_active': True,
                     'outcome_window_start': outcome_start,
                     'outcome_window_end': outcome_end,
-                    'daily_cap': EMA_DAILY_CHECK_IN_CAP,
-                    'daily_count': daily_count,
+                    'daily_cap': POST_PROMPT_CHECK_IN_DAILY_CAP,
+                    'daily_count': post_prompt_count,
                 })
 
             return Response({
@@ -638,23 +650,24 @@ class EMANextView(APIView):
                 'outcome_window_start': outcome_start,
                 'outcome_window_end': outcome_end,
                 'expires_at': outcome_end,
-                'daily_cap': EMA_DAILY_CHECK_IN_CAP,
-                'daily_count': daily_count,
+                'daily_cap': POST_PROMPT_CHECK_IN_DAILY_CAP,
+                'daily_count': post_prompt_count,
                 'items': _filter_conditional_sub_items(
                     _ema_items(POST_PROMPT_ITEM_IDS), _satisfied_schedule_conditions(app_user, now)
                 ),
             })
 
-        if daily_count >= EMA_DAILY_CHECK_IN_CAP:
+        scheduled_count = _today_scheduled_check_in_count(app_user, now)
+        if scheduled_count >= SCHEDULED_CHECK_IN_DAILY_CAP:
             return Response({
                 'should_show': False,
                 'reason': 'daily_cap_reached',
                 'outcome_window_active': False,
-                'daily_cap': EMA_DAILY_CHECK_IN_CAP,
-                'daily_count': daily_count,
+                'daily_cap': SCHEDULED_CHECK_IN_DAILY_CAP,
+                'daily_count': scheduled_count,
             })
 
-        item_ids = _select_scheduled_items(app_user, now, daily_count)
+        item_ids = _select_scheduled_items(app_user, now, scheduled_count)
         return Response({
             'should_show': True,
             'prompt_id': f'EMA-{app_user.user_id}-{now.strftime("%Y%m%d%H%M%S")}',
@@ -662,8 +675,8 @@ class EMANextView(APIView):
             'jitai_log_id': None,
             'outcome_window_active': False,
             'expires_at': now + timedelta(hours=OUTCOME_WINDOW_HOURS),
-            'daily_cap': EMA_DAILY_CHECK_IN_CAP,
-            'daily_count': daily_count,
+            'daily_cap': SCHEDULED_CHECK_IN_DAILY_CAP,
+            'daily_count': scheduled_count,
             'items': _filter_conditional_sub_items(
                 _ema_items(item_ids), _satisfied_schedule_conditions(app_user, now)
             ),
