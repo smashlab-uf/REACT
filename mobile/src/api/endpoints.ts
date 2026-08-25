@@ -14,11 +14,6 @@ export const auth = {
     last_name?: string;
     birthdate?: string;
     gender?: 'male' | 'female' | 'other';
-    height_feet?: string;
-    height_inches?: string;
-    goal_weight?: number;
-    goal_to_lose_weight?: boolean;
-    goal_to_feel_better?: boolean;
   }) => client.post('/user/', body),
 
   login: (email: string, password: string) =>
@@ -38,9 +33,8 @@ export const user = {
     push_token?: string;
     first_name?: string;
     last_name?: string;
-    height_feet?: string;
-    height_inches?: string;
-    goal_weight?: number;
+    birthdate?: string;
+    gender?: 'male' | 'female' | 'other';
   }) => client.put(`/user/${userId}/`, body),
 };
 
@@ -80,16 +74,15 @@ export const jitai = {
 
 export const telemetry = {
   logPhone: (body: {
-    user: number | null;
     session_id: string;
     event_type: 'session_start' | 'session_end' | 'draft_started' | 'draft_deleted' | 'draft_submitted';
     occurred_at: string;
     screen_name?: string;
+    latency_ms?: number;
     metadata?: Record<string, unknown>;
   }) => client.post('/telemetry/phone/', body),
 
   logEngagement: (body: {
-    user: number;
     event_type: 'notification_tapped' | 'notification_dismissed' | 'ema_opened' | 'ema_dismissed' | 'ema_completed';
     occurred_at: string;
     jitai_log?: number;

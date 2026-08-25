@@ -63,7 +63,6 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
       const linked = logId ?? jitaiLogId;
       telemetry
         .logEngagement({
-          user: userId,
           event_type,
           occurred_at: new Date().toISOString(),
           ...(linked !== undefined && linked !== null && { jitai_log: linked }),

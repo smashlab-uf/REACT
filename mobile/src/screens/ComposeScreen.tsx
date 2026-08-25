@@ -42,13 +42,29 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
         content: {
           title: 'Check-in',
           body: 'Tap to respond',
-          data: { jitai_log_id: res.data.id, type: 'ema_prompt' },
+          data: { jitai_log_id: res.data.id, type: 'ema_prompt', prompt_id: `PROMPT-SIM-${Date.now()}` },
         },
         trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 3 },
       });
     } catch (e: any) {
       log('[SimPush] failed:', e?.response?.status ?? e?.message);
       Alert.alert('Simulate failed', String(e?.response?.status ?? e?.message));
+    }
+  }
+
+  async function simulateCheckinReminder() {
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: 'REACT',
+          body: 'Time for your check-in.',
+          data: { type: 'checkin_reminder' },
+        },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 3 },
+      });
+    } catch (e: any) {
+      log('[SimReminder] failed:', e?.message);
+      Alert.alert('Simulate failed', String(e?.message ?? 'Could not schedule reminder'));
     }
   }
 
@@ -87,6 +103,9 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
           </TouchableOpacity>
           <TouchableOpacity style={styles.devBtn} onPress={simulateJitaiPush}>
             <Text style={styles.devBtnText}>Simulate JITAI push (dev)</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.devBtn} onPress={simulateCheckinReminder}>
+            <Text style={styles.devBtnText}>Simulate check-in reminder (dev)</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -169,9 +188,11 @@ const styles = StyleSheet.create({
   },
   devRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 16,
+    gap: 12,
+    paddingHorizontal: 12,
     marginBottom: 4,
   },
   devBtn: {
