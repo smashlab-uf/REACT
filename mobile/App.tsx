@@ -97,7 +97,6 @@ export default function App() {
       reportReceipt(parsed.jitaiLogId, appState);
 
       telemetry.logEngagement({
-        user: userId,
         event_type: 'notification_tapped',
         occurred_at: new Date().toISOString(),
         ...(parsed.jitaiLogId !== undefined && { jitai_log: parsed.jitaiLogId }),
