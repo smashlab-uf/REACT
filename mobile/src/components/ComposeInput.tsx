@@ -40,5 +40,10 @@ const styles = StyleSheet.create({
     color: '#000',
     textAlignVertical: 'top',
     padding: 12,
+    marginHorizontal: 16,
+    marginVertical: 12,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 10,
   },
 });
