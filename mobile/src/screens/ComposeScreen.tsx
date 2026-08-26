@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import {
   Alert,
+  Keyboard,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View,
 } from 'react-native';
 import * as Notifications from 'expo-notifications';
@@ -85,6 +87,7 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
   }
 
   return (
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
     <View style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity style={styles.deleteBtn} onPress={handleDelete}>
@@ -146,6 +149,7 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
         </TouchableOpacity>
       </View>
     </View>
+    </TouchableWithoutFeedback>
   );
 }
 
