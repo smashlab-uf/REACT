@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, View } from 'react-native';
+import { ActivityIndicator, AppState, Platform, View } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { useAuthStore } from './src/store/authStore';
 import LoginScreen from './src/screens/LoginScreen';
@@ -8,6 +8,7 @@ import ComposeScreen from './src/screens/ComposeScreen';
 import EMAScreen from './src/screens/EMAScreen';
 import { flushQueue, startNetworkListener } from './src/telemetry/offlineQueue';
 import { registerForPushNotifications } from './src/notifications/pushToken';
+import { parsePushData, shouldOpenEMA } from './src/notifications/payload';
 import { jitai, user as userApi, telemetry } from './src/api/endpoints';
 import NotificationToast from './src/components/NotificationToast';
 import { log } from './src/utils/logger';
@@ -24,6 +25,9 @@ Notifications.setNotificationHandler({
 
 type Screen = 'login' | 'register' | 'app';
 type ActiveEMA = { jitaiLogId?: number };
+type ReceiptAppState = 'foreground' | 'background' | 'killed';
+
+const COLD_START_MAX_AGE_MS = 120000;
 
 export default function App() {
   const { isAuthenticated, isLoading, restoreSession, userId } = useAuthStore();
@@ -60,43 +64,42 @@ export default function App() {
       }
     });
 
-    const foregroundSub = Notifications.addNotificationReceivedListener((notification) => {
-      const title = notification.request.content.title ?? 'Notification';
-      const body = notification.request.content.body ?? '';
-      const data = notification.request.content.data as Record<string, unknown>;
-      log('[Push] Received in foreground:', JSON.stringify(data));
+    const reportedReceipts = new Set<number>();
+    const handledTaps = new Set<string>();
 
-      const rawJitaiLogId = data.jitai_log_id;
-      const jitaiLogId = typeof rawJitaiLogId === 'number'
-        ? rawJitaiLogId
-        : typeof rawJitaiLogId === 'string'
-          ? Number(rawJitaiLogId)
-          : undefined;
+    function reportReceipt(jitaiLogId: number | undefined, appState: ReceiptAppState) {
+      if (jitaiLogId === undefined || reportedReceipts.has(jitaiLogId)) return;
+      reportedReceipts.add(jitaiLogId);
+      jitai.receipt({
+        jitai_log_id: jitaiLogId,
+        device_received_at: new Date().toISOString(),
+        platform: Platform.OS,
+        app_state: appState,
+      }).catch((e) => {
+        log('[Push] Receipt log failed:', e?.response?.status ?? e?.message);
+      });
+    }
 
-      if (jitaiLogId !== undefined && Number.isFinite(jitaiLogId)) {
-        jitai.receipt({
-          jitai_log_id: jitaiLogId,
-          device_received_at: new Date().toISOString(),
-          platform: Platform.OS,
-          app_state: 'foreground',
-        }).catch((e) => {
-          log('[Push] Receipt log failed:', e?.response?.status ?? e?.message);
-        });
-      }
+    function openFromPush(parsed: ReturnType<typeof parsePushData>) {
+      if (!shouldOpenEMA(parsed.type)) return;
+      setActiveEMA({ jitaiLogId: parsed.jitaiLogId });
+    }
 
-      showToast(`📩 ${title}${body ? ': ' + body : ''}`);
-    });
+    function onTapped(response: Notifications.NotificationResponse, appState: ReceiptAppState) {
+      const identifier = response.notification.request.identifier;
+      if (handledTaps.has(identifier)) return;
+      handledTaps.add(identifier);
 
-    const tapSub = Notifications.addNotificationResponseReceivedListener((response) => {
       const data = response.notification.request.content.data as Record<string, unknown>;
+      const parsed = parsePushData(data);
       log('[Push] Tapped:', JSON.stringify(data));
 
-      const jitaiLogId = data.jitai_log_id as number | undefined;
+      reportReceipt(parsed.jitaiLogId, appState);
+
       telemetry.logEngagement({
-        user: userId,
         event_type: 'notification_tapped',
         occurred_at: new Date().toISOString(),
-        ...(jitaiLogId !== undefined && { jitai_log: jitaiLogId }),
+        ...(parsed.jitaiLogId !== undefined && { jitai_log: parsed.jitaiLogId }),
       }).then(() => {
         showToast('✅ Engagement logged to backend');
       }).catch((e) => {
@@ -104,9 +107,38 @@ export default function App() {
         log('[Push] Engagement log failed:', e?.response?.status);
       });
 
-      if (data.type === 'ema_prompt') {
-        setActiveEMA({ jitaiLogId });
+      openFromPush(parsed);
+    }
+
+    const foregroundSub = Notifications.addNotificationReceivedListener((notification) => {
+      const content = notification.request.content;
+      const data = content.data as Record<string, unknown>;
+      const parsed = parsePushData(data);
+      log('[Push] Received in foreground:', JSON.stringify(data));
+
+      reportReceipt(parsed.jitaiLogId, 'foreground');
+
+      if (parsed.type === 'checkin_reminder') {
+        const title = content.title ?? 'REACT';
+        const body = content.body ?? 'Time for your check-in.';
+        showToast(`📩 ${title}${body ? ': ' + body : ''}`);
       }
+
+      openFromPush(parsed);
+    });
+
+    const tapSub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const appState: ReceiptAppState =
+        AppState.currentState === 'active' ? 'foreground' : 'background';
+      onTapped(response, appState);
+    });
+
+    Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (!response) return;
+      if (!isRecentNotification(response.notification)) return;
+      onTapped(response, 'killed');
+    }).catch((e) => {
+      log('[Push] Last notification response failed:', e?.message);
     });
 
     return () => {
@@ -141,4 +173,11 @@ export default function App() {
       />
     </View>
   );
+}
+
+function isRecentNotification(notification: Notifications.Notification) {
+  const raw = notification.date;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return true;
+  const ms = raw < 1e12 ? raw * 1000 : raw;
+  return Date.now() - ms < COLD_START_MAX_AGE_MS;
 }

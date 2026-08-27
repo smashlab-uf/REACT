@@ -33,7 +33,13 @@ export async function flushQueue(): Promise<void> {
 
     for (const event of queue) {
       try {
-        await telemetry.logPhone(event);
+        await telemetry.logPhone({
+          session_id: event.session_id,
+          event_type: event.event_type,
+          occurred_at: event.occurred_at,
+          screen_name: event.screen_name,
+          metadata: event.metadata,
+        });
       } catch (e) {
         log('[OfflineQueue] Event failed, keeping:', (e as any)?.message);
         failed.push(event);

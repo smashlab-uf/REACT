@@ -16,7 +16,7 @@ def eastern_today():
     return timezone.now().astimezone(EASTERN).date()
 
 from app.models import (
-    EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog, PhoneTelemetry,
+    CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog, PhoneTelemetry,
     StressSample, User, WearableDevice,
 )
 from app.serializers import (
@@ -1220,47 +1220,6 @@ class EMAEndpointTests(TestCase):
         self.user = make_user(email='ema@ufl.edu')
         self.client = authenticated_client(self.user)
 
-    def test_post_creates_ema_and_returns_201(self):
-        response = self.client.post('/ema/', {
-            'user': self.user.user_id,
-            'prompt_id': 'EMA_TEMPLATE_01',
-            'mood': 5,
-            'stress': 3,
-            'energy': 6,
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        self.assertTrue(EMA.objects.filter(user=self.user).exists())
-
-    def test_post_with_likert_responses_sets_completed_and_responded_at(self):
-        response = self.client.post('/ema/', {
-            'user': self.user.user_id,
-            'prompt_id': 'EMA_TEMPLATE_01',
-            'mood': 4,
-            'stress': 2,
-            'energy': 7,
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        ema = EMA.objects.get(user=self.user)
-        self.assertEqual(ema.status, 'completed')
-        self.assertIsNotNone(ema.responded_at)
-
-    def test_post_without_likert_responses_leaves_status_pending(self):
-        response = self.client.post('/ema/', {
-            'user': self.user.user_id,
-            'prompt_id': 'EMA_TEMPLATE_01',
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        ema = EMA.objects.get(user=self.user)
-        self.assertEqual(ema.status, 'pending')
-        self.assertIsNone(ema.responded_at)
-
-    def test_post_without_auth_returns_401(self):
-        response = APIClient().post('/ema/', {
-            'user': self.user.user_id,
-            'prompt_id': 'EMA_TEMPLATE_01',
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
-
     def test_get_returns_ema_history_for_user(self):
         EMA.objects.create(user=self.user, prompt_id='P1', mood=5, stress=3, energy=4)
         EMA.objects.create(user=self.user, prompt_id='P2', mood=3, stress=6, energy=2)
@@ -1719,60 +1678,6 @@ class EMASerializerLikertValidationTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Ownership: EMA user derived from JWT, not body
-# ---------------------------------------------------------------------------
-
-@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class EMAOwnershipAndReadOnlyTests(TestCase):
-
-    def setUp(self):
-        self.user = make_user(email='ema_own@ufl.edu')
-        self.other = make_user(email='ema_other@ufl.edu')
-        self.client = authenticated_client(self.user)
-
-    def test_user_derived_from_token_not_body(self):
-        response = self.client.post('/ema/', {
-            'user': self.other.user_id,
-            'prompt_id': 'ema_v1',
-            'mood': 5,
-            'stress': 3,
-            'energy': 6,
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        ema = EMA.objects.get(id=response.data['id'])
-        self.assertEqual(ema.user, self.user)
-
-    def test_post_without_user_in_body_succeeds(self):
-        response = self.client.post('/ema/', {
-            'prompt_id': 'ema_v1',
-            'mood': 5,
-            'stress': 3,
-            'energy': 6,
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        self.assertEqual(response.data['user'], self.user.user_id)
-
-    def test_cannot_override_status_via_body(self):
-        response = self.client.post('/ema/', {
-            'prompt_id': 'ema_v1',
-            'status': 'expired',
-            'mood': 5,
-            'stress': 3,
-            'energy': 4,
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        self.assertEqual(response.data['status'], 'completed')
-
-    def test_cannot_override_responded_at_via_body(self):
-        response = self.client.post('/ema/', {
-            'prompt_id': 'ema_v1',
-            'responded_at': '2020-01-01T00:00:00Z',
-        }, format='json')
-        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
-        self.assertIsNone(response.data['responded_at'])
-
-
-# ---------------------------------------------------------------------------
 # Ownership: PhoneTelemetry user derived from JWT, not body
 # ---------------------------------------------------------------------------
 
@@ -1872,6 +1777,10 @@ class LegacyRouteTests(TestCase):
 
     def test_schedule_tile_is_gone(self):
         response = self.client.get('/schedule-tile/')
+        self.assertEqual(response.status_code, 404)
+
+    def test_post_ema_is_gone(self):
+        response = self.client.post('/ema/', {'prompt_id': 'x', 'mood': 5}, format='json')
         self.assertEqual(response.status_code, 404)
 
     def test_auth_refresh_alias_is_gone(self):
@@ -2234,6 +2143,138 @@ class SendJITAIPromptTests(TestCase):
         self.assertEqual(log.status, 'failed')
         self.assertEqual(log.delivery_status, 'failed')
         self.assertEqual(log.delivery_error, 'network error')
+
+
+# ---------------------------------------------------------------------------
+# Task: send_checkin_reminders
+# ---------------------------------------------------------------------------
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class SendCheckinRemindersTests(TestCase):
+
+    def _make_enrolled_user(self, email='reminder@ufl.edu', push_token='ExponentPushToken[test123]'):
+        user = make_user(email=email, push_token=push_token)
+        user.is_enrolled = True
+        user.save()
+        WearableDevice.objects.create(user=user, labfront_participant_id=f'LF_{email}')
+        return user
+
+    def _in_window_now(self):
+        return datetime(2026, 8, 20, 14, 0, 0, tzinfo=EASTERN)
+
+    def _out_of_window_now(self):
+        return datetime(2026, 8, 20, 3, 0, 0, tzinfo=EASTERN)
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_sends_reminder_and_logs_it(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        mock_now.return_value = self._in_window_now()
+        MockPushClient.return_value.publish.return_value = MagicMock()
+        user = self._make_enrolled_user()
+
+        send_checkin_reminders()
+
+        self.assertEqual(CheckinReminder.objects.filter(user=user).count(), 1)
+        message = MockPushClient.return_value.publish.call_args[0][0]
+        self.assertEqual(message.data['type'], 'checkin_reminder')
+        self.assertEqual(message.title, 'REACT')
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_skips_outside_waking_hours(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        mock_now.return_value = self._out_of_window_now()
+        user = self._make_enrolled_user()
+
+        send_checkin_reminders()
+
+        MockPushClient.return_value.publish.assert_not_called()
+        self.assertEqual(CheckinReminder.objects.filter(user=user).count(), 0)
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_respects_cooldown(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        now = self._in_window_now()
+        mock_now.return_value = now
+        user = self._make_enrolled_user()
+        reminder = CheckinReminder.objects.create(user=user, daily_count_at_send=0)
+        CheckinReminder.objects.filter(pk=reminder.pk).update(sent_at=now - timedelta(minutes=30))
+
+        send_checkin_reminders()
+
+        MockPushClient.return_value.publish.assert_not_called()
+        self.assertEqual(CheckinReminder.objects.filter(user=user).count(), 1)
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_sends_again_after_cooldown_elapses(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        now = self._in_window_now()
+        mock_now.return_value = now
+        MockPushClient.return_value.publish.return_value = MagicMock()
+        user = self._make_enrolled_user()
+        reminder = CheckinReminder.objects.create(user=user, daily_count_at_send=0)
+        CheckinReminder.objects.filter(pk=reminder.pk).update(sent_at=now - timedelta(minutes=121))
+
+        send_checkin_reminders()
+
+        self.assertEqual(CheckinReminder.objects.filter(user=user).count(), 2)
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_skips_when_daily_cap_reached(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        now = self._in_window_now()
+        mock_now.return_value = now
+        user = self._make_enrolled_user()
+        for i in range(4):
+            ema = EMA.objects.create(user=user, prompt_id=f'p{i}', status='completed')
+            EMA.objects.filter(pk=ema.pk).update(sent_at=now)
+
+        send_checkin_reminders()
+
+        MockPushClient.return_value.publish.assert_not_called()
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_skips_during_active_jitai_outcome_window(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        now = self._in_window_now()
+        mock_now.return_value = now
+        user = self._make_enrolled_user()
+        JITAILog.objects.create(
+            user=user, prompt_id='p', trigger_reason='t',
+            push_sent_at=now - timedelta(minutes=10), send_prompt=True,
+        )
+
+        send_checkin_reminders()
+
+        MockPushClient.return_value.publish.assert_not_called()
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_skips_without_push_token(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        mock_now.return_value = self._in_window_now()
+        self._make_enrolled_user(push_token='')
+
+        send_checkin_reminders()
+
+        MockPushClient.return_value.publish.assert_not_called()
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_failed_send_does_not_log_reminder(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        mock_now.return_value = self._in_window_now()
+        MockPushClient.return_value.publish.side_effect = Exception('network error')
+        user = self._make_enrolled_user()
+
+        send_checkin_reminders()
+
+        self.assertEqual(CheckinReminder.objects.filter(user=user).count(), 0)
 
 
 # ---------------------------------------------------------------------------

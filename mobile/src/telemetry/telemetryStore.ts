@@ -25,7 +25,13 @@ export const useTelemetryStore = create<TelemetryStore>((set, get) => ({
     log('[Telemetry]', JSON.stringify(event, null, 2));
     set((state) => ({ events: [...state.events, event] }));
 
-    telemetry.logPhone(event).catch((e) => {
+    telemetry.logPhone({
+      session_id: event.session_id,
+      event_type: event.event_type,
+      occurred_at: event.occurred_at,
+      screen_name: event.screen_name,
+      metadata: event.metadata,
+    }).catch((e) => {
       log('[Telemetry] API error, queuing offline:', e?.response?.status, e?.message);
       enqueue(event);
     });

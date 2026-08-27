@@ -49,7 +49,6 @@ urlpatterns = [
     path('user/checkemail/', CheckEmailView.as_view(), name='check-user-email'),
     path('wearable/', WearableDeviceView.as_view(), name='wearable-create'),
     path('wearable/<int:user_id>/', WearableDeviceView.as_view(), name='wearable-detail'),
-    path('ema/', EMAView.as_view(), name='ema-create'),
     path('ema/next/', EMANextView.as_view(), name='ema-next'),
     path('ema/responses/', EMAResponseView.as_view(), name='ema-responses'),
     path('ema/<int:user_id>/', EMAView.as_view(), name='ema-list'),

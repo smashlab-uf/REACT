@@ -261,6 +261,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'app.tasks.evaluate_jitai_triggers',
         'schedule': schedule(180.0),
     },
+    'send-checkin-reminders': {
+        'task': 'app.tasks.send_checkin_reminders',
+        'schedule': schedule(180.0),
+    },
 }
 
 CACHES = {
