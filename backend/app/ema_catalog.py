@@ -147,6 +147,18 @@ EMA_ITEM_BANK = {
             _yes_no('B8_caffeine', 'Did you consume caffeine or energy drinks today?'),
         ],
     },
+    # Per REACT_IRB01_StudyTeam_Measures_v2.docx Part 2 — shown right after
+    # any delivered prompt, coping or active-control. Dismissing without
+    # answering is recorded as missing, not as a negative answer (see the
+    # 'dismissed' EMA status).
+    'C0': {
+        'title': 'Quick rating',
+        'sub_items': [
+            _single('C0_helpful', 'Was this message helpful right now?', ['Yes', 'Somewhat', 'No']),
+            _single('C0_behavior_change', 'Did it change what you did next?',
+                    ['I paused or waited', 'I changed what I was going to do', 'Nothing different', 'It did not fit the moment']),
+        ],
+    },
 }
 
 EMA_SUB_ITEM_INDEX = {
@@ -157,6 +169,7 @@ EMA_SUB_ITEM_INDEX = {
 
 POST_PROMPT_ITEM_IDS = ['B1', 'B2', 'B4', 'B5', 'B6', 'B7']
 ROTATING_ITEM_IDS = ['B4', 'B5', 'B6', 'B7']
+PROMPT_FEEDBACK_ITEM_IDS = ['C0']
 EVENING_CHECK_IN_HOUR = 20
 AFTERNOON_START_HOUR = 12
 

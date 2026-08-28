@@ -1981,6 +1981,27 @@ class NotificationCatalogTests(TestCase):
         self.assertNotIn('P019', [p['id'] for p in _CATALOG])
         self.assertNotIn('P019', [p['id'] for p in _EMA_CATALOG])
 
+    def test_select_control_prompt_returns_empty_while_catalog_unpopulated(self):
+        from app.notification_service import select_control_prompt
+
+        chosen, pool = select_control_prompt()
+
+        self.assertEqual(chosen, '')
+        self.assertEqual(pool, [])
+
+    def test_select_control_prompt_draws_from_control_catalog(self):
+        import app.notification_service as ns
+
+        saved = ns._CONTROL_CATALOG
+        ns._CONTROL_CATALOG = [{'id': 'C001'}, {'id': 'C002'}]
+        try:
+            chosen, pool = ns.select_control_prompt()
+        finally:
+            ns._CONTROL_CATALOG = saved
+
+        self.assertIn(chosen, ['C001', 'C002'])
+        self.assertEqual(pool, ['C001', 'C002'])
+
 
 # ---------------------------------------------------------------------------
 # Notification service: send_jitai_prompt
@@ -2421,6 +2442,26 @@ class EvaluateUserMRTTests(TestCase):
     @patch('app.tasks.send_jitai_prompt')
     @patch('app.tasks.apply_decision_rules')
     @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.8)
+    def test_eligible_prompt_ids_recorded_even_when_not_sent(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        # eligible_prompt_ids is an MRT analysis field — it must be recorded
+        # at every eligible decision point, not only ones that actually send.
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertFalse(log.send_prompt)
+        self.assertTrue(log.eligible_prompt_ids)
+        self.assertIsNone(log.message_arm)
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
     def test_ineligible_draw_is_none_and_status_not_sent(self, mock_mssd, mock_rules, mock_send):
         ema = self._latest_ema()
         mock_mssd.return_value = self._ineligible_df(ema)
@@ -2478,6 +2519,73 @@ class EvaluateUserMRTTests(TestCase):
 
         log = JITAILog.objects.get(user=self.user)
         self.assertEqual(log.randomization_probability, 0.4)
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', side_effect=[0.3, 0.2])
+    def test_coping_arm_drawn_and_logged(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        os.environ['JITAI_ARM_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.message_arm, 'coping')
+        self.assertEqual(log.arm_randomization_draw, 0.2)
+        self.assertEqual(log.arm_randomization_probability, 0.5)
+        self.assertNotEqual(log.prompt_id, '')
+        mock_send.assert_called_once()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', side_effect=[0.3, 0.8])
+    def test_control_arm_drawn_but_not_sent_while_catalog_empty(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        os.environ['JITAI_ARM_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(user=self.user)
+        # Both draws are logged regardless of whether a message was actually
+        # sent — confirmed by Dr. Chang 2026-08-25, needed for the analysis.
+        self.assertEqual(log.message_arm, 'control')
+        self.assertEqual(log.arm_randomization_draw, 0.8)
+        self.assertEqual(log.arm_randomization_probability, 0.5)
+        # No active-control messages in the catalog yet (pending Eliana) —
+        # falls back to not sending rather than fabricating content.
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.prompt_id, '')
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.8)
+    def test_arm_not_drawn_when_send_decision_is_no(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertFalse(log.send_prompt)
+        self.assertIsNone(log.message_arm)
+        self.assertIsNone(log.arm_randomization_draw)
+        self.assertIsNone(log.arm_randomization_probability)
 
 
 class DecisionEngineEligibilityTests(TestCase):
@@ -2686,6 +2794,24 @@ class EMARotationEndpointTests(TestCase):
         self.assertFalse(data['outcome_window_active'])
         self.assertGreaterEqual(len(data['items']), 4)
 
+    def test_next_returns_prompt_feedback_before_post_prompt_items(self):
+        jitai_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='JITAI-EMA-1',
+            trigger_reason='test',
+            push_sent_at=timezone.now() - timedelta(minutes=10),
+            send_prompt=True,
+        )
+
+        response = self.client.get('/ema/next/')
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['should_show'])
+        self.assertEqual(data['ema_type'], 'prompt_feedback')
+        self.assertEqual(data['jitai_log_id'], jitai_log.id)
+        self.assertEqual([item['item_id'] for item in data['items']], ['C0'])
+
     def test_next_returns_post_prompt_items_during_outcome_window(self):
         jitai_log = JITAILog.objects.create(
             user=self.user,
@@ -2693,6 +2819,10 @@ class EMARotationEndpointTests(TestCase):
             trigger_reason='test',
             push_sent_at=timezone.now() - timedelta(minutes=10),
             send_prompt=True,
+        )
+        EMA.objects.create(
+            user=self.user, prompt_id='EMA-C0-1', status='completed',
+            ema_type='prompt_feedback', source_jitai_log=jitai_log,
         )
 
         response = self.client.get('/ema/next/')
@@ -2733,6 +2863,47 @@ class EMARotationEndpointTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn('responses', response.json())
+
+    def test_submit_prompt_feedback_answered(self):
+        jitai_log = JITAILog.objects.create(
+            user=self.user, prompt_id='JITAI-EMA-C0', trigger_reason='test',
+            push_sent_at=timezone.now(), send_prompt=True,
+        )
+
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-C0-1',
+            'ema_type': 'prompt_feedback',
+            'jitai_log_id': jitai_log.id,
+            'responses': [
+                {'sub_item_id': 'C0_helpful', 'value': 'Somewhat'},
+                {'sub_item_id': 'C0_behavior_change', 'value': 'I paused or waited'},
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+        self.assertEqual(data['status'], 'completed')
+        self.assertIsNotNone(data['responded_at'])
+        self.assertEqual(len(data['item_responses']), 2)
+
+    def test_submit_prompt_feedback_dismissed_is_recorded_as_missing(self):
+        jitai_log = JITAILog.objects.create(
+            user=self.user, prompt_id='JITAI-EMA-C0', trigger_reason='test',
+            push_sent_at=timezone.now(), send_prompt=True,
+        )
+
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-C0-1',
+            'ema_type': 'prompt_feedback',
+            'jitai_log_id': jitai_log.id,
+            'responses': [],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+        self.assertEqual(data['status'], 'dismissed')
+        self.assertIsNone(data['responded_at'])
+        self.assertEqual(len(data['item_responses']), 0)
 
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)

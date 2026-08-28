@@ -38,12 +38,28 @@ def _load_catalog(path: Path) -> list[dict]:
 
 _CATALOG = _load_catalog(_CATALOG_PATH)
 _EMA_CATALOG = [p for p in _CATALOG if p['ema']]
+# Active-control messages (C001-C004, "Thanks for checking in." etc.) are
+# Eliana's deliverable per Dr. Chang 2026-08-25 — not yet in the reconciled
+# catalog. This stays empty (and select_control_prompt refuses to send)
+# until that file adds them.
+_CONTROL_CATALOG = []
 
 
 def select_prompt(ema) -> tuple[str, list[str]]:
     eligible = [p['id'] for p in _EMA_CATALOG]
     if not eligible:
         logger.error("select_prompt: EMA prompt pool is empty — refusing to fall back to full catalog")
+        return '', []
+    return random.choice(eligible), eligible
+
+
+def select_control_prompt() -> tuple[str, list[str]]:
+    eligible = [p['id'] for p in _CONTROL_CATALOG]
+    if not eligible:
+        logger.error(
+            "select_control_prompt: active-control message pool is empty — "
+            "pending Eliana's reconciled catalog (C001-C004)"
+        )
         return '', []
     return random.choice(eligible), eligible
 

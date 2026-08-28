@@ -4,12 +4,13 @@ from zoneinfo import ZoneInfo
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
-from django.db.models import Count, OuterRef, Subquery
+from django.db.models import Count, Exists, OuterRef, Subquery
 from .ema_catalog import (
     AFTERNOON_START_HOUR,
     EVENING_CHECK_IN_HOUR,
     POST_PROMPT_CHECK_IN_DAILY_CAP,
     POST_PROMPT_ITEM_IDS,
+    PROMPT_FEEDBACK_ITEM_IDS,
     ROTATING_ITEM_IDS,
     SCHEDULED_CHECK_IN_DAILY_CAP,
     ema_items,
@@ -202,6 +203,19 @@ def _latest_active_jitai(user):
         JITAILog.objects
         .filter(user=user, send_prompt=True, push_sent_at__gte=window_start, push_sent_at__lte=now)
         .order_by('-push_sent_at', '-decision_made_at', '-id')
+        .first()
+    )
+
+
+def _latest_jitai_awaiting_feedback(user):
+    """Most recent delivered JITAI prompt (coping or control arm) with no C0
+    quick-rating EMA recorded yet — per REACT_IRB01_StudyTeam_Measures_v2.docx
+    Part 2, shown right after any prompt, ahead of the outcome-window survey."""
+    return (
+        JITAILog.objects
+        .filter(user=user, send_prompt=True, push_sent_at__isnull=False)
+        .exclude(Exists(EMA.objects.filter(source_jitai_log=OuterRef('pk'), ema_type='prompt_feedback')))
+        .order_by('-push_sent_at')
         .first()
     )
 
@@ -609,6 +623,18 @@ class EMANextView(APIView):
             return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
 
         now = django_timezone.now()
+
+        feedback_jitai = _latest_jitai_awaiting_feedback(app_user)
+        if feedback_jitai is not None:
+            return Response({
+                'should_show': True,
+                'prompt_id': f'EMA-C0-{feedback_jitai.id}',
+                'ema_type': 'prompt_feedback',
+                'jitai_log_id': feedback_jitai.id,
+                'outcome_window_active': False,
+                'items': _ema_items(PROMPT_FEEDBACK_ITEM_IDS),
+            })
+
         active_jitai = _latest_active_jitai(app_user)
 
         if active_jitai is not None:
@@ -618,6 +644,7 @@ class EMANextView(APIView):
                 user=app_user,
                 source_jitai_log=active_jitai,
                 status='completed',
+                ema_type__in=['post_prompt', 'extra_check_in'],
             ).exists()
             if has_window_response:
                 return Response({
@@ -705,12 +732,16 @@ class EMAResponseView(APIView):
                 return Response({"error": "JITAI log not found."}, status=status.HTTP_404_NOT_FOUND)
 
         now = django_timezone.now()
+        ema_type = data.get('ema_type', 'scheduled_check_in')
+        # A dismissed C0 rating is submitted with no responses — recorded as
+        # missing, not as a negative answer, per the measures doc.
+        dismissed = ema_type == 'prompt_feedback' and not data['responses']
         ema = EMA.objects.create(
             user=app_user,
             prompt_id=data['prompt_id'],
-            responded_at=now,
-            status='completed',
-            ema_type=data.get('ema_type', 'scheduled_check_in'),
+            responded_at=None if dismissed else now,
+            status='dismissed' if dismissed else 'completed',
+            ema_type=ema_type,
             source_jitai_log=jitai_log,
             outcome_window_start=data.get('outcome_window_start'),
             outcome_window_end=data.get('outcome_window_end'),

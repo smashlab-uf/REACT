@@ -72,11 +72,15 @@ class StressSample(models.Model):
 
 
 class EMA(models.Model):
-    STATUS_CHOICES = [('pending', 'Pending'), ('completed', 'Completed'), ('expired', 'Expired')]
+    STATUS_CHOICES = [
+        ('pending', 'Pending'), ('completed', 'Completed'), ('expired', 'Expired'),
+        ('dismissed', 'Dismissed'),
+    ]
     EMA_TYPE_CHOICES = [
         ('scheduled_check_in', 'Scheduled Check-in'),
         ('post_prompt', 'Post-prompt Outcome Window'),
         ('extra_check_in', 'Extra Check-in'),
+        ('prompt_feedback', 'Prompt Feedback'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -237,6 +241,15 @@ class JITAILog(models.Model):
     decision_point_id = models.CharField(max_length=64, unique=True, null=True, blank=True)
     randomization_probability = models.FloatField(null=True, blank=True)
     randomization_draw = models.FloatField(null=True, blank=True)
+    MESSAGE_ARM_CHOICES = [('coping', 'Coping Message'), ('control', 'Active Control')]
+    # Second-stage randomization, confirmed by Dr. Chang 2026-08-25: only
+    # drawn when the first-stage send decision (randomization_draw < p)
+    # resulted in a send. 0.5/0.5 coping-vs-control, logged separately from
+    # the send draw so the two effects (message sent vs. content of message)
+    # can be analyzed independently.
+    message_arm = models.CharField(max_length=16, choices=MESSAGE_ARM_CHOICES, null=True, blank=True)
+    arm_randomization_probability = models.FloatField(null=True, blank=True)
+    arm_randomization_draw = models.FloatField(null=True, blank=True)
     send_prompt = models.BooleanField(default=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='pending')
     decision_made_at = models.DateTimeField(default=timezone.now, db_index=True)

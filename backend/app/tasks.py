@@ -11,7 +11,13 @@ from django.utils import timezone as django_timezone
 
 from app.ema_catalog import SCHEDULED_CHECK_IN_DAILY_CAP
 from app.models import CheckinReminder, EMA, HeartRateSample, JITAILog, StressSample, User
-from app.notification_service import mark_delivery_failed, select_prompt, send_checkin_reminder, send_jitai_prompt
+from app.notification_service import (
+    mark_delivery_failed,
+    select_control_prompt,
+    select_prompt,
+    send_checkin_reminder,
+    send_jitai_prompt,
+)
 from app.views import PARTICIPANT_TZ, _latest_active_jitai, _today_scheduled_check_in_count
 from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
 
@@ -127,12 +133,29 @@ def _evaluate_user(user, p):
     trigger_reason = str(row['decision_reason'])
     trigger_signal = None
 
+    arm_p = None
+    arm_draw = None
+    message_arm = None
+
     if eligible:
         draw = random.uniform(0, 1)
         send_prompt = draw < p
+        # eligible_prompt_ids is recorded at every eligible decision point,
+        # sent or not — it's an MRT analysis field, not just bookkeeping for
+        # what got delivered.
         selected_prompt_id, eligible_ids = select_prompt(latest_new_ema)
-        if send_prompt and not selected_prompt_id:
-            send_prompt = False
+
+        if send_prompt:
+            # Second-stage draw, confirmed by Dr. Chang 2026-08-25: 0.5/0.5
+            # coping vs. active control, logged separately from the send
+            # draw above so the two effects can be analyzed independently.
+            arm_p = float(os.environ.get('JITAI_ARM_RANDOMIZATION_PROBABILITY', '0.5'))
+            arm_draw = random.uniform(0, 1)
+            message_arm = 'coping' if arm_draw < arm_p else 'control'
+            if message_arm == 'control':
+                selected_prompt_id, eligible_ids = select_control_prompt()
+            if not selected_prompt_id:
+                send_prompt = False
     else:
         draw = None
         send_prompt = False
@@ -160,6 +183,9 @@ def _evaluate_user(user, p):
                 'observed_mssd': observed_mssd,
                 'randomization_probability': p,
                 'randomization_draw': draw,
+                'message_arm': message_arm,
+                'arm_randomization_probability': arm_p,
+                'arm_randomization_draw': arm_draw,
                 'send_prompt': send_prompt,
                 'status': 'pending' if send_prompt else 'not_sent',
                 'delivery_status': 'pending' if send_prompt else 'not_sent',
