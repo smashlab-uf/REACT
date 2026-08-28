@@ -8,6 +8,25 @@ Django generates table names as `app_<lowercasemodel>`. All tables live in the `
 
 ---
 
+## Tables
+
+`_heroku.                           app_phonetelemetry_id_seq          auth_user_id_seq
+app_checkinreminder                app_stresssample                   auth_user_user_permissions
+app_checkinreminder_id_seq         app_stresssample_id_seq            auth_user_user_permissions_id_seq
+app_ema                            app_user                           django_admin_log
+app_ema_id_seq                     app_user_user_id_seq               django_admin_log_id_seq
+app_emaitemresponse                app_wearabledevice                 django_content_type
+app_emaitemresponse_id_seq         app_wearabledevice_id_seq          django_content_type_id_seq
+app_engagementlog                  auth_group                         django_migrations
+app_engagementlog_id_seq           auth_group_id_seq                  django_migrations_id_seq
+app_eventday                       auth_group_permissions             django_session
+app_eventday_id_seq                auth_group_permissions_id_seq      information_schema.
+app_heartratesample                auth_permission                    pg_stat_statements
+app_heartratesample_id_seq         auth_permission_id_seq             pg_stat_statements_info
+app_jitailog                       auth_user                          public.
+app_jitailog_id_seq                auth_user_groups                   
+app_phonetelemetry                 auth_user_groups_id_seq`
+
 ## Entity Relationship Map
 
 ```

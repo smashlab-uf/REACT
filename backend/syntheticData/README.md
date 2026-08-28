@@ -6,13 +6,20 @@
 
 [GITHUB](<https://github.com/tylerrleee/HealthyGatorSportFan/tree/mssd-tyler>)
 
-Synthetic data generation for EMA (Ecological Momentary Assessment) and heart rate (HR) signals, used to validate MSSD (Mean of Squared Successive Differences) as a measure of temporal instability.
+This directory serves two purposes:
+
+1. **Production-aligned cohort generation** — `react_cohort.py` (canonical) emits synthetic DataFrames that match the deployed schema (`analysis-resources/production_schema.md`) and the Labfront / Garmin Venu 3 wearable source, so offline analysis code (`analytics/scripts.py`, `analytics/example_analysis.ipynb`) can run without a live database.
+2. **MSSD construct validation** — `synthetic_generator.py` (legacy) generates EMA/HR signals with known latent volatility to validate MSSD (Mean of Squared Successive Differences) as a measure of temporal instability.
 
 # Scope
 
-We are focusing on qualitative (EMA) and quantitative simulation (HR), so other quantitative values (steps, sleep, etc,..) are omitted for the purpose of simulation concept review and simplicity of debugging.
+The wearable data source is **Labfront (Garmin Venu 3)** — not Fitabase or Fitbit. Simulation focuses on EMA (qualitative) and heart-rate / stress (quantitative) signals; other Garmin streams (steps, sleep, etc.) are omitted for simplicity.
 
 ## Files
+
+### `react_cohort.py`
+
+**Canonical, production-aligned generator.** `generate_react_cohort(...)` returns synthetic DataFrames keyed to the deployed `app_*` tables (users, ema, ema_item_responses, jitai, heart_rate, stress_samples, engagement, wearable_devices), matching `analysis-resources/production_schema.md`. EMA Likert values are **1–7** (matching `MinValueValidator(1)`/`MaxValueValidator(7)` in `backend/app/models.py`); the wearable `source` is `garmin_labfront` and device ids are `labfront_participant_id`. `patch_scripts_loaders()` monkeypatches the `analytics/scripts.py` loaders to serve these frames, so the analysis notebook runs with no database. It reuses `_clustered_missing_mask` from `synthetic_generator.py`.
 
 ### `main.py`
 
@@ -22,9 +29,9 @@ In scope: Parameters can be tweaked to simulate different cohorts, producing a d
 
 Out of scope: DF does not save. 
 
-### `synthetic_generator.py`
+### `synthetic_generator.py` (legacy)
 
-Core data generation module. Contains two generators:
+Legacy MSSD construct-validation harness (superseded by `react_cohort.py` for analysis cohorts). Uses a **1–5** Likert scale and a flat dataframe shape that does **not** match the production schema; retained because `react_cohort.py` imports `_clustered_missing_mask` from it. Contains two generators:
 
 - **EMA Generator** — Produces per-user EMA time series with known latent volatility using an AR(1) process (see below about why AR(1)). 
     - Each user gets randomly drawn parameters (`mu`, `sigma`, `rho`) that serve as ground truth for validating MSSD. EMA values are mapped to a 1-5 Likert scale (for now). Missingness or no response is injected via randomness (`_clustered_missing_mask`) that produces realistic clustered gaps rather than random dropout.
@@ -98,15 +105,11 @@ Output directory for saved plots:
 
 
 
-Here is a structured, comprehensive implementation plan to articulate your next steps. This plan bridges your current synthetic data generation framework with the updated database schema, keeping the focus tight on construct validation and the migration to Garmin specs.
-
 ---
 
-## Technical Implementation Plan: MSSD Validation & Garmin Data Integration
+## MSSD construct-validity methodology (legacy harness)
 
-### 1. Construct Validity Defense: MSSD Volatility Recovery
-
-Before storing data, we must prove that our First-Order Autoregressive $AR(1)$ process truly serves as a reliable ground truth for Mean of Squared Successive Differences (MSSD) validation.
+The legacy `synthetic_generator.py` exists to prove that the First-Order Autoregressive $AR(1)$ process is a reliable ground truth for Mean of Squared Successive Differences (MSSD) validation.
 
 * **The Goal:** Verify that a higher preset latent volatility ($\sigma_{e^2}$ or lower $\rho$) in the EMA generator mathematically maps to a higher calculated MSSD from the generated 1–5 Likert scale output.
 * **The Test Harness:** * Generate a test cohort where sub-groups are assigned distinct, known parameters (e.g., Stable vs. Volatile cohorts).
@@ -115,70 +118,20 @@ Before storing data, we must prove that our First-Order Autoregressive $AR(1)$ p
 $$MSSD = \frac{1}{N-1} \sum_{t=1}^{N-1} (z_{t+1} - z_t)^2$$
 
 
-* **Success Metric:** Plot Ground Truth Variance vs. Empirical MSSD. A strong, positive linear correlation validates our construct defense for reviewers, proving the simulation works as an effective benchmark despite missingness masks.
-
-
+* **Success Metric:** Plot Ground Truth Variance vs. Empirical MSSD. A strong, positive linear correlation validates the construct as an effective benchmark despite missingness masks.
 
 ---
 
-## 2. Wearable Migration & HRV Field Extension (Garmin Spec)
+## Status & known limitations
 
-We are shifting our hardware profile simulation from Fitbit to Garmin (Venu 3 / Vivoactive 5/6 specs). Garmin devices handle heart rate and Heart Rate Variability (HRV) metrics differently, which requires updates to both our generation math and schema.
+**Done (in `react_cohort.py`):**
 
-### Data Engineering Updates
+* Wearable profile is **Garmin Venu 3 via Labfront** — `source = "garmin_labfront"`, device id `labfront_participant_id`. No Fitabase or Fitbit.
+* EMA Likert scale is **1–7**, matching the production model validators.
+* Output frames match `analysis-resources/production_schema.md` and feed `analytics/scripts.py` via `patch_scripts_loaders()`.
 
-* **Schema Adaptations:**
-* `heart_rate_sample`: Ensure the `source` field explicitly flags `'Garmin Venu 3'` or `'Garmin Vivoactive'`.
-* `stress_sample`: Garmin calculates stress via continuous HRV (inter-beat intervals or RMSSD) mapped to a 0–100 score. Our simulator must generate an algorithmic correlation between `heart_rate_sample` spikes (exercise bouts) and `stress_sample` responses.
+**Known limitations / not implemented:**
 
-
-
-### HRV Generation Mechanics
-
-We will inject a new HRV field into the simulation. In a real-world setting, a high heart rate corresponds to a compressed, less variable inter-beat interval (lower HRV), while resting states elevate HRV.
-
-* **The Simulation Formula:** Tie the minute-level baseline heart rate ($HR_t$) inversely to the generated HRV ($RMSSD_t$):
-
-$$RMSSD_t = \alpha \cdot \left( \frac{100}{HR_t} \right) + \epsilon_t$$
-
-
-
-*(Where $\alpha$ is a scaling factor matching young adult Garmin ranges, and $\epsilon_t$ captures normal somatic noise).*
-
----
-
-## 3. Database Wiring & ETL Pipeline Architecture
-
-Once validated, the data frames generated by `synthetic_generator.py` need to be persistent. Based on your relational schema, we will construct a clean database push routine.
-
-```
-[synthetic_generator.py]
-         │
-         ▼
-[MSSD Validation Test] ──(Pass)──► [Database Push Module (SQLAlchemy)]
-                                                 │
-                                                 ├──► user
-                                                 ├──► wearable_device
-                                                 ├──► heart_rate_sample
-                                                 └──► ema
-
-```
-
-### Relational Execution Order
-
-To respect foreign key constraints, the pipeline must push data in this exact sequential order:
-
-1. **`user` Table:** Populate UUID-mapped `user_id`, mock names, and demographic details.
-2. **`wearable_device` Table:** Link an active device `id` to the `user_id` with `device_name = 'Garmin Venu 3'`.
-3. **`heart_rate_sample` & `stress_sample` Tables:** Bulk insert the minute-level quantitative arrays linked via `user_id`.
-4. **`ema` Table:** Insert the 1–5 Likert scale responses, writing missing entries explicitly as `status = 'missed'` or omitting them based on the `_clustered_missing_mask`.
-
----
-
-## Action Item Roadmap
-
-| Phase | Task | Deliverable |
-| --- | --- | --- |
-| **Phase 1** | Implement **MSSD validation .py file** to correlate known input parameters with empirical outcomes. PLot to syntheticData/figures/validation/ | Regression plot verifying recovery. |
-| **Phase 2** | Refactor `synthetic_generator.py` to add `_generate_hrv_and_stress()` using **Garmin specs**. | Extended output DataFrames with HRV metrics. |
-| **Phase 3** | Build out automated database seed script utilizing **SQLAlchemy / SQL** bulk inserts. | Clean, uncorrupted database instance populated with 100 mock users. |
+* `react_cohort.py` does **not** generate `phone_telemetry`, `checkin_reminder`, or `event_day` (not consumed by the current analysis pipeline).
+* No **HRV / RMSSD** generation — there is no HRV column in the production schema (`StressSample` carries only a 0–100 `stress_score`; `HeartRateSample` only `bpm`).
+* There is **no automated DB seeder** — the generators return in-memory DataFrames for offline analysis, not a database-push routine.

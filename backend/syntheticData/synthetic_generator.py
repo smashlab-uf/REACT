@@ -1,6 +1,14 @@
 """
-Generate a cohort of synthetic users with EMA, Heart rate, timestamp and unique uuid. 
-- Generator can tweak response rate to simulate 'No Reponse' to EMAs 
+LEGACY — MSSD construct-validation harness. Superseded by react_cohort.py for
+production-aligned cohorts. This module uses a 1-5 Likert scale and a flat EMA/HR
+dataframe shape intended only for validating the MSSD math against known latent
+volatility; it does NOT match the production schema (analysis-resources/production_schema.md)
+and is not a database seeder. Do NOT use it to generate analysis cohorts.
+
+Retained because react_cohort.py imports _clustered_missing_mask from here.
+
+Generate a cohort of synthetic users with EMA, Heart rate, timestamp and unique uuid.
+- Generator can tweak response rate to simulate 'No Reponse' to EMAs
 - Current dataframe format is not suited to store in database!
 
 Author: @tylerrleee

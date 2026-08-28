@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # REACT — Claude Code Context
 
 ## Project Overview
@@ -9,7 +13,7 @@ delivered push notifications to study participants.
 
 REACT adds:
 - EMA (Ecological Momentary Assessment) in-app surveys
-- Garmin wearable physiological data collection via Fitabase
+- Garmin wearable physiological data collection via Labfront
 - A more sophisticated JITAI decision engine driven by real-time biometric signals
 - A researcher dashboard for study monitoring
 
@@ -26,31 +30,103 @@ November/early December, ~12–14 weeks).
 | Database | PostgreSQL |
 | Task Queue | Celery + Redis |
 | Frontend | React Native (Expo) |
-| Deployment | Heroku |
+| Deployment | Heroku (`Procfile`) and GCP App Engine/Cloud Run (`cloudbuild.yaml`); Sentry for errors |
 | Push Notifications | Expo Push Notification Service → Firebase/APNs |
 | Wearable Data Layer | Labfront API (intermediary for Garmin Health API) |
 | Wearable Device | Garmin Venu 3 |
 
 ---
 
-## Codebase Structure (HealthyGator baseline)
+## Commands
+
+Backend commands run from `backend/`. Python is pinned to 3.11 (`runtime.txt`).
+
+```bash
+# Backend (Django) — from backend/
+pip install -r requirements.txt          # use requirements_mac.txt on Apple Silicon
+python manage.py migrate
+python manage.py runserver 0.0.0.0:8000
+python manage.py createsuperuser
+
+# Tests run against SQLite in-memory via test_settings (do NOT hit the real DB)
+python manage.py test --settings=project.test_settings                              # full suite
+python manage.py test app.tests.EMAViewTests --settings=project.test_settings        # one class
+python manage.py test app.tests.EMAViewTests.test_name --settings=project.test_settings  # one test
+
+# Decision-engine scenario tests are plain unittest (pure pandas, no Django)
+python -m unittest decision_engine.test_decision_engine_scenarios
+
+# Celery (needs Redis; broker from CELERY_BROKER_URL / REDIS_URL)
+celery -A project.celery worker --loglevel=info
+celery -A project.celery beat   --loglevel=info
+```
+
+```bash
+# Mobile (Expo SDK 56) — from mobile/. Expo Go does NOT work; needs a dev client on a physical device.
+cd mobile && npm install
+npx expo run:ios --device        # first native build; afterwards use `npx expo start --dev-client`
+npx expo run:android --device    # needs adb — verify with `adb devices`
+# mobile/.env must set EXPO_PUBLIC_API_KEY equal to the backend API_KEY, or requests get 403.
+```
+
+```bash
+# Analytics — from analytics/. Loaders bootstrap Django to read the live DB (scripts.py:_ensure_django).
+pip install -r requirements.txt
+streamlit run REACT-dashboard/app.py
+```
+
+---
+
+## Runtime Architecture
+
+Three cooperating processes (`Procfile`) plus the mobile client:
+
+- **web** — `gunicorn project.wsgi` — the DRF API and Django Admin. The researcher dashboard *is*
+  Django Admin, not a separate SPA.
+- **worker** — `celery -A project.celery worker` — executes the JITAI / notification tasks.
+- **beat** — `celery -A project.celery beat` — fires all three periodic tasks every **180 s**
+  (`CELERY_BEAT_SCHEDULE` in `settings.py`): `ingest_wearable_data`, `evaluate_jitai_triggers`,
+  `send_checkin_reminders`, all defined in `app/tasks.py`.
+
+Auth is two-layered: `APIKeyMiddleware` (`app/middleware.py`) rejects API routes that lack a matching
+`X-API-Key` when `API_KEY` is set (it keeps an exempt-path list), and DRF layers SimpleJWT on top.
+`settings.py` is fully env-driven and picks the database by environment: `DATABASE_URL`
+(Heroku/dj-database-url) → Cloud SQL when `K_SERVICE` is set (GCP) → discrete `DATABASE_*` vars. Key
+env vars: `SECRET_KEY`, `API_KEY`, `DASHBOARD_API_KEY`, `REDIS_URL`, `SENTRY_DSN`.
+
+Two push types reach the device (details in `mobile/README.md`): a **visible check-in reminder**
+(`send_checkin_reminders`, gated to 9–21 participant-local time with a 120-min cooldown, skipped once
+the daily EMA cap is hit) and a **silent JITAI prompt** (`evaluate_jitai_triggers`, sent only after a
+newly completed EMA passes eligibility + randomization). The MSSD trigger math is isolated in
+`backend/decision_engine/decision_engine.py` (`calculate_mssd`, `apply_decision_rules`) and is
+regression-tested against a golden CSV (`scenario_test_outputs.csv`) in that directory.
+
+---
+
+## Repo Layout
 
 ```
 backend/
-  app/
-    models.py          # Django ORM models
-    serializers.py     # DRF serializers (one per model)
-    views.py           # DRF view functions
-    urls.py            # URL routing
-    admin.py           # Django Admin registrations
-    tasks.py           # Celery tasks (notification logic)
-    migrations/        # Django migration history
-
-mobile/
-  App.tsx              # React Native entry point
-  screens/             # One .tsx file per screen
-  constants/           # URL management, shared constants
+  project/         # Django project: settings.py, celery.py, urls.py, wsgi/asgi, test_settings.py
+  app/             # the single Django app: models, serializers, views, urls, tasks, admin,
+                   #   middleware.py (API key), notification_service.py (Expo push), ema_catalog.py
+  decision_engine/ # standalone MSSD/JITAI logic + golden-CSV scenario tests (pure pandas)
+  syntheticData/   # cohort generators: react_cohort.py (current, 1–7 scale), synthetic_generator.py (legacy)
+mobile/            # Expo SDK 56 app; source under src/; committed android/ & ios/; dev-client required
+analytics/         # offline analysis: scripts.py (ORM-backed loaders + pandas metrics), REACT-dashboard/ (Streamlit)
+analysis-resources/# data-dictionary.md and production_schema.md (authoritative live-schema map)
 ```
+
+---
+
+## Schema authority
+
+The **Django Models** section below is a simplified design reference and is intentionally leaner than
+what is deployed. The live schema is richer — e.g. `JITAILog` has ~27 columns; `EMA` carries
+`ema_type` and outcome-window fields; and there are additional tables (`EMAItemResponse`,
+`EngagementLog`, `PhoneTelemetry`, `EventDay`, `CheckinReminder`). For the actual deployed schema,
+trust `backend/app/models.py` and `analysis-resources/production_schema.md` (the latter maps every
+production table to its `data-dictionary.md` logical name).
 
 ---
 
@@ -166,14 +242,14 @@ REACT never communicates with Garmin directly. The data flow is:
 ```
 Garmin Venu 3
   → Garmin Health API (push on device sync)
-    → Fitabase (buffers and re-exposes data)
+    → Labfront (research platform: buffers and re-exposes Garmin data)
       → REACT Celery ingestion task (polls Labfront API)
         → PostgreSQL (HeartRateSample, StressSample)
           → JITAI decision logic
             → Expo Push Notification → participant device
 ```
 
-### Fitabase Garmin Data Resolutions
+### Garmin Data Resolutions (via Labfront)
 
 | Resolution | Dataset |
 |---|---|
@@ -184,7 +260,7 @@ Garmin Venu 3
 | 15 sec | Heart rate (primary HR ingest stream; ~720 rows/participant/3hr session) |
 | Optional add-on | Beat-to-beat RR intervals (enhanced HRV; not default) |
 
-### Fitabase API vs Batch Export
+### Labfront API vs Batch Export
 - API access and automated batch exports are separate paid add-ons (not included by default)
 - REACT targets the Labfront API for programmatic access via Celery periodic tasks
 - The Celery task polls at short intervals (every 2–3 min) to support near-real-time JITAI triggering
@@ -244,7 +320,7 @@ Access control: two Django permission groups (`researcher_pi` — full access;
 `researcher_ra` — read-only on EMA and JITAILog, no access to User PII). Confirm
 RA access scope with Prof. Chang before implementing.
 
-Fitabase's own dashboard handles device compliance monitoring (battery, sync times, wear
+Labfront's own dashboard handles device compliance monitoring (battery, sync times, wear
 gaps) — do not duplicate this in Django Admin.
 
 ---
@@ -265,7 +341,7 @@ auto-generated PKs and timestamps.
 - Migrations are committed to version control
 - One serializer per model, kept in `serializers.py`
 - Celery tasks in `tasks.py`
-- Environment variables for all secrets (Fitabase API key, Redis URL, database URL) —
+- Environment variables for all secrets (Labfront API key, Redis URL, database URL) —
   never hardcode
 
 ---
@@ -280,17 +356,17 @@ auto-generated PKs and timestamps.
   identifier stored per participant is `labfront_participant_id`.
 - **JITAI thresholds need PI sign-off** — do not implement numeric trigger thresholds
   without confirmation from Prof. Chang.
-- **Fitabase Engage is deferred** — REACT builds its own JITAI and EMA delivery layer.
-  Do not integrate with Fitabase Engage (preview Summer 2026).
+- **No Fitabase** — the wearable data layer is Labfront, not Fitabase. REACT builds its own
+  JITAI and EMA delivery layer; do not integrate Fitabase or Fitabase Engage.
 
 ---
 
 ## Open Questions (as of project start)
 
-- Fitabase API vs batch export — confirm with Prof. Chang (determine pricing/access)
+- Labfront API vs batch export — confirm with Prof. Chang (determine pricing/access)
 - JITAI trigger thresholds — numeric values require PI alignment before implementation
 - RA access scope — which fields are RAs permitted to see under IRB protocol
-- Garmin Venu 3 Fitabase compatibility — verify all required data streams are supported before finalizing the Fitabase contract
+- Garmin Venu 3 Labfront compatibility — verify all required data streams are supported before finalizing the Labfront contract
 - Beat-to-beat RR interval collection — confirm device support and IRB permission
 
 ---

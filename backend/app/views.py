@@ -438,7 +438,7 @@ class TelemetryIngestView(APIView):
     @swagger_auto_schema(
         operation_summary="Ingest telemetry",
         operation_description=(
-            "Store telemetry from Fitabase polling into the wearable, heart rate, "
+            "Store telemetry from Labfront polling into the wearable, heart rate, "
             "stress, EMA, and JITAI tables."
         ),
         request_body=TelemetryIngestSerializer,
