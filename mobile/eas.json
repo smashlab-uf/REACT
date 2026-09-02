@@ -9,12 +9,14 @@
     },
     "preview": {
       "distribution": "internal",
+      "environment": "preview",
       "ios": {
         "simulator": false
       }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "environment": "production"
     }
   },
   "submit": {
