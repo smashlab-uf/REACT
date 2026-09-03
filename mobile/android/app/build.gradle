@@ -81,6 +81,12 @@ def enableMinifyInReleaseBuilds = (findProperty('android.enableMinifyInReleaseBu
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+def credentialsJsonFile = [
+    rootProject.file("../credentials.json"),
+    rootProject.file("../../credentials.json"),
+    rootProject.file("credentials.json"),
+].find { it.exists() }
+
 android {
     ndkVersion rootProject.ext.ndkVersion
 
@@ -104,13 +110,32 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            if (credentialsJsonFile) {
+                def credentials = new groovy.json.JsonSlurper().parse(credentialsJsonFile)
+                def keystorePath = java.nio.file.Paths.get(credentials.android.keystore.keystorePath)
+                def storeFilePath = keystorePath.isAbsolute()
+                    ? keystorePath
+                    : rootProject.file("..").toPath().resolve(keystorePath)
+                storeFile storeFilePath.toFile()
+                storePassword credentials.android.keystore.keystorePassword
+                keyAlias credentials.android.keystore.keyAlias
+                keyPassword credentials.android.keystore.containsKey("keyPassword")
+                    ? credentials.android.keystore.keyPassword
+                    : credentials.android.keystore.keystorePassword
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            if (System.getenv("EAS_BUILD") != "true") {
+            if (credentialsJsonFile) {
+                signingConfig signingConfigs.release
+            } else if (System.getenv("EAS_BUILD") == "true") {
+                throw new GradleException("EAS release build is missing credentials.json")
+            } else {
                 signingConfig signingConfigs.debug
             }
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
