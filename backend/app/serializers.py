@@ -115,7 +115,8 @@ class JITAILogSerializer(serializers.ModelSerializer):
             'delivery_error', 'receipt_platform', 'receipt_app_state',
             'send_prompt', 'status',
             'trigger_signal', 'ema_mood', 'ema_stress', 'ema_energy',
-            'eligible_prompt_ids',
+            'eligible_prompt_ids', 'evaluated_items', 'matched_categories',
+            'category_drawn', 'fallback_reason',
         ]
         read_only_fields = ('id', 'triggered_at')
 

@@ -136,14 +136,33 @@ def _evaluate_user(user, p):
     arm_p = None
     arm_draw = None
     message_arm = None
+    routing = {
+        'eligible_prompt_ids': None,
+        'evaluated_items': None,
+        'matched_categories': None,
+        'category_drawn': None,
+        'fallback_reason': '',
+    }
 
     if eligible:
         draw = random.uniform(0, 1)
         send_prompt = draw < p
-        # eligible_prompt_ids is recorded at every eligible decision point,
-        # sent or not — it's an MRT analysis field, not just bookkeeping for
-        # what got delivered.
-        selected_prompt_id, eligible_ids = select_prompt(latest_new_ema)
+
+        # Last-5 exclusion, confirmed by Dr. Chang 2026-09-07: don't repeat a
+        # message a participant has already gotten in their last 5 delivered
+        # prompts. Computed regardless of send outcome, like the rest of the
+        # routing snapshot below — it's an MRT analysis field, not just
+        # delivery bookkeeping.
+        recent_prompt_ids = list(
+            JITAILog.objects
+            .filter(user=user, send_prompt=True)
+            .exclude(prompt_id='')
+            .order_by('-decision_made_at')
+            .values_list('prompt_id', flat=True)[:5]
+        )
+        routing_result = select_prompt(latest_new_ema, exclude_prompt_ids=recent_prompt_ids)
+        routing.update(routing_result)
+        selected_prompt_id = routing_result['prompt_id']
 
         if send_prompt:
             # Second-stage draw, confirmed by Dr. Chang 2026-08-25: 0.5/0.5
@@ -153,14 +172,16 @@ def _evaluate_user(user, p):
             arm_draw = random.uniform(0, 1)
             message_arm = 'coping' if arm_draw < arm_p else 'control'
             if message_arm == 'control':
-                selected_prompt_id, eligible_ids = select_control_prompt()
+                control_prompt_id, control_pool = select_control_prompt()
+                selected_prompt_id = control_prompt_id
+                routing['eligible_prompt_ids'] = control_pool
+                routing['category_drawn'] = None
             if not selected_prompt_id:
                 send_prompt = False
     else:
         draw = None
         send_prompt = False
         selected_prompt_id = ''
-        eligible_ids = None
 
     recent_hr = HeartRateSample.objects.filter(user=user).order_by('-timestamp').first()
     recent_stress = StressSample.objects.filter(user=user).order_by('-timestamp').first()
@@ -193,7 +214,11 @@ def _evaluate_user(user, p):
                 'ema_mood': _snap.get(SIGNAL_SUB_ITEMS['mood']),
                 'ema_stress': _snap.get(SIGNAL_SUB_ITEMS['stress']),
                 'ema_energy': _snap.get(SIGNAL_SUB_ITEMS['energy']),
-                'eligible_prompt_ids': eligible_ids,
+                'eligible_prompt_ids': routing['eligible_prompt_ids'],
+                'evaluated_items': routing['evaluated_items'],
+                'matched_categories': routing['matched_categories'],
+                'category_drawn': routing['category_drawn'],
+                'fallback_reason': routing['fallback_reason'],
             },
         )
     except IntegrityError:

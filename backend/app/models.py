@@ -270,6 +270,16 @@ class JITAILog(models.Model):
     ema_stress = models.PositiveSmallIntegerField(null=True, blank=True)
     ema_energy = models.PositiveSmallIntegerField(null=True, blank=True)
     eligible_prompt_ids = models.JSONField(null=True, blank=True)
+    # Routing logging, confirmed by Dr. Chang 2026-09-07 — every field here
+    # needs to be recorded at every decision point, coping arm or not, so the
+    # routing behavior is fully auditable. evaluated_items covers both "what
+    # value was checked" and "was the item available" in one structure: a
+    # missing/null value means the item wasn't part of that check-in's
+    # rotation, not that it was checked and found low.
+    evaluated_items = models.JSONField(null=True, blank=True)
+    matched_categories = models.JSONField(null=True, blank=True)
+    category_drawn = models.CharField(max_length=64, null=True, blank=True)
+    fallback_reason = models.CharField(max_length=128, blank=True, default='')
 
     class Meta:
         ordering = ['-triggered_at']

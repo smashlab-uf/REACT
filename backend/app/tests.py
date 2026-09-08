@@ -1937,20 +1937,18 @@ class EvaluateJITAITriggersTests(TestCase):
 
 class NotificationCatalogTests(TestCase):
 
-    def test_load_catalog_skips_retired_and_blank_id_rows(self):
+    def test_load_catalog_skips_blank_id_rows(self):
         import csv
         import tempfile
         from pathlib import Path
         from app.notification_service import _load_catalog
 
-        fieldnames = ['ID', 'Category', 'Trigger Condition', 'Notification Message', 'Tone', 'Goal Type', 'Flag']
+        fieldnames = ['ID', 'Trigger (emotional state)', 'Technique', 'Message shown to participant', 'Length', 'Context']
         rows = [
-            {'ID': 'X001', 'Category': 'Test', 'Trigger Condition': 'Survey',
-             'Notification Message': 'Real prompt', 'Tone': 'Calm', 'Goal Type': 'Test', 'Flag': ''},
-            {'ID': 'X002', 'Category': 'retired', 'Trigger Condition': 'retired',
-             'Notification Message': 'retired', 'Tone': 'retired', 'Goal Type': 'retired', 'Flag': ''},
-            {'ID': '', 'Category': 'Test', 'Trigger Condition': 'Survey',
-             'Notification Message': 'Blank id row', 'Tone': 'Calm', 'Goal Type': 'Test', 'Flag': ''},
+            {'ID': 'X001', 'Trigger (emotional state)': 'General stress', 'Technique': 'Test',
+             'Message shown to participant': 'Real prompt', 'Length': 'Short', 'Context': 'General'},
+            {'ID': '', 'Trigger (emotional state)': 'General stress', 'Technique': 'Test',
+             'Message shown to participant': 'Blank id row', 'Length': 'Short', 'Context': 'General'},
         ]
         with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -1962,29 +1960,39 @@ class NotificationCatalogTests(TestCase):
 
         self.assertEqual([p['id'] for p in catalog], ['X001'])
 
-    def test_select_prompt_returns_empty_when_ema_pool_empty(self):
+    def test_select_prompt_falls_back_to_general_pool_when_ema_is_none(self):
+        from app.notification_service import select_prompt, _GENERAL_FALLBACK_IDS
+
+        result = select_prompt(None)
+
+        self.assertEqual(result['matched_categories'], [])
+        self.assertEqual(result['category_drawn'], None)
+        self.assertEqual(result['fallback_reason'], 'no_category_matched')
+        self.assertIn(result['prompt_id'], _GENERAL_FALLBACK_IDS)
+
+    def test_live_catalog_loads_finalized_bank(self):
+        from app.notification_service import _CATALOG, _CONTROL_CATALOG, _EMA_CATALOG
+
+        self.assertEqual(len(_CATALOG), 30)
+        # P019 is real content in the finalized bank (real IRB numbering) —
+        # the old CSV's "P019 = retired" was an artifact of the old, mismatched
+        # ID scheme and no longer applies.
+        self.assertIn('P019', [p['id'] for p in _CATALOG])
+        self.assertEqual(len(_CONTROL_CATALOG), 4)
+        # Cyber-specific messages stay out of the reachable pool.
+        self.assertNotIn('P006', [p['id'] for p in _EMA_CATALOG])
+        self.assertNotIn('P008', [p['id'] for p in _EMA_CATALOG])
+        self.assertIn('P019', [p['id'] for p in _EMA_CATALOG])
+
+    def test_select_control_prompt_returns_empty_when_catalog_unpopulated(self):
         import app.notification_service as ns
 
-        saved = ns._EMA_CATALOG
-        ns._EMA_CATALOG = []
+        saved = ns._CONTROL_CATALOG
+        ns._CONTROL_CATALOG = []
         try:
-            chosen, pool = ns.select_prompt(None)
+            chosen, pool = ns.select_control_prompt()
         finally:
-            ns._EMA_CATALOG = saved
-
-        self.assertEqual(chosen, '')
-        self.assertEqual(pool, [])
-
-    def test_live_catalog_never_offers_retired_prompt_p019(self):
-        from app.notification_service import _CATALOG, _EMA_CATALOG
-
-        self.assertNotIn('P019', [p['id'] for p in _CATALOG])
-        self.assertNotIn('P019', [p['id'] for p in _EMA_CATALOG])
-
-    def test_select_control_prompt_returns_empty_while_catalog_unpopulated(self):
-        from app.notification_service import select_control_prompt
-
-        chosen, pool = select_control_prompt()
+            ns._CONTROL_CATALOG = saved
 
         self.assertEqual(chosen, '')
         self.assertEqual(pool, [])
@@ -2001,6 +2009,182 @@ class NotificationCatalogTests(TestCase):
 
         self.assertIn(chosen, ['C001', 'C002'])
         self.assertEqual(pool, ['C001', 'C002'])
+
+    def test_select_control_prompt_draws_from_real_catalog(self):
+        from app.notification_service import select_control_prompt
+
+        chosen, pool = select_control_prompt()
+
+        self.assertIn(chosen, ['C001', 'C002', 'C003', 'C004'])
+        self.assertEqual(set(pool), {'C001', 'C002', 'C003', 'C004'})
+
+
+class SelectPromptRoutingTests(TestCase):
+    """select_prompt() trigger-category routing, per Dr. Chang 2026-09-07."""
+
+    def setUp(self):
+        self.user = make_user(email='routing@test.com')
+
+    def _make_ema(self, responses):
+        ema = EMA.objects.create(user=self.user, prompt_id='test', status='completed')
+        for sub_item_id, value in responses.items():
+            kwargs = {'value_numeric': value} if isinstance(value, (int, float)) else (
+                {'value_choices': value} if isinstance(value, list) else {'value_choice': value}
+            )
+            EMAItemResponse.objects.create(
+                ema=ema, item_id=sub_item_id[:2], sub_item_id=sub_item_id,
+                response_type='likert', **kwargs,
+            )
+        return ema
+
+    def test_elevated_single_item_matches_its_category(self):
+        from app.notification_service import select_prompt
+
+        ema = self._make_ema({'B1_affect_angry': 4})
+        result = select_prompt(ema)
+
+        self.assertEqual(result['matched_categories'], ['High arousal / anger'])
+        self.assertEqual(result['category_drawn'], 'High arousal / anger')
+        self.assertIn(result['prompt_id'], ['P001', 'P009', 'P010', 'P013', 'P021', 'P023'])
+        self.assertEqual(result['evaluated_items']['B1_affect_angry'], 4)
+        self.assertIsNone(result['evaluated_items']['B2_stress'])
+
+    def test_below_cutoff_falls_back_to_general_pool(self):
+        from app.notification_service import select_prompt, _GENERAL_FALLBACK_IDS
+
+        ema = self._make_ema({'B1_affect_angry': 3})
+        result = select_prompt(ema)
+
+        self.assertEqual(result['matched_categories'], [])
+        self.assertEqual(result['category_drawn'], None)
+        self.assertEqual(result['fallback_reason'], 'no_category_matched')
+        self.assertIn(result['prompt_id'], _GENERAL_FALLBACK_IDS)
+
+    def test_interpersonal_conflict_requires_both_conditions(self):
+        from app.notification_service import select_prompt
+
+        bad_event_only = self._make_ema({'B2_notable_event': 'Something bad'})
+        result = select_prompt(bad_event_only)
+        self.assertEqual(result['matched_categories'], [])
+
+        both_conditions = self._make_ema({
+            'B2_notable_event': 'Something bad',
+            'B2_event_topic': ['Social or relationship'],
+        })
+        result = select_prompt(both_conditions)
+        self.assertEqual(result['matched_categories'], ['Interpersonal conflict'])
+        self.assertIn(result['prompt_id'], ['P003', 'P007', 'P015', 'P019'])
+
+    def test_bipolar_valence_matches_low_mood_at_low_end(self):
+        from app.notification_service import select_prompt
+
+        ema = self._make_ema({'B1_valence': 3})
+        result = select_prompt(ema)
+
+        self.assertEqual(result['matched_categories'], ['Low mood / withdrawal'])
+        # Only one reachable message in this category — deterministic.
+        self.assertEqual(result['prompt_id'], 'P017')
+
+    def test_never_routes_to_cyber_specific_messages(self):
+        from app.notification_service import select_prompt
+
+        ema = self._make_ema({'B7_urge': 7})
+        result = select_prompt(ema)
+
+        self.assertEqual(result['matched_categories'], ['Urge / craving'])
+        self.assertIn(result['prompt_id'], ['P020', 'P022'])
+        self.assertNotIn(result['prompt_id'], ['P006', 'P008'])
+
+    def test_excludes_recently_delivered_prompts(self):
+        from app.notification_service import select_prompt, _GENERAL_FALLBACK_IDS
+
+        ema = self._make_ema({'B1_valence': 2})
+        first = select_prompt(ema)
+        self.assertEqual(first['prompt_id'], 'P017')
+
+        second = select_prompt(ema, exclude_prompt_ids=['P017'])
+        # Low mood/withdrawal has only one reachable message — excluding it
+        # exhausts the (only) matched category, per Dr. Chang 2026-09-08:
+        # never skip the exclusion, fall through to the general pool instead.
+        self.assertEqual(second['matched_categories'], ['Low mood / withdrawal'])
+        self.assertIsNone(second['category_drawn'])
+        self.assertEqual(second['fallback_reason'], 'category_exhausted')
+        self.assertIn(second['prompt_id'], _GENERAL_FALLBACK_IDS)
+
+    def test_redraws_a_different_matched_category_when_one_is_exhausted(self):
+        from app.notification_service import select_prompt
+
+        # Both anger and low mood match; low mood's only message (P017) is
+        # excluded, but anger still has content — routing should redraw into
+        # anger rather than falling all the way through to the general pool.
+        ema = self._make_ema({'B1_affect_angry': 4, 'B1_valence': 2})
+        result = select_prompt(ema, exclude_prompt_ids=['P017'])
+
+        self.assertEqual(set(result['matched_categories']), {'High arousal / anger', 'Low mood / withdrawal'})
+        self.assertEqual(result['category_drawn'], 'High arousal / anger')
+        self.assertIn(result['prompt_id'], ['P001', 'P009', 'P010', 'P013', 'P021', 'P023'])
+        self.assertEqual(result['fallback_reason'], '')
+
+    def test_ema_none_evaluates_all_items_as_unavailable(self):
+        from app.notification_service import select_prompt
+
+        result = select_prompt(None)
+
+        self.assertTrue(all(v is None for v in result['evaluated_items'].values()))
+        self.assertEqual(result['matched_categories'], [])
+
+    def test_alcohol_severity_override_routes_to_p020(self):
+        from app.notification_service import select_prompt
+
+        male_user = make_user(email='male-drinker@test.com', gender='male')
+        ema = EMA.objects.create(user=male_user, prompt_id='test', status='completed')
+        EMAItemResponse.objects.create(
+            ema=ema, item_id='B6', sub_item_id='B6_drink_count',
+            response_type='number', value_numeric=5,
+        )
+
+        result = select_prompt(ema)
+
+        self.assertEqual(result['prompt_id'], 'P020')
+        self.assertEqual(result['category_drawn'], 'Urge / craving')
+        self.assertEqual(result['fallback_reason'], 'closest_fit')
+
+    def test_alcohol_severity_override_uses_gender_specific_threshold(self):
+        from app.notification_service import select_prompt
+
+        female_user = make_user(email='female-drinker@test.com', gender='female')
+        ema = EMA.objects.create(user=female_user, prompt_id='test', status='completed')
+        EMAItemResponse.objects.create(
+            ema=ema, item_id='B6', sub_item_id='B6_drink_count',
+            response_type='number', value_numeric=4,
+        )
+        # 4 drinks is over the women's threshold (>3) but not the men's (>4).
+        result = select_prompt(ema)
+        self.assertEqual(result['prompt_id'], 'P020')
+        self.assertEqual(result['fallback_reason'], 'closest_fit')
+
+        male_user = make_user(email='male-drinker-2@test.com', gender='male')
+        ema2 = EMA.objects.create(user=male_user, prompt_id='test', status='completed')
+        EMAItemResponse.objects.create(
+            ema=ema2, item_id='B6', sub_item_id='B6_drink_count',
+            response_type='number', value_numeric=4,
+        )
+        result2 = select_prompt(ema2)
+        self.assertNotEqual(result2['fallback_reason'], 'closest_fit')
+
+    def test_alcohol_severity_override_skipped_when_p020_recently_delivered(self):
+        from app.notification_service import select_prompt
+
+        user = make_user(email='drinker-excluded@test.com', gender='male')
+        ema = EMA.objects.create(user=user, prompt_id='test', status='completed')
+        EMAItemResponse.objects.create(
+            ema=ema, item_id='B6', sub_item_id='B6_drink_count',
+            response_type='number', value_numeric=6,
+        )
+
+        result = select_prompt(ema, exclude_prompt_ids=['P020'])
+
+        self.assertNotEqual(result['fallback_reason'], 'closest_fit')
 
 
 # ---------------------------------------------------------------------------
@@ -2546,7 +2730,7 @@ class EvaluateUserMRTTests(TestCase):
     @patch('app.tasks.apply_decision_rules')
     @patch('app.tasks.calculate_mssd')
     @patch('app.tasks.random.uniform', side_effect=[0.3, 0.8])
-    def test_control_arm_drawn_but_not_sent_while_catalog_empty(self, mock_rand, mock_mssd, mock_rules, mock_send):
+    def test_control_arm_drawn_and_sent(self, mock_rand, mock_mssd, mock_rules, mock_send):
         os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
         os.environ['JITAI_ARM_RANDOMIZATION_PROBABILITY'] = '0.5'
         ema = self._latest_ema()
@@ -2562,8 +2746,36 @@ class EvaluateUserMRTTests(TestCase):
         self.assertEqual(log.message_arm, 'control')
         self.assertEqual(log.arm_randomization_draw, 0.8)
         self.assertEqual(log.arm_randomization_probability, 0.5)
-        # No active-control messages in the catalog yet (pending Eliana) —
-        # falls back to not sending rather than fabricating content.
+        # Control catalog is now populated (C001-C004, finalized bank) — the
+        # control arm actually sends.
+        self.assertTrue(log.send_prompt)
+        self.assertIn(log.prompt_id, ['C001', 'C002', 'C003', 'C004'])
+        self.assertIsNone(log.category_drawn)
+        mock_send.assert_called_once()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', side_effect=[0.3, 0.8])
+    def test_control_arm_not_sent_when_control_catalog_empty(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        import app.notification_service as ns
+
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        os.environ['JITAI_ARM_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        saved = ns._CONTROL_CATALOG
+        ns._CONTROL_CATALOG = []
+        try:
+            from app.tasks import _evaluate_user
+            _evaluate_user(self.user, 0.5)
+        finally:
+            ns._CONTROL_CATALOG = saved
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertEqual(log.message_arm, 'control')
         self.assertFalse(log.send_prompt)
         self.assertEqual(log.prompt_id, '')
         mock_send.assert_not_called()
