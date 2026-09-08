@@ -505,13 +505,27 @@ def load_ema_item_responses(
 # Preregistered feasibility benchmark: 75% completed check-in rate.
 # Analytic requirement for AR(1) parameter recovery: 80% (reported separately).
 
+# How long a participant has to answer a prompt before it closes
+# (analysis-resources/JITAI-analysis-plan.md). Three durations in this codebase
+# are routinely confused; they are NOT interchangeable:
+#   30 min - this one, the EMA response window
+#   60 min - the JITAI refractory between two sent prompts
+#            (check_cooldown_compliance, decision_engine.apply_decision_rules)
+#   2 h    - the post-prompt outcome window (outcome_window_start/end)
+# Separately, compute_hr_mssd() takes a window_minutes argument spelled exactly
+# like flag_in_window_completions()'s, but it is a rolling HR signal window and
+# is correctly 60.
+EMA_RESPONSE_WINDOW_MINUTES = 30
+
 
 def compute_ema_response_rate(ema_df: pd.DataFrame) -> pd.DataFrame:
     """
     Purpose:
         Compute completed EMA check-in rate per participant and overall.
         A prompt is 'completed' when all required items are submitted within
-        the 60-minute response window (status = 'completed').
+        the 30-minute response window (status = 'completed'). Note this keys
+        off `status` only and applies no latency test, so it is unaffected by
+        EMA_RESPONSE_WINDOW_MINUTES.
         Delivery failures are excluded from the denominator.
 
     Inputs:
@@ -559,7 +573,7 @@ def compute_ema_response_rate(ema_df: pd.DataFrame) -> pd.DataFrame:
 
 def flag_in_window_completions(
     ema_df: pd.DataFrame,
-    window_minutes: int = 60,
+    window_minutes: int = EMA_RESPONSE_WINDOW_MINUTES,
 ) -> pd.Series:
     """
     Purpose:
@@ -569,7 +583,11 @@ def flag_in_window_completions(
     Inputs:
         ema_df         - pd.DataFrame from load_ema(). Must contain columns:
                          sent_at, responded_at.
-        window_minutes - int. Response window in minutes (default 60).
+        window_minutes - int. Response window in minutes (default
+                         EMA_RESPONSE_WINDOW_MINUTES = 30). NOT the 60-minute
+                         JITAI refractory, and NOT compute_hr_mssd's
+                         identically-named window_minutes, which is a rolling
+                         HR signal window and is genuinely 60.
 
     Outputs:
         pd.Series of bool, same index as ema_df.
@@ -578,8 +596,8 @@ def flag_in_window_completions(
         FALSE = unanswered, expired, or responded outside window.
 
     Example:
-        sent 10:00, responded 10:30  ->  True   (30 <= 60)
-        sent 10:00, responded 11:30  ->  False  (90 > 60)
+        sent 10:00, responded 10:12  ->  True   (12 <= 30)
+        sent 10:00, responded 10:45  ->  False  (45 > 30)
         sent 10:00, responded NaT    ->  False
     Source of data:
         app_ema.sent_at / responded_at (via load_ema()).
@@ -609,7 +627,8 @@ def compute_response_latency(ema_df: pd.DataFrame) -> pd.Series:
     Outputs:
         pd.Series of float (minutes), same index as ema_df.
         NaN for rows where responded_at is null.
-        Latency > 60 min indicates an out-of-window response.
+        Latency > EMA_RESPONSE_WINDOW_MINUTES (30) indicates an out-of-window
+        response.
 
     Example:
         sent 10:00, responded 10:12  ->  12.0
@@ -764,45 +783,44 @@ def compute_run_in_mssd(ema_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame.from_records(records, columns=columns)
 
 
-def compute_within_person_threshold(
+def compute_observed_mssd(
     ema_df: pd.DataFrame,
-    quantile: float = 0.80,
+    window: int = 3,
 ) -> pd.Series:
     """
     Purpose:
-        Compute each participant's within-person MSSD eligibility threshold as
-        an expanding quantile over their EMA history. An expanding window
-        (shifted forward by one observation) is used so the threshold at time t
-        is estimated only from data before t, preventing look-ahead bias.
+        Compute the per-prompt MSSD signal exactly as the live decision engine
+        does: squared successive differences smoothed by a trailing rolling
+        mean. This is the quantity the engine gates on and stores as
+        JITAILog.observed_mssd, so it is the one an offline audit must match.
+
+        Distinct from compute_mssd(), which returns ONE cumulative scalar per
+        participant over their whole series. That remains the right measure for
+        run-in and LT-MSSD reporting and for the construct-validity harness in
+        mssd_validation.py; it is not what the engine triggers on.
 
     Inputs:
-        ema_df   - pd.DataFrame from load_ema_item_responses() filtered to
-                   item_id = 'B1' (energy) or 'B2' (stress). Must contain
-                   columns: user_id, sent_at, value_numeric.
-                   Do NOT use mood from load_ema() - the live decision engine
-                   reads B1/B2 from app_emaitemresponse to compute observed_mssd
-                   stored in JITAILog. Using mood would produce threshold values
-                   that disagree with what the engine actually computed.
-        quantile - float in (0, 1). Threshold percentile (default 0.80,
-                   PI sign-off 2026-07-06).
+        ema_df - pd.DataFrame with columns: user_id, sent_at, value_numeric.
+                 Pass the composite per-prompt series from
+                 _prep_trigger_signal(), not raw per-item rows: the engine
+                 averages the B1/B2 sub-items into one value per prompt, so
+                 un-collapsed rows would take differences across sub-items
+                 within a single prompt.
+        window - int. Trailing window in prompts (default 3, matching
+                 decision_engine.calculate_mssd's window=3).
 
     Outputs:
         pd.Series of float, indexed by ema_df index.
-        Value at row i = quantile of MSSD distribution computed from all
-        answered EMA pairs before row i for that participant.
-
-    Note on MSSD formulation: the live engine uses a rolling(window=3) MSSD
-    rather than cumulative MSSD over all answered pairs. For an exact audit
-    against JITAILog.observed_mssd, match the rolling formulation. For the
-    overall feasibility report, cumulative MSSD is acceptable and aligns with
-    the construct-validity harness in mssd_validation.py.
+        Value at row i = mean of the squared successive differences falling in
+        the trailing `window` prompts. NaN only where no difference is
+        available (a participant's first prompt).
 
     Example:
-        per-prompt squared diffs [., 1, 4, 1, 9] -> expanding 80th-pct, shift(1)
-        so each row's threshold only sees strictly earlier squared diffs.
+        values [4, 5, 3, 6]  ->  squared diffs [., 1, 4, 9]
+                             ->  rolling-3 mean [., 1.0, 2.5, 4.667]
     Source of data:
-        app_emaitemresponse.value_numeric (B1/B2). Mirrors
-        decision_engine.add_within_person_threshold (expanding, shifted).
+        app_emaitemresponse.value_numeric (B1/B2), collapsed per prompt.
+        Mirrors decision_engine.calculate_mssd.
     """
     if ema_df is None or ema_df.empty:
         return pd.Series([], dtype=float)
@@ -811,12 +829,74 @@ def compute_within_person_threshold(
     df["sent_at"] = pd.to_datetime(df["sent_at"], utc=True, errors="coerce")
     df = df.sort_values(["user_id", "sent_at"])
 
-    squared_diff = (
-        df.groupby("user_id")["value_numeric"].diff() ** 2
+    squared_diff = df.groupby("user_id")["value_numeric"].diff() ** 2
+
+    observed_mssd = squared_diff.groupby(df["user_id"]).transform(
+        lambda s: s.rolling(window=window, min_periods=1).mean()
     )
 
+    return observed_mssd.reindex(ema_df.index)
+
+
+def compute_within_person_threshold(
+    ema_df: pd.DataFrame,
+    quantile: float = 0.80,
+    window: int = 3,
+) -> pd.Series:
+    """
+    Purpose:
+        Compute each participant's within-person MSSD eligibility threshold as
+        an expanding quantile over their own prior observed_mssd values. An
+        expanding window (shifted forward by one observation) is used so the
+        threshold at time t is estimated only from data before t, preventing
+        look-ahead bias.
+
+        The quantile is taken over the rolling-window MSSD from
+        compute_observed_mssd(), NOT over the raw squared differences. This
+        matches decision_engine.add_within_person_threshold, which reads the
+        smoothed observed_mssd column produced by calculate_mssd(window=3).
+        Taking the quantile of raw squared diffs is a different estimator: on
+        synthetic cohorts the two agree in the median but disagree on roughly
+        9% of individual eligibility decisions.
+
+    Inputs:
+        ema_df   - pd.DataFrame with columns: user_id, sent_at, value_numeric.
+                   Pass the composite per-prompt series from
+                   _prep_trigger_signal(). Do NOT use mood from load_ema() -
+                   the live engine builds its signal by averaging the
+                   B1_valence, B2_stress and B1_arousal sub-items of
+                   app_emaitemresponse (see app/tasks.py::_evaluate_user), so
+                   any other signal produces thresholds that disagree with what
+                   the engine actually computed.
+        quantile - float in (0, 1). Threshold percentile (default 0.80,
+                   PI sign-off 2026-07-06).
+        window   - int. Trailing MSSD window, passed through to
+                   compute_observed_mssd() (default 3, matching the engine).
+
+    Outputs:
+        pd.Series of float, indexed by ema_df index.
+        Value at row i = quantile of that participant's observed_mssd values
+        strictly before row i. NaN until at least 3 prior values exist.
+
+    Example:
+        observed_mssd [., 1.0, 2.5, 4.667, 3.0] -> expanding 80th-pct, shift(1)
+        so each row's threshold only sees strictly earlier observed_mssd.
+    Source of data:
+        app_emaitemresponse.value_numeric (B1/B2), collapsed per prompt.
+        Mirrors decision_engine.add_within_person_threshold (expanding,
+        shifted) over decision_engine.calculate_mssd's observed_mssd.
+    """
+    if ema_df is None or ema_df.empty:
+        return pd.Series([], dtype=float)
+
+    df = ema_df.copy()
+    df["sent_at"] = pd.to_datetime(df["sent_at"], utc=True, errors="coerce")
+    df = df.sort_values(["user_id", "sent_at"])
+
+    observed_mssd = compute_observed_mssd(df, window=window)
+
     threshold = (
-        squared_diff.groupby(df["user_id"])
+        observed_mssd.groupby(df["user_id"])
         .transform(
             lambda s: s.expanding(min_periods=3).quantile(quantile).shift(1)
         )
@@ -2858,13 +2938,13 @@ def plot_response_latency(ema_df: pd.DataFrame) -> plt.Figure:
     """
     Purpose:
         Distribution of EMA response latency (minutes from prompt to submission),
-        with the 60-minute in-window boundary drawn as a reference line.
+        with the 30-minute in-window boundary drawn as a reference line.
 
     Inputs:
         ema_df - pd.DataFrame from load_ema() (sent_at, responded_at).
 
     Outputs:
-        plt.Figure. Histogram of response latency with a 60-min window line.
+        plt.Figure. Histogram of response latency with a 30-min window line.
 
     Example:
         plot_response_latency(ema_df)  ->  Figure, x=latency minutes
@@ -2878,7 +2958,8 @@ def plot_response_latency(ema_df: pd.DataFrame) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(8, 5))
     upper = float(np.nanpercentile(latency, 99))
     sns.histplot(latency.clip(upper=upper), ax=ax, bins=30, alpha=0.7)
-    ax.axvline(60, color="red", linestyle="--", label="60-min response window")
+    ax.axvline(EMA_RESPONSE_WINDOW_MINUTES, color="red", linestyle="--",
+               label=f"{EMA_RESPONSE_WINDOW_MINUTES}-min response window")
     ax.set_xlabel("response latency (minutes)")
     ax.set_ylabel("EMA responses")
     ax.set_title("EMA response latency")
@@ -3251,8 +3332,8 @@ def plot_ema_disposition_over_time(ema_df: pd.DataFrame) -> plt.Figure:
     """
     Purpose:
         Stacked-area decomposition of every delivered EMA prompt per study day
-        into its disposition: Completed in-window (responded <= 60 min),
-        Responded late (responded > 60 min), and Expired/Missed. A Delivery
+        into its disposition: Completed in-window (responded <= 30 min),
+        Responded late (responded > 30 min), and Expired/Missed. A Delivery
         failed band is included only when an EMA links to a failed JITAI via
         source_jitai_log_id (scheduled EMAs carry no EMA-level delivery status;
         push-level failures are shown in the delivery-funnel figure).
@@ -3282,7 +3363,8 @@ def plot_ema_disposition_over_time(ema_df: pd.DataFrame) -> plt.Figure:
     answered = df["responded_at"].notna()
 
     df["disposition"] = np.select(
-        [answered & latency.between(0, 60), answered & (latency > 60)],
+        [answered & latency.between(0, EMA_RESPONSE_WINDOW_MINUTES),
+         answered & (latency > EMA_RESPONSE_WINDOW_MINUTES)],
         ["Completed in-window", "Responded late"],
         default="Expired/Missed",
     )

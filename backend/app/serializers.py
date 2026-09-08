@@ -94,7 +94,7 @@ class EMASerializer(serializers.ModelSerializer):
             'outcome_window_end', 'expires_at', 'mood', 'stress', 'energy',
             'item_responses',
         ]
-        read_only_fields = ('id', 'sent_at', 'user', 'responded_at', 'status')
+        read_only_fields = ('id', 'sent_at', 'user', 'responded_at', 'status', 'expires_at')
         extra_kwargs = {
             'mood':   {'min_value': 1, 'max_value': 7},
             'stress': {'min_value': 1, 'max_value': 7},

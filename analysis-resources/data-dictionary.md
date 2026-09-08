@@ -26,7 +26,7 @@ For every column we record:
 
 Aligning with Celia's physiological data limitation, Labfront limitation, Eliana's prompt analysis plan, and Abigail's feasbility definitions. 
 
-Database and modeling is based on Dustin's [Django model.](https://www.dropbox.com/work/REACT/Engineering/Dustin/Archive?di=left_nav_browse)
+Database and modeling is based on Dustin's [Django model.](../analysis-resources/production_schema.md)
 
 | Tag | Definition |
 |-----|------------|
@@ -43,7 +43,7 @@ Database and modeling is based on Dustin's [Django model.](https://www.dropbox.c
 
 - **Study window:** ~35-day protocol (5 weeks). **Week 1 is a non-interventional run-in baseline** — no JITAI randomization; used exclusively to establish each participant's within-person MSSD threshold. Micro-randomization runs **Weeks 2–5**. **5–6 EMA check-ins per participant per day** (expected N ≈ 175–210 prompts/participant). Feasibility thresholds are calibrated from the synthetic sensitivity analysis. (`JITAI-analysis-plan.md`)
 - **Daily prompt cap:** Hard limit of **4 JITAI prompts per day** with a minimum **60-minute cooldown** between triggers (projected ~2–3 prompts delivered/day when eligible).
-- **Synthetic epoch:** synthetic cohorts (`react_cohort.py`) anchor Day 1 to `now − days` at 00:00 UTC (or an explicit `start`); EMA prompts follow a fixed daily schedule, HR is a 15-min waking-hour cadence, and Garmin stress is hourly. No HRV stream is generated.
+- **Synthetic epoch:** synthetic cohorts start at **YYYY-MM-DD 00:00**; EMA and HR rows are at 1-minute frequency, HRV is one row per night. (`syntheticData/SCHEMA.md`)
 - **Authoritative schema:** this dictionary is kept in sync with `Resources/react_schema.csv` (machine-readable column definitions) and `Resources/Database Schema v4.pdf` (ERD). The production Django backend may differ; divergences are catalogued in the [Schema reconciliation appendix](#appendix--schema-reconciliation--known-gaps).
 - **Canonical prose definitions** live in `analysis-plan/Feasibility Definitions.docx`. This dictionary is intended to stay consistent with it.
 
@@ -71,7 +71,7 @@ study management but shapes the meaning of every
 
 - **Black-box derived metrics.** Garmin **Stress Score** (0–100) and **HRV** are
   proprietary, pre-computed algorithms derived from HRV/PPG.
-    - `stress_sample.stress_score` is a Garmin score -- **not** a function of heart rate. (The synthetic generator draws stress independently as `Normal(45, 18)` clipped to 0–100, `react_cohort.py`; a stand-in only that does **not** reflect how real stress is produced.)
+    - `stress_sample.stress_score` is a Garmin score -- **not** a function of heart rate. (The synthetic seeder fakes stress as `50 + (hr − 70) × 2`, `db_seed.py:208`; this is a stand-in only and does **not** reflect how real stress is produced.)
 - **No wear-status field.** Exports contain **no** `is_worn` flag. **Non-wear must
   be inferred** from missing timestamps, low confidence scores, or sync status.
     - Consequently `bpm = 0`/NULL is treated as inferred non-wear, and wear-time uses
@@ -96,7 +96,7 @@ study management but shapes the meaning of every
 ## 2. Persisted tables (REACT analysis schema)
 
 Column names, types, and foreign keys follow `Resources/react_schema.csv`; meanings
-are enriched from `JITAI-analysis-plan.md` and `syntheticData/react_cohort.py`.
+are enriched from `JITAI-analysis-plan.md` and `syntheticData/db_seed.py`.
 
 ### 2.1 `app_user`
 
@@ -107,12 +107,12 @@ Participant record and enrollment status.
 | Name | Type | Source stream | Meaning |
 |------|------|---------------|---------|
 | `user_id` | INT (PK) | Study/enrollment | Primary key. |
-| `email` | VARCHAR(254) | Study/enrollment | Login / unique identifier. Synthetic accounts use `u<N>@synthetic.gatorfan` so seeds can be wiped without touching real users (`react_cohort.py`). |
+| `email` | VARCHAR(254) | Study/enrollment | Login / unique identifier. Synthetic accounts use `<uuid>@synthetic.gatorfan` so seeds can be wiped without touching real users (`db_seed.py:29,146`). |
 | `first_name` | VARCHAR(100) | Study/enrollment | Given name. |
 | `last_name` | VARCHAR(100) | Study/enrollment | Family name. |
-| `birthdate` | DATE | Study/enrollment | Date of birth. Synthetic cohort uses a fixed `2003-01-01` birthdate (`react_cohort.py`). |
+| `birthdate` | DATE | Study/enrollment | Date of birth. Synthetic cohort draws ages 18–24 (`db_seed.py:144`). |
 | `gender` | VARCHAR(10) | Study/enrollment | `male` / `female` / `other`. |
-| `password` | VARCHAR(128) | Study/enrollment | Hashed password; NULL for synthetic/mock accounts (`react_cohort.py` omits it). |
+| `password` | VARCHAR(128) | Study/enrollment | Hashed password; NULL for synthetic/mock accounts (`db_seed.py:151`). |
 | `push_token` | VARCHAR(128) | App telemetry | Expo push-notification token; required to deliver EMA/JITAI prompts. |
 | `is_enrolled` | BOOLEAN | Study/enrollment | Whether the participant is actively enrolled. Denominator for retention. |
 | `enrolled_at` | DATETIME | Study/enrollment | Enrollment timestamp (Day 1 anchor). |
@@ -122,9 +122,11 @@ Participant record and enrollment status.
 **Production table:** `app_ema` (see [`production_schema.md`](./production_schema.md)).
 
 One row per EMA prompt (delivered via push notification). A prompt is
-**completed** when all required items are submitted within the 60-minute response
+**completed** when all required items are submitted within the 30-minute response
 window; **responded (partial)** when ≥1 item is submitted in-window
-(`JITAI-analysis-plan.md:21-27`). Per-item Likert responses are stored in
+(`JITAI-analysis-plan.md:21-27`). This is the *response* window and is distinct
+from the 60-minute JITAI refractory between sent prompts and from the 2-hour
+post-prompt outcome window. Per-item Likert responses are stored in
 [`app_emaitemresponse`](#23-app_emaitemresponse); the fields below are top-level
 prompt metadata.
 
@@ -132,15 +134,15 @@ prompt metadata.
 |------|------|---------------|---------|
 | `id` | INT (PK) | EMA push | Primary key. |
 | `user_id` | INT (FK → `user.user_id`) | EMA push | Participant who received the prompt. |
-| `prompt_id` | VARCHAR(64) | EMA push | Prompt template identifier (synthetic form `p-<day>-<k>`, `react_cohort.py`). |
+| `prompt_id` | VARCHAR(64) | EMA push | Prompt template identifier (e.g. `prompt-mood-0`, `db_seed.py:229`). |
 | `sent_at` | DATETIME | EMA push | When the prompt was delivered. |
 | `responded_at` | DATETIME | EMA push | When the participant submitted; NULL if unanswered. Response latency = `responded_at − sent_at`. |
-| `status` | VARCHAR(16) | EMA push | Response status, e.g. `completed`, `responded`, `not_responded` (the synthetic generator writes `completed` for answered prompts and `expired` otherwise, `react_cohort.py`). |
+| `status` | VARCHAR(16) | EMA push | Response status, e.g. `completed`, `responded`, `not_responded` (seeder writes `completed`, `db_seed.py:231`). |
 | `ema_type` | VARCHAR(32) | Decision engine | Prompt category, e.g. `jitai_triggered` vs `scheduled`. Determines which item blocks are presented. |
 | `source_jitai_log_id` | INT (FK → `jitai_log.id`, nullable) | Decision engine | The JITAI decision point that triggered this prompt, if applicable; NULL for scheduled check-ins. |
 | `outcome_window_start` | DATETIME | Decision engine | Start of the outcome measurement window for this prompt (used to identify post-JITAI EMA outcomes). |
 | `outcome_window_end` | DATETIME | Decision engine | End of the outcome measurement window. |
-| `expires_at` | DATETIME | EMA push | When the response window closes; typically `sent_at + 60 min`. Responses after this are out-of-window. |
+| `expires_at` | DATETIME | EMA push | When the response window closes: `sent_at + 30 min` (`app.ema_catalog.EMA_RESPONSE_WINDOW_MINUTES`). Responses after this are out-of-window. Not the outcome window — see `outcome_window_end`. |
 | `mood` | SMALLINT | EMA push | Top-level self-reported mood (Likert, 1–7). Denormalized summary field; detailed per-item responses are in `ema_item_response`. |
 | `stress` | SMALLINT | EMA push | Top-level self-reported stress (Likert, 1–7). |
 | `energy` | SMALLINT | EMA push | Top-level self-reported energy (Likert, 1–7). |
@@ -196,9 +198,9 @@ Heart-rate samples imported from Garmin via Labfront.
 |------|------|---------------|---------|
 | `id` | INT (PK) | Labfront/Garmin | Primary key. |
 | `user_id` | INT (FK → `user.user_id`) | Labfront/Garmin | Participant. |
-| `timestamp` | DATETIME | Labfront/Garmin | Sample time. Real cadence ~1-sec/epoch; subject to 2–5 min sync latency. Synthetic data uses a 15-min waking-hour cadence with a midday non-wear gap (`react_cohort.py`). |
+| `timestamp` | DATETIME | Labfront/Garmin | Sample time. Real cadence ~1-sec/epoch; subject to 2–5 min sync latency. Synthetic data is minute-level, optionally thinned via `--hr-every` (`db_seed.py:133`). |
 | `bpm` | SMALLINT | Labfront/Garmin | Heart rate in beats per minute. `0`/NULL ≈ **inferred non-wear** (no explicit wear flag -- see [collection caveats](#how-labfrontgarmin-data-is-actually-produced-collection-mechanics--caveats)). |
-| `source` | VARCHAR(32) | Labfront/Garmin | Import/provenance tag; the synthetic generator writes `garmin_labfront` (`react_cohort.py`). |
+| `source` | VARCHAR(32) | Labfront/Garmin | Import/provenance tag; seeder writes `garmin_labfront` (`db_seed.py:191`). |
 
 ### 2.6 `app_stresssample`
 
@@ -210,9 +212,9 @@ Garmin Stress Score time series imported from Labfront.
 |------|------|---------------|---------|
 | `id` | INT (PK) | Labfront/Garmin | Primary key. |
 | `user_id` | INT (FK → `user.user_id`) | Labfront/Garmin | Participant. |
-| `timestamp` | DATETIME | Labfront/Garmin | Sample time. Real Garmin cadence is ~3 min; synthetic data is sampled hourly (`react_cohort.py`). |
-| `stress_score` | SMALLINT | Labfront/Garmin | **Garmin proprietary stress score, 0–100**, derived from HRV by a black-box algorithm -- **not** raw and **not** a function of HR. Synthetic values are drawn independently as `Normal(45, 18)` clipped to 0–100 (`react_cohort.py`). |
-| `source` | VARCHAR(32) | Labfront/Garmin | Import/provenance tag; the synthetic generator writes `garmin_labfront` (`react_cohort.py`). |
+| `timestamp` | DATETIME | Labfront/Garmin | Sample time. Synthetic data is sampled every 3 minutes (`db_seed.py:204`). |
+| `stress_score` | SMALLINT | Labfront/Garmin | **Garmin proprietary stress score, 0–100**, derived from HRV by a black-box algorithm -- **not** raw and **not** a function of HR. Synthetic proxy only: `50 + (hr − 70) × 2` (`db_seed.py:208`). |
+| `source` | VARCHAR(32) | Labfront/Garmin | Import/provenance tag; seeder writes `garmin_labfront` (`db_seed.py:213`). |
 
 ### 2.7 `app_wearabledevice`
 
@@ -224,7 +226,7 @@ One device record per participant (the Garmin linked through Labfront).
 |------|------|---------------|---------|
 | `id` | INT (PK) | Labfront/Garmin | Primary key. |
 | `user_id` | INT (FK → `user.user_id`, UNIQUE) | Labfront/Garmin | Owner (one-to-one). |
-| `labfront_participant_id` | VARCHAR(64) | Labfront/Garmin | Labfront platform participant identifier (synthetic form `labfront-<zero-padded user_id>`, e.g. `labfront-00000001`, `react_cohort.py`). |
+| `labfront_participant_id` | VARCHAR(64) | Labfront/Garmin | Labfront platform participant identifier (`labfront-<uuid[:8]>`, `db_seed.py:173`). |
 | `is_active` | BOOLEAN | Labfront/Garmin | Whether the device is active in the study. |
 | `last_synced_at` | DATETIME | Labfront/Garmin | Most recent successful sync. Flag as stale if > 24 h old; note the inherent 2–5 min sync latency. |
 
@@ -399,10 +401,10 @@ follow `JITAI-analysis-plan.md` and `syntheticData/decision/`.
 | Metric | Type | Definition / formula | Notes & benchmarks |
 |--------|------|----------------------|--------------------|
 | **Within-person MSSD** (`observed_mssd`) | FLOAT | Mean of squared successive differences: `mean((x_t − x_{t-1})²)` over **consecutive answered** EMA items. | The core JITAI trigger signal. Input is `ema_item_response.value_numeric` where `item_id = 'B1'` (energy) or `'B2'` (stress). Missing EMAs suppress the difference for both the missing observation and the immediately following prompt. |
-| **Expected MSSD** | FLOAT | `2·σ²·(1−ρ)` from latent AR(1) parameters. | Ground-truth benchmark used to validate recovery (`synthetic_generator.py`). |
+| **Expected MSSD** | FLOAT | `2·σ²·(1−ρ)` from latent AR(1) parameters. | Ground-truth benchmark used to validate recovery (`syntheticData/SCHEMA.md`). |
 | **AR(1) ρ̂** (autocorrelation) | FLOAT | Lag-1 autocorrelation over consecutive answered EMA pairs. | Recovery **degrades below ~80%** response rate -- an analytic requirement, distinct from the 75% feasibility benchmark. |
 | **AR(1) σ̂** (residual SD) | FLOAT | Sample SD of demeaned answered EMA. | More robust than ρ̂ across response rates. |
-| **Response latency** | INT (min) | `responded_at − sent_at`. | Must be ≤ 60 min to count in-window. |
+| **Response latency** | INT (min) | `responded_at − sent_at`. | Must be ≤ 30 min to count in-window. |
 | **Reminder-to-check-in latency** | INT (min) | For each `checkin_reminder`, `MIN(ema.sent_at) − checkin_reminder.sent_at` over the same participant's `ema` rows submitted after that reminder and before the next reminder (or end of participant-local day); NULL if no check-in followed. | "Prompt response time" for nudges — how quickly a reminder converts to a check-in. Distinct from **Response latency** (which times an opened EMA prompt → submit). Long or NULL latencies flag ineffective reminders. |
 | **Reminders-to-check-in** | INT | Per participant per participant-local day, the count of `checkin_reminder` rows sent before the next `ema` submission — i.e. the run of reminders sharing the same `daily_count_at_send` up to the check-in that increments it. | Diagnoses how many nudges it takes to get a response. High counts (or reaching the daily cap with many reminders but few check-ins) flag disengagement or reminder fatigue. |
 | **Wear time** | FLOAT (%) | Coverage over standardized waking hours **8:00 AM–10:00 PM** (14 h/day): numerator = 14 h − gaps > **2 consecutive hours**; denominator = 14 h. | Benchmark ≥ 8 h/day, ≥ 5 days/week. Non-wear inferred (no wear flag); BBI/EMA used as supporting evidence (`JITAI-analysis-plan.md:31-36`). |
@@ -434,13 +436,17 @@ Pre-specified baseline moderators assessed at enrollment. Used to test heterogen
 
 ## 4. Synthetic generator columns (provenance for seeded data)
 
-The synthetic module (`syntheticData/`) produces the DataFrames that drive offline analysis
-and MSSD validation. The production-aligned cohort is generated by
-[`react_cohort.py`](../backend/syntheticData/react_cohort.py) and returns the `app_*` frames
-documented in §2. The tables below document the **legacy** MSSD validation harness
-[`synthetic_generator.py`](../backend/syntheticData/synthetic_generator.py) (`generate_cohort` /
-`generate_HR`), whose ground-truth columns (`true_sigma`, `true_rho`, `true_expected_mssd`) an
-analyst encounters in validation outputs.
+The synthetic module (`syntheticData/`) produces the DataFrames and CSVs that seed
+the database and drive validation. Full generator I/O is documented in
+[`syntheticData/SCHEMA.md`](../syntheticData/SCHEMA.md) §1–3; the columns an
+analyst will actually encounter in CSV exports and validation outputs are
+summarized here.
+
+> `syntheticData/SCHEMA.md` **§4 (Database seed outputs) is stale** -- it
+> describes an older `db_seed.py` that targeted the production `models.py` schema
+> (device-FK `heart_rate_sample` with `zone`, EMA with only `mood`). The current
+> `db_seed.py` targets the REACT schema documented above. Trust §1–3 for generator
+> internals; trust **this file** for what gets persisted.
 
 **EMA frame** (`generate_cohort`) : one row per prompt per user
 
@@ -498,7 +504,7 @@ remains a secondary reference. The earlier "divergences" below are **resolved**:
 |------|-------------------------------|--------------------------|
 | `stress_sample` | No `StressSample` model/migration | `StressSample` model + `app_stresssample` table exist |
 | `heart_rate_sample` | `HeartRateSample.device` FK + `zone` | `user_id` FK + `source` column (no device/zone), matches this doc |
-| `wearable_device` | Fitbit-oriented (`fitbit_device_id`, `device_name`) | Labfront-oriented (`labfront_participant_id`); legacy device fields removed in the `0025` overhaul, and the participant-id field renamed to `labfront_participant_id` in `0030` |
+| `wearable_device` | Fitbit-oriented (`fitbit_device_id`, `device_name`) | Labfront-oriented (`labfront_participant_id`); Fitbit fields dropped (`0030`–`0032`) |
 | `ema` | `timestamp`, `physical_activity`, `weight_lbs`, `notes` | Prompt lifecycle (`prompt_id`, `sent_at`, `status`, `ema_type`, `expires_at`); mood/stress/energy **1–7** |
 | `user.is_enrolled`, `enrolled_at` | Not present; Fitbit-token/height/goal fields | Both present; legacy Fitbit/height/goal fields stripped (`0031`) |
 | `jitai_log` | Simpler notification audit (~8 cols) | Full decision + delivery lifecycle, **27 columns** |
@@ -509,12 +515,9 @@ remains a secondary reference. The earlier "divergences" below are **resolved**:
 1. **`hair_sample` / `hair_hygiene_covariates` (§2.11–§2.12)** are analysis-plan tables that are
    **not** present in the production dump (no `app_hairsample*`). These remain the one genuine
    schema gap and are sourced/joined outside the Django backend.
-2. **EMA item scale is settled at 1–7.** Production `models.py` enforces it
+2. **`syntheticData/SCHEMA.md` §4 is stale** and should be refreshed to match the
+   current seeder (see [§4](#4-synthetic-generator-columns-provenance-for-seeded-data)).
+3. **EMA item scale is settled at 1–7.** Production `models.py` enforces it
    (`MinValueValidator(1)`, `MaxValueValidator(7)`) and the current generator
    `syntheticData/react_cohort.py` emits 1–7 to match. The 1–5 scale was the retired
    `synthetic_generator.py` only; no open question remains.
-3. **Wearable source is Labfront (Garmin Venu 3).** There is no Fitabase or Fitbit integration:
-   `HeartRateSample.source` / `StressSample.source` default to `garmin_labfront` in the live
-   models. The only residual legacy artifact is the **cosmetic index names**
-   `app_wearabledevice_fitabase_participant_id_*` — the column itself is `labfront_participant_id`
-   (see [`production_schema.md`](./production_schema.md)).

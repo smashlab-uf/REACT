@@ -62,18 +62,36 @@ celery -A project.celery beat   --loglevel=info
 ```
 
 ```bash
-# Mobile (Expo SDK 56) — from mobile/. Expo Go does NOT work; needs a dev client on a physical device.
+# Mobile (Expo SDK 56) — from mobile/. Needs Node 20.19.4+. Expo Go does NOT work; needs a dev client on a physical device.
 cd mobile && npm install
 npx expo run:ios --device        # first native build; afterwards use `npx expo start --dev-client`
 npx expo run:android --device    # needs adb — verify with `adb devices`
 # mobile/.env must set EXPO_PUBLIC_API_KEY equal to the backend API_KEY, or requests get 403.
+
+# Checks (no test suite; this is what CI-equivalent verification looks like)
+npx tsc --noEmit
+npx expo export --platform ios --output-dir /tmp/x
 ```
 
 ```bash
 # Analytics — from analytics/. Loaders bootstrap Django to read the live DB (scripts.py:_ensure_django).
 pip install -r requirements.txt
-streamlit run REACT-dashboard/app.py
+streamlit run REACT-dashboard/app.py    # reads live data only if REACT_USE_MOCK_DATA=false and
+                                         # REACT_DASHBOARD_API_KEY is set (matches backend DASHBOARD_API_KEY)
 ```
+
+```bash
+# Manual end-to-end QA scripts (not part of the automated test suite) — from backend/
+python3 dress_rehearsal.py [--days N] [--reset]   # simulated participants at the ORM layer,
+                                                   # exercises cooldown/daily-cap/missing-token paths
+                                                   # through the real _evaluate_user + /jitai/receipt/ code
+python3 full_circle_test.py [--base-url URL]       # hits a real running backend (prod or local) over HTTP
+                                                    # to register/enroll/submit EMAs and poll for JITAI triggers
+```
+
+GitHub Actions (`.github/workflows/django-ci.yml`) runs on every push: decision-engine scenario
+tests, then `manage.py migrate` + `manage.py test` against SQLite (via `DATABASE_URL=sqlite:///db.sqlite3`,
+not `test_settings`). A push to `main` that passes then auto-deploys to Heroku.
 
 ---
 
@@ -81,8 +99,8 @@ streamlit run REACT-dashboard/app.py
 
 Three cooperating processes (`Procfile`) plus the mobile client:
 
-- **web** — `gunicorn project.wsgi` — the DRF API and Django Admin. The researcher dashboard *is*
-  Django Admin, not a separate SPA.
+- **web** — `gunicorn project.wsgi` — the DRF API and Django Admin (the primary researcher
+  surface; see Researcher Dashboard below for the separate Streamlit monitoring app).
 - **worker** — `celery -A project.celery worker` — executes the JITAI / notification tasks.
 - **beat** — `celery -A project.celery beat` — fires all three periodic tasks every **180 s**
   (`CELERY_BEAT_SCHEDULE` in `settings.py`): `ingest_wearable_data`, `evaluate_jitai_triggers`,
@@ -90,9 +108,12 @@ Three cooperating processes (`Procfile`) plus the mobile client:
 
 Auth is two-layered: `APIKeyMiddleware` (`app/middleware.py`) rejects API routes that lack a matching
 `X-API-Key` when `API_KEY` is set (it keeps an exempt-path list), and DRF layers SimpleJWT on top.
+The two `/dashboard/*` endpoints use a third scheme instead (`IsAdminUserOrDashboardAPIKey` in
+`app/views.py`): staff session auth OR a bearer `DASHBOARD_API_KEY`, for the Streamlit dashboard.
 `settings.py` is fully env-driven and picks the database by environment: `DATABASE_URL`
 (Heroku/dj-database-url) → Cloud SQL when `K_SERVICE` is set (GCP) → discrete `DATABASE_*` vars. Key
-env vars: `SECRET_KEY`, `API_KEY`, `DASHBOARD_API_KEY`, `REDIS_URL`, `SENTRY_DSN`.
+env vars: `SECRET_KEY`, `API_KEY`, `DASHBOARD_API_KEY`, `REDIS_URL`, `SENTRY_DSN`,
+`JITAI_RANDOMIZATION_PROBABILITY` (default `0.5` — coin-flip gate in `evaluate_jitai_triggers`).
 
 Two push types reach the device (details in `mobile/README.md`): a **visible check-in reminder**
 (`send_checkin_reminders`, gated to 9–21 participant-local time with a 120-min cooldown, skipped once
@@ -107,14 +128,20 @@ regression-tested against a golden CSV (`scenario_test_outputs.csv`) in that dir
 
 ```
 backend/
-  project/         # Django project: settings.py, celery.py, urls.py, wsgi/asgi, test_settings.py
-  app/             # the single Django app: models, serializers, views, urls, tasks, admin,
+  project/         # Django project: settings.py, celery.py, urls.py (all routes live here, not in app/),
+                   #   wsgi/asgi, test_settings.py
+  app/             # the single Django app: models, serializers, views, tasks, admin,
                    #   middleware.py (API key), notification_service.py (Expo push), ema_catalog.py
   decision_engine/ # standalone MSSD/JITAI logic + golden-CSV scenario tests (pure pandas)
   syntheticData/   # cohort generators: react_cohort.py (current, 1–7 scale), synthetic_generator.py (legacy)
+  dress_rehearsal.py, full_circle_test.py  # manual end-to-end QA scripts, see Commands
 mobile/            # Expo SDK 56 app; source under src/; committed android/ & ios/; dev-client required
-analytics/         # offline analysis: scripts.py (ORM-backed loaders + pandas metrics), REACT-dashboard/ (Streamlit)
+analytics/         # offline analysis: scripts.py (ORM-backed loaders + pandas metrics),
+                   #   REACT-dashboard/ (Streamlit, reads /dashboard/* endpoints),
+                   #   sensitivity_analysis/ (MSSD parameter recovery / robustness notebooks)
 analysis-resources/# data-dictionary.md and production_schema.md (authoritative live-schema map)
+docs/superpowers/  # schema design specs/plans from the original REACT model buildout — historical
+                   #   context for why the models look the way they do, not a live source of truth
 ```
 
 ---
@@ -210,28 +237,39 @@ class JITAILog(models.Model):
 
 ## API Endpoints
 
+Source of truth: `backend/project/urls.py` (all routes are registered there, not in `app/`).
+(`full_circle_test.py`'s docstring points at `docs/api-contract.md` for request/response shapes,
+but that file doesn't exist in the repo — don't chase it.)
+
 ### Active endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/user/` | Create user account |
-| POST | `/user/login/` | Authenticate user |
 | PUT | `/user/{user_id}/` | Update user profile (owner or staff only) |
+| POST | `/user/login/` | Authenticate user |
 | POST | `/user/checkemail/` | Check if email already exists |
+| POST | `/auth/token/refresh/` | Refresh a SimpleJWT access token |
+| GET | `/auth/me/` | Fetch the authenticated user's own profile |
 | POST | `/wearable/` | Register Labfront participant ID on enrollment |
-| GET | `/wearable/{user_id}/` | Get device record |
-| PATCH | `/wearable/{user_id}/` | Update device record (e.g. last_synced_at) |
-| POST | `/ema/` | Submit EMA response from mobile app |
+| GET/PATCH | `/wearable/{user_id}/` | Get / update device record (e.g. last_synced_at) |
+| GET | `/ema/next/` | Fetch the next EMA prompt for the mobile app to show |
+| POST | `/ema/responses/` | Submit an EMA response from the mobile app |
 | GET | `/ema/{user_id}/` | Fetch EMA history (dashboard/admin use) |
 | POST | `/jitai/` | Internal — Celery logs a triggered intervention |
 | GET | `/jitai/{user_id}/` | Fetch JITAI history (dashboard/admin use) |
+| POST | `/jitai/receipt/` | Mobile app reports delivery/open of a JITAI push (`jitai_log_id`) |
+| POST | `/telemetry/ingest/` | Internal — Celery bulk-ingest wearable data |
 | GET | `/telemetry/hr/{user_id}/` | Fetch recent HR samples (dashboard use) |
 | GET | `/telemetry/stress/{user_id}/` | Fetch recent stress samples (dashboard use) |
 | POST | `/telemetry/phone/` | Ingest compose surface event from mobile app |
 | POST | `/telemetry/engagement/` | Ingest EMA/notification engagement event from mobile app |
-| POST | `/telemetry/ingest/` | Internal — Celery bulk-ingest wearable data |
+| GET | `/dashboard/participants/` | Per-participant sync/push/receipt status + staleness (Streamlit dashboard) |
+| GET | `/dashboard/latency-events/` | Recent push→receipt latency events (Streamlit dashboard) |
+| GET | `/swagger/` | drf-yasg OpenAPI UI |
 
-Telemetry ingest (HeartRateSample, StressSample) flows through `/telemetry/ingest/` (Celery internal — not a mobile app endpoint).
+The two `/dashboard/*` endpoints are read-only and gated by `IsAdminUserOrDashboardAPIKey`
+(staff session or `DASHBOARD_API_KEY`), not the standard `IsAuthenticated` used elsewhere.
 
 ---
 
@@ -309,16 +347,18 @@ Expo push token is stored in `User.push_token` and updated on app launch.
 
 ## Researcher Dashboard
 
-Built as a Django Admin extension — no separate React frontend. Key views:
+Two separate surfaces exist:
 
-- Participant overview — enrollment status, last EMA, last wearable sync, JITAI count this week
-- EMA monitor — completion rates, response latency, Likert score trends per participant
-- JITAI log viewer — delivery/open/interaction rates, trigger reason breakdown
-- CSV export action on all views for offline analysis (R / SPSS)
+1. **Django Admin** (`app/admin.py`) — full CRUD over every model (`ReadableAdminMixin` +
+   one `ModelAdmin` per model), the default researcher/PI surface today.
+2. **Streamlit feasibility dashboard** (`analytics/REACT-dashboard/`) — a read-only monitoring
+   view fed by the two `/dashboard/*` API endpoints (participant sync/push/receipt staleness,
+   push→receipt latency events), auth'd with `DASHBOARD_API_KEY`. Not a general study-data
+   browser — that's still Django Admin.
 
-Access control: two Django permission groups (`researcher_pi` — full access;
-`researcher_ra` — read-only on EMA and JITAILog, no access to User PII). Confirm
-RA access scope with Prof. Chang before implementing.
+The originally planned `researcher_pi` (full access) / `researcher_ra` (read-only, no User PII)
+Django permission-group split is **not implemented** — everyone with Django Admin access currently
+sees everything. Confirm RA access scope with Prof. Chang before implementing it.
 
 Labfront's own dashboard handles device compliance monitoring (battery, sync times, wear
 gaps) — do not duplicate this in Django Admin.

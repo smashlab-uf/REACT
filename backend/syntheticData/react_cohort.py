@@ -20,7 +20,9 @@ Frames returned by ``generate_react_cohort``:
 Signal model: two independent AR(1) latent series per participant -> B1 (energy) and B2 (stress),
 mapped to a 1-7 Likert (matches EMA MinValueValidator(1)/MaxValueValidator(7)). EMA missingness is
 clustered via the legacy ``_clustered_missing_mask``. JITAI decision points follow the two-stage
-gate (within-person eligibility -> coin flip p=0.5) with a 60-min cooldown and a delivery funnel.
+gate (within-person eligibility -> coin flip p=0.5) with a 60-minute JITAI refractory between
+sent prompts and a delivery funnel. That refractory is a different duration from the 30-minute
+EMA response window below -- see ``EMA_RESPONSE_WINDOW_MINUTES``.
 
 Author: @tylerrleee
 """
@@ -33,6 +35,12 @@ import numpy as np
 import pandas as pd
 
 from synthetic_generator import _clustered_missing_mask
+
+# Mirrors app.ema_catalog.EMA_RESPONSE_WINDOW_MINUTES. Duplicated rather than
+# imported because this module runs standalone, without Django on the path --
+# the same reason cooldown_minutes is re-declared here instead of imported from
+# the decision engine. Keep the two in step.
+EMA_RESPONSE_WINDOW_MINUTES = 30
 
 
 def generate_react_cohort(
@@ -136,11 +144,13 @@ def generate_react_cohort(
 
                 ema_id += 1
                 if answered:
-                    # ~12% respond late (outside the 60-min window)
-                    if rng.random() < 0.12:
-                        resp = ts + pd.Timedelta(minutes=int(rng.uniform(61, 180)))
-                    else:
-                        resp = ts + pd.Timedelta(minutes=int(rng.uniform(3, 55)))
+                    # Every answered prompt resolves inside its own response
+                    # window. The previous model emitted a 12% tail at 61-180
+                    # min still marked "completed" -- past that row's own
+                    # expires_at, and unreachable in production because the
+                    # client blocks submission once expires_at passes.
+                    resp = ts + pd.Timedelta(
+                        minutes=int(rng.uniform(3, EMA_RESPONSE_WINDOW_MINUTES - 2)))
                 else:
                     resp = pd.NaT
                 ema.append(dict(
@@ -149,7 +159,7 @@ def generate_react_cohort(
                     status="completed" if answered else "expired",
                     ema_type="scheduled_check_in", source_jitai_log_id=None,
                     outcome_window_start=pd.NaT, outcome_window_end=pd.NaT,
-                    expires_at=ts + pd.Timedelta(minutes=60),
+                    expires_at=ts + pd.Timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES),
                     mood=energy if answered else None,
                     stress=stress_val if answered else None,
                     energy=energy if answered else None,

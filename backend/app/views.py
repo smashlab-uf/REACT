@@ -8,6 +8,7 @@ from django.db.models import Count, OuterRef, Subquery
 from .ema_catalog import (
     AFTERNOON_START_HOUR,
     EMA_DAILY_CHECK_IN_CAP,
+    EMA_RESPONSE_WINDOW_MINUTES,
     EVENING_CHECK_IN_HOUR,
     POST_PROMPT_ITEM_IDS,
     ROTATING_ITEM_IDS,
@@ -637,7 +638,7 @@ class EMANextView(APIView):
                 'outcome_window_active': True,
                 'outcome_window_start': outcome_start,
                 'outcome_window_end': outcome_end,
-                'expires_at': outcome_end,
+                'expires_at': now + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES),
                 'daily_cap': EMA_DAILY_CHECK_IN_CAP,
                 'daily_count': daily_count,
                 'items': _filter_conditional_sub_items(
@@ -661,7 +662,7 @@ class EMANextView(APIView):
             'ema_type': 'scheduled_check_in',
             'jitai_log_id': None,
             'outcome_window_active': False,
-            'expires_at': now + timedelta(hours=OUTCOME_WINDOW_HOURS),
+            'expires_at': now + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES),
             'daily_cap': EMA_DAILY_CHECK_IN_CAP,
             'daily_count': daily_count,
             'items': _filter_conditional_sub_items(
@@ -701,7 +702,11 @@ class EMAResponseView(APIView):
             source_jitai_log=jitai_log,
             outcome_window_start=data.get('outcome_window_start'),
             outcome_window_end=data.get('outcome_window_end'),
-            expires_at=data.get('outcome_window_end'),
+            # Server-derived, never client-supplied, and independent of the
+            # outcome window: aliasing the two is what previously gave scheduled
+            # check-ins a NULL expires_at and post-prompt EMAs a 2-hour one.
+            # sent_at is auto_now_add, so it equals `now` for this row.
+            expires_at=now + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES),
         )
 
         responses = [
