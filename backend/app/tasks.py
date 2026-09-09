@@ -1,7 +1,7 @@
 import logging
 import os
 import random
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 import pandas as pd
 from celery import shared_task
@@ -9,18 +9,27 @@ from django.db import IntegrityError
 from django.db.models import Exists, OuterRef
 from django.utils import timezone as django_timezone
 
-from app.ema_catalog import EMA_DAILY_CHECK_IN_CAP
+from app.ema_catalog import SCHEDULED_CHECK_IN_DAILY_CAP
 from app.models import CheckinReminder, EMA, HeartRateSample, JITAILog, StressSample, User
-from app.notification_service import mark_delivery_failed, select_prompt, send_checkin_reminder, send_jitai_prompt
-from app.views import PARTICIPANT_TZ, _latest_active_jitai, _today_ema_count
+from app.notification_service import (
+    mark_delivery_failed,
+    select_control_prompt,
+    select_prompt,
+    send_checkin_reminder,
+    send_jitai_prompt,
+)
+from app.views import PARTICIPANT_TZ, _latest_active_jitai, _today_scheduled_check_in_count
 from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
 
 logger = logging.getLogger(__name__)
 
-# Placeholders pending Dr. Chang's confirmation — see Resources/TODO.docx.
-CHECKIN_REMINDER_COOLDOWN_MINUTES = 120
-CHECKIN_REMINDER_WINDOW_START_HOUR = 9
-CHECKIN_REMINDER_WINDOW_END_HOUR = 21
+# Confirmed by Dr. Chang 2026-08-21. NOTIFICATION_WINDOW governs when
+# reminders may fire — distinct from any other "waking window" concept
+# (e.g. Abigail's wear-time denominator) — do not reuse this constant for
+# anything but notification timing.
+NOTIFICATION_WINDOW_START_HOUR = 9
+NOTIFICATION_WINDOW_END_HOUR = 21
+CHECKIN_REMINDER_DELAY_MINUTES = 30
 
 
 @shared_task
@@ -124,17 +133,55 @@ def _evaluate_user(user, p):
     trigger_reason = str(row['decision_reason'])
     trigger_signal = None
 
+    arm_p = None
+    arm_draw = None
+    message_arm = None
+    routing = {
+        'eligible_prompt_ids': None,
+        'evaluated_items': None,
+        'matched_categories': None,
+        'category_drawn': None,
+        'fallback_reason': '',
+    }
+
     if eligible:
         draw = random.uniform(0, 1)
         send_prompt = draw < p
-        selected_prompt_id, eligible_ids = select_prompt(latest_new_ema)
-        if send_prompt and not selected_prompt_id:
-            send_prompt = False
+
+        # Last-5 exclusion, confirmed by Dr. Chang 2026-09-07: don't repeat a
+        # message a participant has already gotten in their last 5 delivered
+        # prompts. Computed regardless of send outcome, like the rest of the
+        # routing snapshot below — it's an MRT analysis field, not just
+        # delivery bookkeeping.
+        recent_prompt_ids = list(
+            JITAILog.objects
+            .filter(user=user, send_prompt=True)
+            .exclude(prompt_id='')
+            .order_by('-decision_made_at')
+            .values_list('prompt_id', flat=True)[:5]
+        )
+        routing_result = select_prompt(latest_new_ema, exclude_prompt_ids=recent_prompt_ids)
+        routing.update(routing_result)
+        selected_prompt_id = routing_result['prompt_id']
+
+        if send_prompt:
+            # Second-stage draw, confirmed by Dr. Chang 2026-08-25: 0.5/0.5
+            # coping vs. active control, logged separately from the send
+            # draw above so the two effects can be analyzed independently.
+            arm_p = float(os.environ.get('JITAI_ARM_RANDOMIZATION_PROBABILITY', '0.5'))
+            arm_draw = random.uniform(0, 1)
+            message_arm = 'coping' if arm_draw < arm_p else 'control'
+            if message_arm == 'control':
+                control_prompt_id, control_pool = select_control_prompt()
+                selected_prompt_id = control_prompt_id
+                routing['eligible_prompt_ids'] = control_pool
+                routing['category_drawn'] = None
+            if not selected_prompt_id:
+                send_prompt = False
     else:
         draw = None
         send_prompt = False
         selected_prompt_id = ''
-        eligible_ids = None
 
     recent_hr = HeartRateSample.objects.filter(user=user).order_by('-timestamp').first()
     recent_stress = StressSample.objects.filter(user=user).order_by('-timestamp').first()
@@ -157,6 +204,9 @@ def _evaluate_user(user, p):
                 'observed_mssd': observed_mssd,
                 'randomization_probability': p,
                 'randomization_draw': draw,
+                'message_arm': message_arm,
+                'arm_randomization_probability': arm_p,
+                'arm_randomization_draw': arm_draw,
                 'send_prompt': send_prompt,
                 'status': 'pending' if send_prompt else 'not_sent',
                 'delivery_status': 'pending' if send_prompt else 'not_sent',
@@ -164,7 +214,11 @@ def _evaluate_user(user, p):
                 'ema_mood': _snap.get(SIGNAL_SUB_ITEMS['mood']),
                 'ema_stress': _snap.get(SIGNAL_SUB_ITEMS['stress']),
                 'ema_energy': _snap.get(SIGNAL_SUB_ITEMS['energy']),
-                'eligible_prompt_ids': eligible_ids,
+                'eligible_prompt_ids': routing['eligible_prompt_ids'],
+                'evaluated_items': routing['evaluated_items'],
+                'matched_categories': routing['matched_categories'],
+                'category_drawn': routing['category_drawn'],
+                'fallback_reason': routing['fallback_reason'],
             },
         )
     except IntegrityError:
@@ -188,11 +242,24 @@ def _evaluate_user(user, p):
             mark_delivery_failed(jitai_log, 'missing push token')
 
 
+def _scheduled_slot_bounds(participant_date):
+    """The SCHEDULED_CHECK_IN_DAILY_CAP fixed time slots for one Eastern
+    calendar day, evenly spaced across the notification window (e.g. 6 slots
+    across 9am-9pm land ~2 hours apart, per Dr. Chang 2026-08-21)."""
+    window_start = datetime.combine(participant_date, time(NOTIFICATION_WINDOW_START_HOUR), tzinfo=PARTICIPANT_TZ)
+    window_end = datetime.combine(participant_date, time(NOTIFICATION_WINDOW_END_HOUR), tzinfo=PARTICIPANT_TZ)
+    slot_length = (window_end - window_start) / SCHEDULED_CHECK_IN_DAILY_CAP
+    return [
+        (window_start + i * slot_length, window_start + (i + 1) * slot_length)
+        for i in range(SCHEDULED_CHECK_IN_DAILY_CAP)
+    ]
+
+
 @shared_task
 def send_checkin_reminders():
     now = django_timezone.now()
     participant_hour = now.astimezone(PARTICIPANT_TZ).hour
-    if not (CHECKIN_REMINDER_WINDOW_START_HOUR <= participant_hour < CHECKIN_REMINDER_WINDOW_END_HOUR):
+    if not (NOTIFICATION_WINDOW_START_HOUR <= participant_hour < NOTIFICATION_WINDOW_END_HOUR):
         return
 
     enrolled_users = User.objects.filter(
@@ -213,16 +280,38 @@ def _maybe_send_reminder(user, now):
     if not user.push_token:
         return
 
+    # No reminder within 30 min of an intervention prompt ("one buzz at a
+    # time") — the 2-hour active-outcome-window check below is a superset
+    # of that 30-minute guard.
     if _latest_active_jitai(user) is not None:
         return
 
-    daily_count = _today_ema_count(user)
-    if daily_count >= EMA_DAILY_CHECK_IN_CAP:
-        return
+    participant_now = now.astimezone(PARTICIPANT_TZ)
+    slots = _scheduled_slot_bounds(participant_now.date())
 
-    last_reminder = CheckinReminder.objects.filter(user=user).order_by('-sent_at').first()
-    if last_reminder and (now - last_reminder.sent_at) < timedelta(minutes=CHECKIN_REMINDER_COOLDOWN_MINUTES):
-        return
+    day_start = datetime.combine(participant_now.date(), time.min, tzinfo=PARTICIPANT_TZ)
+    day_end = day_start + timedelta(days=1)
+    completed_at = list(
+        EMA.objects.filter(
+            user=user, ema_type='scheduled_check_in', status='completed',
+            sent_at__gte=day_start, sent_at__lt=day_end,
+        ).values_list('sent_at', flat=True)
+    )
 
-    if send_checkin_reminder(user):
-        CheckinReminder.objects.create(user=user, daily_count_at_send=daily_count)
+    for slot_index, (slot_start, slot_end) in enumerate(slots):
+        reminder_ready_at = slot_start + timedelta(minutes=CHECKIN_REMINDER_DELAY_MINUTES)
+        if not (reminder_ready_at <= now < slot_end):
+            continue  # not yet due for this slot, or the slot has already lapsed
+
+        if any(slot_start <= t.astimezone(PARTICIPANT_TZ) < slot_end for t in completed_at):
+            continue  # this slot was already completed — no reminder needed
+
+        already_reminded = CheckinReminder.objects.filter(
+            user=user, sent_at__gte=day_start, daily_count_at_send=slot_index,
+        ).exists()
+        if already_reminded:
+            continue  # one reminder per check-in, then let it lapse
+
+        if send_checkin_reminder(user):
+            CheckinReminder.objects.create(user=user, daily_count_at_send=slot_index)
+        return  # one buzz at a time per tick

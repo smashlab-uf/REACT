@@ -13,9 +13,15 @@ from exponent_server_sdk import (
     PushTicketError,
 )
 
+from app.ema_catalog import ROUTING_SUB_ITEM_IDS, ROUTING_TRIGGER_RULES
+
 logger = logging.getLogger(__name__)
 EXPO_PUSH_TOKEN_PREFIXES = ('ExponentPushToken[', 'ExpoPushToken[')
 
+# Finalized message bank (Eliana Bacal REACT_IRB01_Message_Bank_v1.docx,
+# delivered 2026-09-06), columns: ID, Trigger, Technique, Message, Length,
+# Context. Replaces the old REACTprompts.csv schema entirely — IDs now match
+# the real IRB numbering.
 _CATALOG_PATH = Path(__file__).parent / 'data' / 'REACTprompts.csv'
 
 
@@ -26,24 +32,150 @@ def _load_catalog(path: Path) -> list[dict]:
             pid = row['ID'].strip()
             if not pid:
                 continue
-            if row['Notification Message'].strip().lower() == 'retired':
-                continue
             catalog.append({
                 'id': pid,
-                'goal_type': row['Goal Type'].strip(),
-                'ema': row['Trigger Condition'].strip() == 'Survey',
+                'trigger': row['Trigger (emotional state)'].strip(),
+                'technique': row['Technique'].strip(),
+                'length': row['Length'].strip(),
+                'context': row['Context'].strip().lower(),
             })
     return catalog
 
 
 _CATALOG = _load_catalog(_CATALOG_PATH)
-_EMA_CATALOG = [p for p in _CATALOG if p['ema']]
+_CONTROL_CATALOG = [p for p in _CATALOG if p['id'].startswith('C')]
+# Reachable coping pool: General context only — Cyber-specific messages stay
+# parked pending Celia's telemetry work, confirmed by Dr. Chang 2026-08-25/27.
+_EMA_CATALOG = [p for p in _CATALOG if p['context'] == 'general' and not p['id'].startswith('C')]
+_CATALOG_BY_TRIGGER: dict[str, list[str]] = {}
+for _p in _EMA_CATALOG:
+    _CATALOG_BY_TRIGGER.setdefault(_p['trigger'], []).append(_p['id'])
+
+# General fallback pool, curated by Eliana Bacal, delivered 2026-09-09 —
+# closes the hard gate in Papers/REACT_Routing_Rules_v1.1_2026-09-08.docx §7.
+# State-neutral subset of the General-context bank: messages that don't name
+# or require a specific emotion, so they're safe when nothing matched or a
+# matched category was exhausted. P017 stays excluded even though it's
+# General context, since "It is okay to feel this way..." presumes distress.
+_GENERAL_FALLBACK_PROMPT_IDS = {'P014', 'P016', 'P019', 'P021', 'P024'}
+_GENERAL_FALLBACK_IDS = [p['id'] for p in _EMA_CATALOG if p['id'] in _GENERAL_FALLBACK_PROMPT_IDS]
+
+# Alcohol severity override, confirmed by Dr. Chang 2026-09-08
+# (Papers/REACT_Routing_Rules_v1.1_2026-09-08.docx §2). B6_drink_count's
+# recall window is "today" (per B6_consumed wording), so the NIAAA
+# daily-limit definition applies. No NIAAA reference value exists for
+# participants who select 'other' for gender — defaults to the lower,
+# more-readily-triggered threshold as an interim choice, not confirmed by
+# Dr. Chang; flag if this needs revisiting.
+ALCOHOL_SEVERITY_SUB_ITEM_ID = 'B6_drink_count'
+ALCOHOL_SEVERITY_THRESHOLDS = {'female': 3, 'male': 4, 'other': 3}
+ALCOHOL_SEVERITY_PROMPT_ID = 'P020'
 
 
-def select_prompt(ema) -> tuple[str, list[str]]:
-    eligible = [p['id'] for p in _EMA_CATALOG]
+def _extract_value(response):
+    if response.value_numeric is not None:
+        return response.value_numeric
+    if response.value_choices is not None:
+        return response.value_choices
+    return response.value_choice
+
+
+def _matched_trigger_categories(evaluated_items: dict) -> list[str]:
+    matched = []
+    for category, groups in ROUTING_TRIGGER_RULES.items():
+        for group in groups:
+            if all(comparator(evaluated_items.get(sub_item_id), threshold) for sub_item_id, comparator, threshold in group):
+                matched.append(category)
+                break
+    return matched
+
+
+def select_prompt(ema, exclude_prompt_ids=None) -> dict:
+    """Route to a coping message by matching the triggering check-in's
+    answers against ROUTING_TRIGGER_RULES (confirmed by Dr. Chang 2026-09-07).
+
+    Selection is category-first: draw a matched category uniformly, then a
+    message uniformly within it — not a flat union across all matched
+    messages, which would over-weight categories with more messages.
+
+    If the drawn category has no eligible messages left after the last-5
+    exclusion, redraw among the remaining matched categories (per Dr. Chang
+    2026-09-08 — the exclusion is never skipped, even for single-message
+    categories). If no matched category has anything eligible — including
+    the case where nothing matched at all — fall through to the general
+    pool (see _GENERAL_FALLBACK_IDS above), logging 'category_exhausted' or
+    'no_category_matched' respectively.
+    """
+    exclude_prompt_ids = set(exclude_prompt_ids or [])
+
+    responses = {}
+    if ema is not None:
+        responses = {
+            r.sub_item_id: _extract_value(r)
+            for r in ema.item_responses.filter(sub_item_id__in=ROUTING_SUB_ITEM_IDS)
+        }
+    evaluated_items = {sub_item_id: responses.get(sub_item_id) for sub_item_id in ROUTING_SUB_ITEM_IDS}
+    matched_categories = _matched_trigger_categories(evaluated_items)
+
+    result = {
+        'prompt_id': '',
+        'eligible_prompt_ids': [],
+        'evaluated_items': evaluated_items,
+        'matched_categories': matched_categories,
+        'category_drawn': None,
+        'fallback_reason': '',
+    }
+
+    # Alcohol severity override takes priority over normal category routing:
+    # someone past the daily NIAAA limit isn't going to engage with a
+    # reflective prompt, per Dr. Chang 2026-09-08. Skipped if P020 was
+    # itself recently delivered — that interaction with the last-5 exclusion
+    # wasn't addressed in his ruling, so this falls through to normal
+    # routing rather than repeating it.
+    if ema is not None and ALCOHOL_SEVERITY_PROMPT_ID not in exclude_prompt_ids:
+        drink_count_response = ema.item_responses.filter(sub_item_id=ALCOHOL_SEVERITY_SUB_ITEM_ID).first()
+        if drink_count_response is not None and drink_count_response.value_numeric is not None:
+            gender = getattr(ema.user, 'gender', None)
+            threshold = ALCOHOL_SEVERITY_THRESHOLDS.get(gender, ALCOHOL_SEVERITY_THRESHOLDS['other'])
+            if drink_count_response.value_numeric > threshold:
+                result['category_drawn'] = 'Urge / craving'
+                result['eligible_prompt_ids'] = [ALCOHOL_SEVERITY_PROMPT_ID]
+                result['prompt_id'] = ALCOHOL_SEVERITY_PROMPT_ID
+                result['fallback_reason'] = 'closest_fit'
+                return result
+
+    remaining = list(matched_categories)
+    while remaining:
+        category = remaining.pop(random.randrange(len(remaining)))
+        pool = [pid for pid in _CATALOG_BY_TRIGGER.get(category, []) if pid not in exclude_prompt_ids]
+        if pool:
+            result['category_drawn'] = category
+            result['eligible_prompt_ids'] = pool
+            result['prompt_id'] = random.choice(pool)
+            return result
+
+    result['fallback_reason'] = 'category_exhausted' if matched_categories else 'no_category_matched'
+    fallback_pool = [pid for pid in _GENERAL_FALLBACK_IDS if pid not in exclude_prompt_ids]
+    if not fallback_pool:
+        logger.error(
+            "select_prompt: general fallback pool exhausted or empty (fallback_reason=%s) — "
+            "refusing to send",
+            result['fallback_reason'],
+        )
+        return result
+
+    result['eligible_prompt_ids'] = fallback_pool
+    result['prompt_id'] = random.choice(fallback_pool)
+    return result
+
+
+def select_control_prompt() -> tuple[str, list[str]]:
+    eligible = [p['id'] for p in _CONTROL_CATALOG]
     if not eligible:
-        logger.error("select_prompt: EMA prompt pool is empty — refusing to fall back to full catalog")
+        logger.error(
+            "select_control_prompt: active-control message pool is empty — "
+            "pending Eliana's reconciled catalog (C001-C004)"
+        )
         return '', []
     return random.choice(eligible), eligible
 
