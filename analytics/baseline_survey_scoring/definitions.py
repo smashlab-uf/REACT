@@ -1,31 +1,59 @@
-def numbered(str, int) -> tuple[str, ...]:
-    """Create names such as pss10_1 through pss10_10 using the str as the prefix and int as count."""
+"""Column names for REACT baseline scoring. These are not the
+Qualtrics QID names. The Qualtrics columns in the export get renamed
+to these names in qualtrics.py.
+"""
 
+from __future__ import annotations
+
+
+def numbered(prefix: str, count: int) -> tuple[str, ...]:
+    """Create names such as ex_1 through ex_10."""
     return tuple(
         f"{prefix}_{number}"
         for number in range(1, count + 1)
     )
 
 
-# A2: Sport spectator identification
+# A1. Demographics
+MACARTHUR = (
+    "macarthur_community",
+    "macarthur_us",
+)
+
+
+# A2. Sport Spectator Identification Scale (SSIS)
 SSIS = numbered("ssis", 7)
 
 
-# A4: SUPPS-P
+# A3. Digital habits
+## These are preserved but do not currently have a composite.
+DIGITAL_HABITS = numbered("digital_habits", 3)
+
+
+# A4. SUPPS-P
 SUPPS_NEGATIVE_URGENCY = numbered(
-    "supps_negative_urgency", 4
+    "supps_negative_urgency",
+    4,
 )
+
 SUPPS_LACK_PERSEVERANCE = numbered(
-    "supps_lack_perseverance", 4
+    "supps_lack_perseverance",
+    4,
 )
+
 SUPPS_LACK_PREMEDITATION = numbered(
-    "supps_lack_premeditation", 4
+    "supps_lack_premeditation",
+    4,
 )
+
 SUPPS_SENSATION_SEEKING = numbered(
-    "supps_sensation_seeking", 4
+    "supps_sensation_seeking",
+    4,
 )
+
 SUPPS_POSITIVE_URGENCY = numbered(
-    "supps_positive_urgency", 4
+    "supps_positive_urgency",
+    4,
 )
 
 SUPPS = (
@@ -36,25 +64,39 @@ SUPPS = (
     + SUPPS_POSITIVE_URGENCY
 )
 
+# Negative urgency, sensation seeking, and positive urgency
+# are reverse-coded; to be reverse coded later in scoring.py
 SUPPS_REVERSE = (
-    SUPPS_LACK_PERSEVERANCE
-    + SUPPS_LACK_PREMEDITATION
+    SUPPS_NEGATIVE_URGENCY
+    + SUPPS_SENSATION_SEEKING
+    + SUPPS_POSITIVE_URGENCY
 )
 
 
-# A5: DERS-16
-DERS_CLARITY = ("ders_1", "ders_2")
-DERS_GOALS = ("ders_3", "ders_4", "ders_5")
-DERS_IMPULSE = ("ders_6", "ders_7", "ders_8")
-
-DERS_STRATEGIES = tuple(
-    f"ders_{number}"
-    for number in range(9, 14)
+# A5. DERS-16
+DERS_CLARITY = numbered(
+    "ders_clarity",
+    2,
 )
 
-DERS_NONACCEPTANCE = tuple(
-    f"ders_{number}"
-    for number in range(14, 17)
+DERS_GOALS = numbered(
+    "ders_goals",
+    3,
+)
+
+DERS_IMPULSE = numbered(
+    "ders_impulse",
+    3,
+)
+
+DERS_STRATEGIES = numbered(
+    "ders_strategies",
+    5,
+)
+
+DERS_NONACCEPTANCE = numbered(
+    "ders_nonacceptance",
+    3,
 )
 
 DERS = (
@@ -66,17 +108,43 @@ DERS = (
 )
 
 
-# A5a: ERQ
-ERQ_REAPPRAISAL = numbered("erq_reappraisal", 6)
-ERQ_SUPPRESSION = numbered("erq_suppression", 4)
-ERQ = ERQ_REAPPRAISAL + ERQ_SUPPRESSION
+# A5a. ERQ
+ERQ_REAPPRAISAL = numbered(
+    "erq_reappraisal",
+    6,
+)
+
+ERQ_SUPPRESSION = numbered(
+    "erq_suppression",
+    4,
+)
+
+ERQ = (
+    ERQ_REAPPRAISAL
+    + ERQ_SUPPRESSION
+)
 
 
-# A6: BAQ
-BAQ_PHYSICAL = numbered("baq_physical", 3)
-BAQ_ANGER = numbered("baq_anger", 3)
-BAQ_VERBAL = numbered("baq_verbal", 3)
-BAQ_HOSTILITY = numbered("baq_hostility", 3)
+# A6. Brief Aggression Questionnaire
+BAQ_PHYSICAL = numbered(
+    "baq_physical",
+    3,
+)
+
+BAQ_ANGER = numbered(
+    "baq_anger",
+    3,
+)
+
+BAQ_VERBAL = numbered(
+    "baq_verbal",
+    3,
+)
+
+BAQ_HOSTILITY = numbered(
+    "baq_hostility",
+    3,
+)
 
 BAQ = (
     BAQ_PHYSICAL
@@ -85,140 +153,196 @@ BAQ = (
     + BAQ_HOSTILITY
 )
 
-BAQ_REVERSE = ("baq_anger_1",)
+# "I am an even-tempered person."
+BAQ_REVERSE = (
+    "baq_anger_1",
+)
 
 
-# A7-A9
+# A7. Bergen Social Media Addiction Scale
 BSMAS = numbered("bsmas", 6)
 
-PSS10 = numbered("pss10", 10)
-PSS10_REVERSE = (
-    "pss10_4",
-    "pss10_5",
-    "pss10_7",
-    "pss10_8",
-)
 
-PROMIS_SLEEP = numbered("promis_sleep", 4)
-PROMIS_SLEEP_REVERSE = (
-    "promis_sleep_1",
-    "promis_sleep_2",
+# A8. Perceived Stress Scale
+PSS = numbered("pss", 10)
+
+PSS_REVERSE = (
+    "pss_4",
+    "pss_5",
+    "pss_7",
+    "pss_8",
 )
 
 
-# A10: TFEQ-R18
-TFEQ_RESTRAINT = numbered("tfeq_restraint", 6)
-TFEQ_UNCONTROLLED = numbered("tfeq_uncontrolled", 9)
-TFEQ_EMOTIONAL = numbered("tfeq_emotional", 3)
+# A9. PROMIS Sleep Disturbance 4a
+PROMIS_SLEEP = numbered(
+    "promis_sleep",
+    4,
+)
+
+
+# A10. TFEQ-R18
+TFEQ_COGNITIVE_RESTRAINT = numbered(
+    "tfeq_cognitive_restraint",
+    6,
+)
+
+TFEQ_UNCONTROLLED_EATING = numbered(
+    "tfeq_uncontrolled_eating",
+    9,
+)
+
+TFEQ_EMOTIONAL_EATING = numbered(
+    "tfeq_emotional_eating",
+    3,
+)
 
 TFEQ = (
-    TFEQ_RESTRAINT
-    + TFEQ_UNCONTROLLED
-    + TFEQ_EMOTIONAL
+    TFEQ_COGNITIVE_RESTRAINT
+    + TFEQ_UNCONTROLLED_EATING
+    + TFEQ_EMOTIONAL_EATING
+)
+
+# This is the one item originally answered from 1 to 8.
+TFEQ_RESTRAINT_1_TO_8 = (
+    "tfeq_cognitive_restraint_6"
 )
 
 
-# A11: Selected MAIA-2 subscales
-MAIA_NOTICING = numbered("maia_noticing", 4)
+# A11. MAIA-2
+# Codebook currently specifies Tier-1 scoring for
+# Noticing and Body Listening.
+
+MAIA_NOTICING = numbered(
+    "maia_noticing",
+    4,
+)
+
 MAIA_BODY_LISTENING = numbered(
-    "maia_body_listening", 3
+    "maia_body_listening",
+    3,
 )
 
-MAIA = MAIA_NOTICING + MAIA_BODY_LISTENING
+MAIA_TIER1 = (
+    MAIA_NOTICING
+    + MAIA_BODY_LISTENING
+)
 
 
-# A12: Alcohol
-AUDIT_C = numbered("audit_c", 3)
+# A12. Alcohol
+AUDIT_C = numbered(
+    "audit_c",
+    3,
+)
 
-DMQ_ENHANCEMENT = numbered("dmq_enhancement", 3)
-DMQ_SOCIAL = numbered("dmq_social", 3)
-DMQ_CONFORMITY = numbered("dmq_conformity", 3)
-DMQ_COPING = numbered("dmq_coping", 3)
+DMQ_ENHANCEMENT = numbered(
+    "dmq_enhancement",
+    3,
+)
 
-DMQ = (
+DMQ_SOCIAL = numbered(
+    "dmq_social",
+    3,
+)
+
+DMQ_CONFORMITY = numbered(
+    "dmq_conformity",
+    3,
+)
+
+DMQ_COPING = numbered(
+    "dmq_coping",
+    3,
+)
+
+DMQ_R_SF = (
     DMQ_ENHANCEMENT
     + DMQ_SOCIAL
     + DMQ_CONFORMITY
     + DMQ_COPING
 )
 
-BYAACQ = numbered("byaacq", 24)
-
-
-# A13: Gambling
-PGSI = numbered("pgsi", 9)
-
-
-# A14: Health and context
-HUNGER_VITAL_SIGN = ("hvs_1", "hvs_2")
-ASRS = numbered("asrs", 6)
-UCLA = numbered("ucla", 3)
-
-EVERYDAY_DISCRIMINATION = numbered(
-    "discrimination", 5
+BYAACQ = numbered(
+    "byaacq",
+    24,
 )
 
-RMEQ = numbered("rmeq", 5)
+
+# A13. Sports betting / PGSI
+PGSI = numbered(
+    "pgsi",
+    9,
+)
 
 
-# A15: Sensitive block
-PHQ9 = numbered("phq9", 9)
-SCOFF = numbered("scoff", 5)
-ACE = numbered("ace", 10)
+# A14. Health and context
+HUNGER_VITAL_SIGN = numbered(
+    "hunger_vital_sign",
+    2,
+)
+
+# !!! NO CALCULATED SCORE FOR ASRS YET in scoring.py !!!
+ASRS = numbered(
+    "asrs",
+    6,
+)
+
+UCLA3 = numbered(
+    "ucla3",
+    3,
+)
+
+EDS = numbered(
+    "eds",
+    5,
+)
+
+RMEQ = numbered(
+    "rmeq",
+    5,
+)
 
 
-ALL_SCORED_ITEMS = (
-    SSIS
+# A15. Sensitive block
+PHQ9 = numbered(
+    "phq9",
+    9,
+)
+
+SCOFF = numbered(
+    "scoff",
+    5,
+)
+
+ACE = numbered(
+    "ace",
+    10,
+)
+
+
+# All expected scoring columns
+ALL_SCORING_COLUMNS = (
+    MACARTHUR
+    + SSIS
     + SUPPS
     + DERS
     + ERQ
     + BAQ
     + BSMAS
-    + PSS10
+    + PSS
     + PROMIS_SLEEP
     + TFEQ
-    + MAIA
+    + MAIA_TIER1
     + AUDIT_C
-    + DMQ
+    + DMQ_R_SF
     + BYAACQ
     + PGSI
     + HUNGER_VITAL_SIGN
     + ASRS
-    + UCLA
-    + EVERYDAY_DISCRIMINATION
+    + UCLA3
+    + EDS
     + RMEQ
     + PHQ9
     + SCOFF
     + ACE
-)
-
-
-# The following fields are retained but are not combined into scores:
-PASSTHROUGH_COLUMNS = (
-    "participant_id",
-    "age_group",
-    "gender_identity",
-    "race_ethnicity",
-    "school_year",
-    "major",
-    "living_situation",
-    "height",
-    "weight",
-    "status_ladder_community",
-    "status_ladder_us",
-    "social_media_time",
-    "upset_posting_frequency",
-    "posting_regret_frequency",
-    "sports_betting_past_year",
-    "sports_betting_frequency",
-    "sports_betting_types",
-    "sports_betting_monthly_amount",
-    "appetite_weight_medication",
-    "cannabis_frequency",
-    "nicotine_frequency",
-    "discrimination_attribution",
-    "currently_menstruating",
-    "days_since_period_started",
-    "cycle_regularity",
-    "phq9_difficulty",
 )
