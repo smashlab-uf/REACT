@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Platform, View } from 'react-native';
 import * as Notifications from 'expo-notifications';
+import { useFonts } from 'expo-font';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from './src/store/authStore';
 import LoginScreen from './src/screens/LoginScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
@@ -12,6 +14,7 @@ import { parsePushData, shouldOpenEMA } from './src/notifications/payload';
 import { jitai, user as userApi, telemetry } from './src/api/endpoints';
 import NotificationToast from './src/components/NotificationToast';
 import { log } from './src/utils/logger';
+import { colors } from './src/theme';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -30,14 +33,19 @@ type ReceiptAppState = 'foreground' | 'background' | 'killed';
 const COLD_START_MAX_AGE_MS = 120000;
 
 export default function App() {
+  const [fontsLoaded] = useFonts({
+    ...Ionicons.font,
+  });
   const { isAuthenticated, isLoading, restoreSession, userId } = useAuthStore();
   const [screen, setScreen] = useState<Screen>('login');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastVariant, setToastVariant] = useState<'info' | 'success' | 'error'>('info');
   const [activeEMA, setActiveEMA] = useState<ActiveEMA | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  function showToast(message: string) {
+  function showToast(message: string, variant: 'info' | 'success' | 'error' = 'info') {
     if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToastVariant(variant);
     setToastMessage(message);
     toastTimer.current = setTimeout(() => setToastMessage(null), 4000);
   }
@@ -120,7 +128,7 @@ export default function App() {
 
       if (parsed.type === 'checkin_reminder') {
         const title = content.title ?? 'REACT';
-        const body = content.body ?? 'Time for your check-in.';
+        const body = content.body ?? 'Time for your check-in!';
         showToast(`📩 ${title}${body ? ': ' + body : ''}`);
       }
 
@@ -150,14 +158,14 @@ export default function App() {
   if (isLoading) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" color="#007AFF" />
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
 
   return (
     <View style={{ flex: 1 }}>
-      <NotificationToast message={toastMessage} />
+      <NotificationToast message={toastMessage} variant={toastVariant} />
       {isAuthenticated ? (
         <ComposeScreen onOpenEMA={() => setActiveEMA({})} />
       ) : screen === 'register' ? (

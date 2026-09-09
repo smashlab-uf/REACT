@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { colors, typography } from '../theme';
 
 type Props = {
   label: string;
@@ -65,27 +66,27 @@ export default function NumberStepper({
 
 const styles = StyleSheet.create({
   container: { marginBottom: 28 },
-  label: { fontSize: 16, fontWeight: '600', color: '#111', marginBottom: 12 },
+  label: { ...typography.label, marginBottom: 12 },
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   step: {
     width: 48,
     height: 48,
     borderRadius: 24,
     borderWidth: 1,
-    borderColor: '#007AFF',
+    borderColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: colors.surface,
   },
-  stepDisabled: { borderColor: '#ccc' },
-  stepText: { fontSize: 28, color: '#007AFF', lineHeight: 32, marginTop: -2 },
-  stepTextDisabled: { color: '#ccc' },
+  stepDisabled: { borderColor: colors.border },
+  stepText: { fontSize: 28, color: colors.primary, lineHeight: 32, marginTop: -2 },
+  stepTextDisabled: { color: colors.disabled },
   value: {
     minWidth: 64,
     textAlign: 'center',
     fontSize: 28,
     fontWeight: '700',
-    color: '#111',
+    color: colors.textPrimary,
   },
-  valueEmpty: { color: '#bbb' },
+  valueEmpty: { color: colors.textMuted },
 });

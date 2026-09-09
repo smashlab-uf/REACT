@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { colors, radius, typography } from '../theme';
 
 type BaseProps = {
   label: string;
@@ -56,30 +57,30 @@ export default function ChoiceList(props: SingleProps | MultiProps) {
 
 const styles = StyleSheet.create({
   container: { marginBottom: 28 },
-  label: { fontSize: 16, fontWeight: '600', color: '#111', marginBottom: 12 },
+  label: { ...typography.label, marginBottom: 12 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 10,
+    borderColor: colors.border,
+    borderRadius: radius.md,
     paddingVertical: 12,
     paddingHorizontal: 12,
     marginBottom: 8,
-    backgroundColor: '#fff',
+    backgroundColor: colors.surface,
   },
-  rowSelected: { borderColor: '#007AFF', backgroundColor: '#f0f6ff' },
+  rowSelected: { borderColor: colors.accent, backgroundColor: colors.accentMuted },
   mark: {
     width: 18,
     height: 18,
     borderRadius: 9,
     borderWidth: 1,
-    borderColor: '#ccc',
+    borderColor: colors.border,
     marginRight: 10,
-    backgroundColor: '#fff',
+    backgroundColor: colors.surface,
   },
   markSquare: { borderRadius: 4 },
-  markSelected: { backgroundColor: '#007AFF', borderColor: '#007AFF' },
-  option: { flex: 1, fontSize: 15, color: '#444', lineHeight: 20 },
-  optionSelected: { color: '#111', fontWeight: '600' },
+  markSelected: { backgroundColor: colors.accent, borderColor: colors.accent },
+  option: { flex: 1, fontSize: 15, color: colors.textSecondary, lineHeight: 20 },
+  optionSelected: { color: colors.textPrimary, fontWeight: '600' },
 });

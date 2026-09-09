@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { colors, radius, typography } from '../theme';
 
 type Props = {
   label: string;
@@ -31,18 +32,26 @@ export default function LikertScale({
     <View style={styles.container}>
       <Text style={styles.label}>{label}</Text>
 
-      <View style={styles.row}>
-        {values.map((v) => {
+      <View style={styles.bar}>
+        {values.map((v, i) => {
           const selected = value === v;
+          const isFirst = i === 0;
+          const isLast = i === values.length - 1;
           return (
             <TouchableOpacity
               key={v}
-              style={[styles.dot, selected && styles.dotSelected]}
+              style={[
+                styles.segment,
+                !isLast && styles.segmentDivider,
+                isFirst && styles.segmentFirst,
+                isLast && styles.segmentLast,
+                selected && styles.segmentSelected,
+              ]}
               onPress={() => onChange(v)}
               accessibilityRole="radio"
               accessibilityState={{ selected }}
               accessibilityLabel={`${label} ${v} of ${maxValue}`}>
-              <Text style={[styles.dotText, selected && styles.dotTextSelected]}>{v}</Text>
+              <Text style={[styles.segmentText, selected && styles.segmentTextSelected]}>{v}</Text>
             </TouchableOpacity>
           );
         })}
@@ -60,23 +69,36 @@ export default function LikertScale({
 
 const styles = StyleSheet.create({
   container: { marginBottom: 28 },
-  label: { fontSize: 16, fontWeight: '600', color: '#111', marginBottom: 12 },
-  row: { flexDirection: 'row', justifyContent: 'space-between' },
-  dot: {
+  label: { ...typography.label, marginBottom: 12 },
+  bar: {
+    flexDirection: 'row',
+    height: 48,
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    overflow: 'hidden',
+  },
+  segment: {
     flex: 1,
-    aspectRatio: 1,
-    maxWidth: 44,
-    marginHorizontal: 2,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: '#ccc',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: colors.surface,
   },
-  dotSelected: { backgroundColor: '#007AFF', borderColor: '#007AFF' },
-  dotText: { fontSize: 16, color: '#444' },
-  dotTextSelected: { color: '#fff', fontWeight: '700' },
-  anchors: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
-  anchor: { fontSize: 12, color: '#888' },
+  segmentDivider: {
+    borderRightWidth: 1,
+    borderRightColor: colors.border,
+  },
+  segmentFirst: {
+    borderTopLeftRadius: radius.md - 1,
+    borderBottomLeftRadius: radius.md - 1,
+  },
+  segmentLast: {
+    borderTopRightRadius: radius.md - 1,
+    borderBottomRightRadius: radius.md - 1,
+  },
+  segmentSelected: { backgroundColor: colors.accent },
+  segmentText: { fontSize: 15, color: colors.textSecondary },
+  segmentTextSelected: { color: '#fff', fontWeight: '700' },
+  anchors: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
+  anchor: { fontSize: 12, color: colors.textMuted },
 });

@@ -13,7 +13,10 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSLocalNetworkUsageDescription": "REACT uses the local network to load the development server.",
-        "NSBonjourServices": ["_expo._tcp", "_metro._tcp"]
+        "NSBonjourServices": [
+          "_expo._tcp",
+          "_metro._tcp"
+        ]
       }
     },
     "android": {
@@ -34,6 +37,9 @@
       "eas": {
         "projectId": "2fb6977b-d72d-4501-b869-c4ec11fa2d1b"
       }
-    }
+    },
+    "plugins": [
+      "expo-font"
+    ]
   }
 }
