@@ -1984,6 +1984,15 @@ class NotificationCatalogTests(TestCase):
         self.assertNotIn('P008', [p['id'] for p in _EMA_CATALOG])
         self.assertIn('P019', [p['id'] for p in _EMA_CATALOG])
 
+    def test_general_fallback_pool_matches_elianas_delivered_list(self):
+        from app.notification_service import _GENERAL_FALLBACK_IDS
+
+        # Eliana Bacal's curated general pool, delivered 2026-09-09 — locks
+        # in the exact set so an accidental catalog change doesn't silently
+        # alter the fallback pool without review.
+        self.assertEqual(set(_GENERAL_FALLBACK_IDS), {'P014', 'P016', 'P019', 'P021', 'P024'})
+        self.assertNotIn('P017', _GENERAL_FALLBACK_IDS)
+
     def test_select_control_prompt_returns_empty_when_catalog_unpopulated(self):
         import app.notification_service as ns
 

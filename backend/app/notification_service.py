@@ -51,19 +51,14 @@ _CATALOG_BY_TRIGGER: dict[str, list[str]] = {}
 for _p in _EMA_CATALOG:
     _CATALOG_BY_TRIGGER.setdefault(_p['trigger'], []).append(_p['id'])
 
-# PLACEHOLDER pending Eliana's curated general pool (due 2026-09-09) — these
-# IDs are NOT real message content and do not exist in the mobile app's local
-# template store, so they can never render as a real message even if this
-# code ships prematurely. Hard gate per Dr. Chang 2026-09-08
-# (Papers/REACT_Routing_Rules_v1.1_2026-09-08.docx §7): this block must be
-# DELETED — not commented out — and replaced with her real curated list
-# before the first participant enrolls.
-_GENERAL_FALLBACK_IDS = [
-    'PLACEHOLDER_GENERAL_1',
-    'PLACEHOLDER_GENERAL_2',
-    'PLACEHOLDER_GENERAL_3',
-    'PLACEHOLDER_GENERAL_4',
-]
+# General fallback pool, curated by Eliana Bacal, delivered 2026-09-09 —
+# closes the hard gate in Papers/REACT_Routing_Rules_v1.1_2026-09-08.docx §7.
+# State-neutral subset of the General-context bank: messages that don't name
+# or require a specific emotion, so they're safe when nothing matched or a
+# matched category was exhausted. P017 stays excluded even though it's
+# General context, since "It is okay to feel this way..." presumes distress.
+_GENERAL_FALLBACK_PROMPT_IDS = {'P014', 'P016', 'P019', 'P021', 'P024'}
+_GENERAL_FALLBACK_IDS = [p['id'] for p in _EMA_CATALOG if p['id'] in _GENERAL_FALLBACK_PROMPT_IDS]
 
 # Alcohol severity override, confirmed by Dr. Chang 2026-09-08
 # (Papers/REACT_Routing_Rules_v1.1_2026-09-08.docx §2). B6_drink_count's
@@ -108,10 +103,8 @@ def select_prompt(ema, exclude_prompt_ids=None) -> dict:
     2026-09-08 — the exclusion is never skipped, even for single-message
     categories). If no matched category has anything eligible — including
     the case where nothing matched at all — fall through to the general
-    pool, logging 'category_exhausted' or 'no_category_matched'
-    respectively. The general pool itself is still a placeholder pending
-    Eliana (see _GENERAL_FALLBACK_IDS above) — this fails closed only when
-    even that placeholder is exhausted, which real content will resolve.
+    pool (see _GENERAL_FALLBACK_IDS above), logging 'category_exhausted' or
+    'no_category_matched' respectively.
     """
     exclude_prompt_ids = set(exclude_prompt_ids or [])
 
