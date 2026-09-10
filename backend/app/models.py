@@ -72,11 +72,15 @@ class StressSample(models.Model):
 
 
 class EMA(models.Model):
-    STATUS_CHOICES = [('pending', 'Pending'), ('completed', 'Completed'), ('expired', 'Expired')]
+    STATUS_CHOICES = [
+        ('pending', 'Pending'), ('completed', 'Completed'), ('expired', 'Expired'),
+        ('dismissed', 'Dismissed'),
+    ]
     EMA_TYPE_CHOICES = [
         ('scheduled_check_in', 'Scheduled Check-in'),
         ('post_prompt', 'Post-prompt Outcome Window'),
         ('extra_check_in', 'Extra Check-in'),
+        ('prompt_feedback', 'Prompt Feedback'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -142,6 +146,8 @@ class CheckinReminder(models.Model):
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     sent_at = models.DateTimeField(auto_now_add=True)
+    # Which of the day's fixed check-in slots (0-indexed) this reminder was
+    # for — one reminder per slot, at most, per Dr. Chang 2026-08-21.
     daily_count_at_send = models.PositiveSmallIntegerField()
 
     class Meta:
@@ -235,6 +241,15 @@ class JITAILog(models.Model):
     decision_point_id = models.CharField(max_length=64, unique=True, null=True, blank=True)
     randomization_probability = models.FloatField(null=True, blank=True)
     randomization_draw = models.FloatField(null=True, blank=True)
+    MESSAGE_ARM_CHOICES = [('coping', 'Coping Message'), ('control', 'Active Control')]
+    # Second-stage randomization, confirmed by Dr. Chang 2026-08-25: only
+    # drawn when the first-stage send decision (randomization_draw < p)
+    # resulted in a send. 0.5/0.5 coping-vs-control, logged separately from
+    # the send draw so the two effects (message sent vs. content of message)
+    # can be analyzed independently.
+    message_arm = models.CharField(max_length=16, choices=MESSAGE_ARM_CHOICES, null=True, blank=True)
+    arm_randomization_probability = models.FloatField(null=True, blank=True)
+    arm_randomization_draw = models.FloatField(null=True, blank=True)
     send_prompt = models.BooleanField(default=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='pending')
     decision_made_at = models.DateTimeField(default=timezone.now, db_index=True)
@@ -255,6 +270,16 @@ class JITAILog(models.Model):
     ema_stress = models.PositiveSmallIntegerField(null=True, blank=True)
     ema_energy = models.PositiveSmallIntegerField(null=True, blank=True)
     eligible_prompt_ids = models.JSONField(null=True, blank=True)
+    # Routing logging, confirmed by Dr. Chang 2026-09-07 — every field here
+    # needs to be recorded at every decision point, coping arm or not, so the
+    # routing behavior is fully auditable. evaluated_items covers both "what
+    # value was checked" and "was the item available" in one structure: a
+    # missing/null value means the item wasn't part of that check-in's
+    # rotation, not that it was checked and found low.
+    evaluated_items = models.JSONField(null=True, blank=True)
+    matched_categories = models.JSONField(null=True, blank=True)
+    category_drawn = models.CharField(max_length=64, null=True, blank=True)
+    fallback_reason = models.CharField(max_length=128, blank=True, default='')
 
     class Meta:
         ordering = ['-triggered_at']

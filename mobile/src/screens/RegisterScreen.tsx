@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { auth } from '../api/endpoints';
 import { useAuthStore } from '../store/authStore';
+import { colors, radius, typography } from '../theme';
 
 type Props = { onGoToLogin: () => void };
 
@@ -67,6 +68,7 @@ export default function RegisterScreen({ onGoToLogin }: Props) {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Create Account</Text>
+        <View style={styles.titleAccent} />
 
         <TextInput
           style={styles.input}
@@ -115,26 +117,27 @@ export default function RegisterScreen({ onGoToLogin }: Props) {
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: '#fff' },
+  flex: { flex: 1, backgroundColor: colors.surface },
   container: { padding: 24, paddingTop: 80 },
-  title: { fontSize: 28, fontWeight: '700', marginBottom: 32, color: '#111' },
+  title: { ...typography.screenTitle, color: colors.primary, marginBottom: 8 },
+  titleAccent: { width: 36, height: 4, borderRadius: radius.pill, backgroundColor: colors.accent, marginBottom: 32 },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 10,
+    borderColor: colors.border,
+    borderRadius: radius.md,
     padding: 14,
     fontSize: 16,
     marginBottom: 14,
-    color: '#111',
+    color: colors.textPrimary,
   },
   btn: {
-    backgroundColor: '#007AFF',
-    borderRadius: 10,
+    backgroundColor: colors.primary,
+    borderRadius: radius.md,
     padding: 16,
     alignItems: 'center',
     marginTop: 8,
   },
   btnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   link: { marginTop: 24, alignItems: 'center' },
-  linkText: { color: '#007AFF', fontSize: 15 },
+  linkText: { color: colors.primary, fontSize: 15 },
 });

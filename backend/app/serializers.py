@@ -109,12 +109,14 @@ class JITAILogSerializer(serializers.ModelSerializer):
             'id', 'user', 'prompt_id', 'triggered_at', 'trigger_reason',
             'hr_at_trigger', 'stress_at_trigger', 'ema', 'observed_mssd',
             'decision_point_id', 'randomization_probability', 'randomization_draw',
+            'message_arm', 'arm_randomization_probability', 'arm_randomization_draw',
             'send_prompt', 'status', 'decision_made_at', 'push_sent_at',
             'device_received_at', 'receipt_reported_at', 'delivery_status',
             'delivery_error', 'receipt_platform', 'receipt_app_state',
             'send_prompt', 'status',
             'trigger_signal', 'ema_mood', 'ema_stress', 'ema_energy',
-            'eligible_prompt_ids',
+            'eligible_prompt_ids', 'evaluated_items', 'matched_categories',
+            'category_drawn', 'fallback_reason',
         ]
         read_only_fields = ('id', 'triggered_at')
 
