@@ -5,6 +5,7 @@ from dashboard.data.windows import participant_day_bounds
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
+from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Subquery
 from .ema_catalog import (
     AFTERNOON_START_HOUR,
@@ -828,7 +829,9 @@ class JITAIReceiptView(APIView):
         operation_summary="Record JITAI notification receipt",
         operation_description=(
             "Mobile calls this when the device receives a JITAI push. "
-            "The endpoint records device_received_at and server receipt time."
+            "The endpoint records device_received_at and server receipt time. "
+            "If the same receipt is submitted again, the existing receipt is returned "
+            "without overwriting the original timestamps."
         ),
         request_body=JITAIReceiptSerializer,
     )
@@ -842,52 +845,88 @@ class JITAIReceiptView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         data = serializer.validated_data
-        try:
-            jitai_log = JITAILog.objects.get(id=data["jitai_log_id"], user=app_user)
-        except JITAILog.DoesNotExist:
-            return Response({"error": "JITAI log not found."}, status=status.HTTP_404_NOT_FOUND)
+        with transaction.atomic():
+            try:
+                jitai_log = (
+                    JITAILog.objects
+                    .select_for_update()
+                    .get(id=data["jitai_log_id"], user=app_user)
+                )
+            except JITAILog.DoesNotExist:
+                return Response({"error": "JITAI log not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        now = django_timezone.now()
-        jitai_log.device_received_at = data["device_received_at"]
-        jitai_log.receipt_reported_at = now
-        jitai_log.receipt_platform = data.get("platform", "")
-        jitai_log.receipt_app_state = data.get("app_state", "")
-        jitai_log.delivery_status = "received_on_device"
-        jitai_log.delivery_error = ""
-        jitai_log.save(update_fields=[
-            "device_received_at",
-            "receipt_reported_at",
-            "receipt_platform",
-            "receipt_app_state",
-            "delivery_status",
-            "delivery_error",
-        ])
+            if jitai_log.device_received_at or jitai_log.receipt_reported_at:
+                return Response(
+                    self._receipt_response(jitai_log, "Receipt already recorded.", idempotent=True),
+                    status=status.HTTP_200_OK,
+                )
 
+            receipt_event_id = data.get("receipt_event_id", "")
+            if receipt_event_id:
+                duplicate = (
+                    JITAILog.objects
+                    .filter(receipt_event_id=receipt_event_id)
+                    .exclude(id=jitai_log.id)
+                    .first()
+                )
+                if duplicate is not None:
+                    return Response(
+                        {"error": "receipt_event_id has already been used for another JITAI log."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+            now = django_timezone.now()
+            jitai_log.device_received_at = data["device_received_at"]
+            jitai_log.receipt_reported_at = now
+            jitai_log.receipt_event_id = receipt_event_id or None
+            jitai_log.receipt_platform = data.get("platform", "")
+            jitai_log.receipt_app_state = data.get("app_state", "")
+            jitai_log.delivery_status = "received_on_device"
+            jitai_log.delivery_error = ""
+            jitai_log.save(update_fields=[
+                "device_received_at",
+                "receipt_reported_at",
+                "receipt_event_id",
+                "receipt_platform",
+                "receipt_app_state",
+                "delivery_status",
+                "delivery_error",
+            ])
+
+        return Response(
+            self._receipt_response(jitai_log, "Receipt recorded.", idempotent=False),
+            status=status.HTTP_200_OK,
+        )
+
+    def _receipt_response(self, jitai_log, message, idempotent):
         delivery_latency_ms = None
         total_latency_ms = None
         server_observed_latency_ms = None
-        if jitai_log.push_sent_at:
+        if jitai_log.push_sent_at and jitai_log.device_received_at:
             delivery_latency_ms = int(
                 (jitai_log.device_received_at - jitai_log.push_sent_at).total_seconds() * 1000
             )
+        if jitai_log.push_sent_at and jitai_log.receipt_reported_at:
             server_observed_latency_ms = int(
                 (jitai_log.receipt_reported_at - jitai_log.push_sent_at).total_seconds() * 1000
             )
-        if jitai_log.decision_made_at:
+        if jitai_log.decision_made_at and jitai_log.device_received_at:
             total_latency_ms = int(
                 (jitai_log.device_received_at - jitai_log.decision_made_at).total_seconds() * 1000
             )
 
-        return Response({
-            "message": "Receipt recorded.",
+        return {
+            "message": message,
+            "idempotent": idempotent,
             "jitai_log_id": jitai_log.id,
+            "receipt_event_id": jitai_log.receipt_event_id,
             "delivery_status": jitai_log.delivery_status,
             "device_received_at": jitai_log.device_received_at,
             "receipt_reported_at": jitai_log.receipt_reported_at,
             "delivery_latency_ms": delivery_latency_ms,
             "server_observed_latency_ms": server_observed_latency_ms,
             "total_latency_ms": total_latency_ms,
-        }, status=status.HTTP_200_OK)
+        }
 
 
 class DashboardParticipantStatusView(APIView):

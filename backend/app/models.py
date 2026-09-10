@@ -262,6 +262,7 @@ class JITAILog(models.Model):
     push_sent_at = models.DateTimeField(null=True, blank=True, db_index=True)
     device_received_at = models.DateTimeField(null=True, blank=True, db_index=True)
     receipt_reported_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    receipt_event_id = models.CharField(max_length=64, unique=True, null=True, blank=True, db_index=True)
     delivery_status = models.CharField(
         max_length=32,
         choices=DELIVERY_STATUS_CHOICES,

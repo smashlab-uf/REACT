@@ -1539,9 +1539,75 @@ class JITAIReceiptEndpointTests(TestCase):
         self.assertEqual(self.log.receipt_app_state, 'foreground')
         self.assertIsNotNone(self.log.receipt_reported_at)
         self.assertEqual(response.data['jitai_log_id'], self.log.id)
+        self.assertIsNone(response.data['receipt_event_id'])
+        self.assertFalse(response.data['idempotent'])
         self.assertIsNotNone(response.data['delivery_latency_ms'])
         self.assertIsNotNone(response.data['server_observed_latency_ms'])
         self.assertIsNotNone(response.data['total_latency_ms'])
+
+    def test_post_records_receipt_event_id(self):
+        response = self.client.post('/jitai/receipt/', {
+            'jitai_log_id': self.log.id,
+            'receipt_event_id': 'receipt-abc-123',
+            'device_received_at': self.device_received_at.isoformat(),
+            'platform': 'ios',
+            'app_state': 'foreground',
+        }, format='json')
+
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.log.refresh_from_db()
+        self.assertEqual(self.log.receipt_event_id, 'receipt-abc-123')
+        self.assertEqual(response.data['receipt_event_id'], 'receipt-abc-123')
+
+    def test_duplicate_receipt_does_not_overwrite_original_timestamps(self):
+        first = self.client.post('/jitai/receipt/', {
+            'jitai_log_id': self.log.id,
+            'receipt_event_id': 'receipt-abc-123',
+            'device_received_at': self.device_received_at.isoformat(),
+            'platform': 'ios',
+            'app_state': 'foreground',
+        }, format='json')
+        self.assertEqual(first.status_code, http_status.HTTP_200_OK)
+        self.log.refresh_from_db()
+        original_device_received_at = self.log.device_received_at
+        original_receipt_reported_at = self.log.receipt_reported_at
+
+        later_device_received_at = timezone.now().isoformat()
+        second = self.client.post('/jitai/receipt/', {
+            'jitai_log_id': self.log.id,
+            'receipt_event_id': 'receipt-abc-123',
+            'device_received_at': later_device_received_at,
+            'platform': 'android',
+            'app_state': 'background',
+        }, format='json')
+
+        self.assertEqual(second.status_code, http_status.HTTP_200_OK)
+        self.assertTrue(second.data['idempotent'])
+        self.log.refresh_from_db()
+        self.assertEqual(self.log.device_received_at, original_device_received_at)
+        self.assertEqual(self.log.receipt_reported_at, original_receipt_reported_at)
+        self.assertEqual(self.log.receipt_platform, 'ios')
+        self.assertEqual(self.log.receipt_app_state, 'foreground')
+
+    def test_receipt_event_id_cannot_be_reused_for_different_log(self):
+        other_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='other',
+            trigger_reason='manual test',
+        )
+        self.client.post('/jitai/receipt/', {
+            'jitai_log_id': self.log.id,
+            'receipt_event_id': 'receipt-abc-123',
+            'device_received_at': self.device_received_at.isoformat(),
+        }, format='json')
+
+        response = self.client.post('/jitai/receipt/', {
+            'jitai_log_id': other_log.id,
+            'receipt_event_id': 'receipt-abc-123',
+            'device_received_at': self.device_received_at.isoformat(),
+        }, format='json')
+
+        self.assertEqual(response.status_code, http_status.HTTP_409_CONFLICT)
 
     def test_post_without_auth_returns_401(self):
         response = APIClient().post('/jitai/receipt/', {

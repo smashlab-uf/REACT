@@ -166,7 +166,7 @@ class JITAILogAdmin(ReadableAdminMixin, admin.ModelAdmin):
     date_hierarchy = "triggered_at"
     ordering = ("-triggered_at",)
     autocomplete_fields = ("user",)
-    readonly_fields = ("triggered_at", "decision_made_at", "push_sent_at", "device_received_at", "receipt_reported_at")
+    readonly_fields = ("triggered_at", "decision_made_at", "push_sent_at", "device_received_at", "receipt_reported_at", "receipt_event_id")
     fieldsets = (
         ("Prompt", {
             "fields": ("user", "prompt_id", "triggered_at", "status"),
@@ -178,7 +178,7 @@ class JITAILogAdmin(ReadableAdminMixin, admin.ModelAdmin):
             "fields": (
                 "delivery_status", "decision_made_at", "push_sent_at",
                 "device_received_at", "receipt_reported_at",
-                "receipt_platform", "receipt_app_state", "delivery_error",
+                "receipt_event_id", "receipt_platform", "receipt_app_state", "delivery_error",
             ),
         }),
     )

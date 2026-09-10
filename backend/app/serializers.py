@@ -114,8 +114,8 @@ class JITAILogSerializer(serializers.ModelSerializer):
             'decision_point_id', 'randomization_probability', 'randomization_draw',
             'message_arm', 'arm_randomization_probability', 'arm_randomization_draw',
             'send_prompt', 'status', 'decision_made_at', 'push_sent_at',
-            'device_received_at', 'receipt_reported_at', 'delivery_status',
-            'delivery_error', 'receipt_platform', 'receipt_app_state',
+            'device_received_at', 'receipt_reported_at', 'receipt_event_id',
+            'delivery_status', 'delivery_error', 'receipt_platform', 'receipt_app_state',
             'send_prompt', 'status',
             'trigger_signal', 'ema_mood', 'ema_stress', 'ema_energy',
             'eligible_prompt_ids', 'evaluated_items', 'matched_categories',
@@ -126,6 +126,7 @@ class JITAILogSerializer(serializers.ModelSerializer):
 
 class JITAIReceiptSerializer(serializers.Serializer):
     jitai_log_id = serializers.IntegerField()
+    receipt_event_id = serializers.CharField(max_length=64, required=False, allow_blank=True)
     device_received_at = serializers.DateTimeField()
     platform = serializers.CharField(max_length=16, required=False, allow_blank=True)
     app_state = serializers.CharField(max_length=32, required=False, allow_blank=True)
