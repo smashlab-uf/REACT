@@ -28,9 +28,6 @@ from dashboard.data.config import (
 from dashboard.data.windows import elapsed, participant_time, today_local
 from dashboard.models import Alert, MetricsDaily, MetricsParticipant
 
-# Monitoring policy, distinct from the study protocol constants in config.py.
-# These say when a researcher should be told something looks wrong; they are not
-# part of the intervention design and need no PI sign-off to tune.
 SYNC_STALE_WARN_HOURS = 24
 SYNC_STALE_CRITICAL_HOURS = 72
 COVERAGE_WINDOW_DAYS = 3
