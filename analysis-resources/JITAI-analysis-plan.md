@@ -18,8 +18,10 @@ The feasibility thresholds are informed by synthetic sensitivity analysis calibr
 
 ### Important Figures:
 
+- 40 participants total. Phase 1 rollouts to 5 participants. 
 - 5-6 daily EMA check-in count.  
 - 5-week study period.  
+- 30-min cool down window between each intervention prompt.
 - Intervention Dosage capped at 4 per day.  
 - Calibration expects \~4/day at 80th percentile.  
 - 30–min response window.
