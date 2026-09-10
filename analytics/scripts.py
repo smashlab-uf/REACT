@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -9,6 +10,29 @@ import pandas as pd
 import scipy.stats as stats
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+# Study constants come from dashboard.data.config, the one module that defines
+# them for the Celery tasks, the API and this package alike. Importing it needs
+# both the repo root and backend/ on sys.path but not a configured Django, since
+# config only reads app.ema_catalog, which has no imports of its own. So
+# `import scripts` still works with no database, as the header above promises.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+for _path in (str(_REPO_ROOT), str(_REPO_ROOT / "backend")):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
+from dashboard.data.config import (  # noqa: E402
+    DAILY_PROMPT_CAP,
+    EMA_RESPONSE_WINDOW_MINUTES,
+    JITAI_COOLDOWN_MINUTES,
+    MSSD_WINDOW,
+    RUN_IN_DAYS,
+    STUDY_DAYS,
+    THRESHOLD_QUANTILE,
+    WAKING_WINDOW_END_HOUR,
+    WAKING_WINDOW_START_HOUR,
+    WEAR_GAP_MIN,
+)
 
 
 # DATA LOADING
@@ -28,11 +52,11 @@ def _ensure_django() -> None:
     """
     Bootstrap the Django ORM so loaders can query app.models.
 
-    Idempotent: safe to call from every loader. Adds backend/ to sys.path,
-    points DJANGO_SETTINGS_MODULE at project.settings, and calls
-    django.setup() exactly once per process. Import-time cost is paid lazily
-    so `import scripts` works without a database (the compute_* functions
-    below operate purely on DataFrames).
+    Idempotent: safe to call from every loader. The repo root and backend/ are
+    already on sys.path from the module-level bootstrap above; this points
+    DJANGO_SETTINGS_MODULE at project.settings and calls django.setup() exactly
+    once per process. That cost is paid lazily so `import scripts` works without
+    a database (the compute_* functions below operate purely on DataFrames).
 
     Example:
         _ensure_django()            # first call configures Django
@@ -45,12 +69,9 @@ def _ensure_django() -> None:
         return
 
     import os
-    import sys
+
     import django
 
-    backend_dir = Path(__file__).resolve().parent.parent / "backend"
-    if str(backend_dir) not in sys.path:
-        sys.path.insert(0, str(backend_dir))
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "project.settings")
     django.setup()
     _DJANGO_READY = True
@@ -515,7 +536,7 @@ def load_ema_item_responses(
 # Separately, compute_hr_mssd() takes a window_minutes argument spelled exactly
 # like flag_in_window_completions()'s, but it is a rolling HR signal window and
 # is correctly 60.
-EMA_RESPONSE_WINDOW_MINUTES = 30
+# EMA_RESPONSE_WINDOW_MINUTES is imported from dashboard.data.config at the top.
 
 
 def compute_ema_response_rate(ema_df: pd.DataFrame) -> pd.DataFrame:
@@ -772,7 +793,7 @@ def compute_run_in_mssd(ema_df: pd.DataFrame) -> pd.DataFrame:
     df["enrolled_at"] = pd.to_datetime(
         df["enrolled_at"], utc=True, errors="coerce"
     )
-    run_in_end = df["enrolled_at"] + pd.Timedelta(days=7)
+    run_in_end = df["enrolled_at"] + pd.Timedelta(days=RUN_IN_DAYS)
     week1 = df[(df["sent_at"] >= df["enrolled_at"]) & (df["sent_at"] < run_in_end)]
 
     records = []
@@ -785,7 +806,7 @@ def compute_run_in_mssd(ema_df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_observed_mssd(
     ema_df: pd.DataFrame,
-    window: int = 3,
+    window: int = MSSD_WINDOW,
 ) -> pd.Series:
     """
     Purpose:
@@ -840,8 +861,8 @@ def compute_observed_mssd(
 
 def compute_within_person_threshold(
     ema_df: pd.DataFrame,
-    quantile: float = 0.80,
-    window: int = 3,
+    quantile: float = THRESHOLD_QUANTILE,
+    window: int = MSSD_WINDOW,
 ) -> pd.Series:
     """
     Purpose:
@@ -1108,7 +1129,7 @@ def flag_non_wear(hr_df: pd.DataFrame) -> pd.Series:
 
 def identify_wear_gaps(
     hr_df: pd.DataFrame,
-    gap_threshold_minutes: int = 120,
+    gap_threshold_minutes: int = WEAR_GAP_MIN,
 ) -> pd.DataFrame:
     """
     Purpose:
@@ -1147,7 +1168,7 @@ def identify_wear_gaps(
     df = df.dropna(subset=["timestamp"])
 
     hour = df["timestamp"].dt.hour
-    df = df[(hour >= 8) & (hour < 22)]
+    df = df[(hour >= WAKING_WINDOW_START_HOUR) & (hour < WAKING_WINDOW_END_HOUR)]
     df["_date"] = df["timestamp"].dt.date
 
     records = []
@@ -1198,12 +1219,12 @@ def compute_wear_time(hr_df: pd.DataFrame) -> pd.DataFrame:
     if hr_df is None or hr_df.empty:
         return pd.DataFrame(columns=columns)
 
-    waking_minutes = 14 * 60
+    waking_minutes = (WAKING_WINDOW_END_HOUR - WAKING_WINDOW_START_HOUR) * 60
     df = hr_df.copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
     worn = df[~flag_non_wear(df).values].dropna(subset=["timestamp"])
     hour = worn["timestamp"].dt.hour
-    worn = worn[(hour >= 8) & (hour < 22)]
+    worn = worn[(hour >= WAKING_WINDOW_START_HOUR) & (hour < WAKING_WINDOW_END_HOUR)]
 
     gaps = identify_wear_gaps(hr_df)
     gap_by_day = (
@@ -1331,7 +1352,7 @@ def audit_decision_stages(jitai_df: pd.DataFrame) -> pd.DataFrame:
 
 def check_cooldown_compliance(
     jitai_df: pd.DataFrame,
-    cooldown_minutes: int = 60,
+    cooldown_minutes: int = JITAI_COOLDOWN_MINUTES,
 ) -> pd.DataFrame:
     """
     Purpose:
@@ -1392,7 +1413,7 @@ def check_cooldown_compliance(
 
 def check_daily_cap_compliance(
     jitai_df: pd.DataFrame,
-    daily_cap: int = 4,
+    daily_cap: int = DAILY_PROMPT_CAP,
 ) -> pd.DataFrame:
     """
     Purpose:
@@ -1475,7 +1496,7 @@ def compute_intervention_dosage(jitai_df: pd.DataFrame) -> pd.DataFrame:
         sent.groupby(["user_id", "date", "enrolled_at"]).size()
         .reset_index(name="prompts_sent")
     )
-    active_start = grouped["enrolled_at"] + pd.Timedelta(days=7)
+    active_start = grouped["enrolled_at"] + pd.Timedelta(days=RUN_IN_DAYS)
     grouped["is_active_phase"] = pd.to_datetime(
         grouped["date"], utc=True
     ).ge(active_start)
@@ -1752,8 +1773,8 @@ def compute_retention(user_df: pd.DataFrame) -> Dict:
     retained_n = int(enrolled.sum())
 
     now = pd.Timestamp.now(tz="UTC")
-    past_run_in = began["enrolled_at"] + pd.Timedelta(days=7) <= now
-    past_active = began["enrolled_at"] + pd.Timedelta(days=35) <= now
+    past_run_in = began["enrolled_at"] + pd.Timedelta(days=RUN_IN_DAYS) <= now
+    past_active = began["enrolled_at"] + pd.Timedelta(days=STUDY_DAYS) <= now
 
     run_in_n = int((enrolled & past_run_in).sum())
     active_n = int((enrolled & past_active).sum())
@@ -2464,7 +2485,7 @@ def plot_ema_completion_over_time(
         anchor = pd.to_datetime(user_df["enrolled_at"], utc=True, errors="coerce").min().date()
     else:
         anchor = df["date"].min()
-    run_in_end = anchor + datetime.timedelta(days=7)
+    run_in_end = anchor + datetime.timedelta(days=RUN_IN_DAYS)
     ax.axvspan(anchor, run_in_end, color="gray", alpha=0.12, label="run-in (Week 1)", zorder=0)
     ax.axvline(run_in_end, color="black", linewidth=0.8, zorder=0)
 

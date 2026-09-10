@@ -1,5 +1,4 @@
 import logging
-import os
 import random
 from datetime import datetime, time, timedelta
 
@@ -9,7 +8,6 @@ from django.db import IntegrityError
 from django.db.models import Exists, OuterRef
 from django.utils import timezone as django_timezone
 
-from app.ema_catalog import SCHEDULED_CHECK_IN_DAILY_CAP
 from app.models import CheckinReminder, EMA, HeartRateSample, JITAILog, StressSample, User
 from app.notification_service import (
     mark_delivery_failed,
@@ -18,18 +16,23 @@ from app.notification_service import (
     send_checkin_reminder,
     send_jitai_prompt,
 )
-from app.views import PARTICIPANT_TZ, _latest_active_jitai, _today_scheduled_check_in_count
+from app.views import _latest_active_jitai, _today_scheduled_check_in_count
+from dashboard.data.config import (
+    CHECKIN_REMINDER_DELAY_MINUTES,
+    DAILY_PROMPT_CAP,
+    JITAI_COOLDOWN_MINUTES,
+    MSSD_WINDOW,
+    NOTIFICATION_WINDOW_END_HOUR,
+    NOTIFICATION_WINDOW_START_HOUR,
+    PARTICIPANT_TZ,
+    SCHEDULED_CHECK_IN_DAILY_CAP,
+    THRESHOLD_QUANTILE,
+    arm_randomization_p,
+    randomization_p,
+)
 from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
 
 logger = logging.getLogger(__name__)
-
-# Confirmed by Dr. Chang 2026-08-21. NOTIFICATION_WINDOW governs when
-# reminders may fire — distinct from any other "waking window" concept
-# (e.g. Abigail's wear-time denominator) — do not reuse this constant for
-# anything but notification timing.
-NOTIFICATION_WINDOW_START_HOUR = 9
-NOTIFICATION_WINDOW_END_HOUR = 21
-CHECKIN_REMINDER_DELAY_MINUTES = 30
 
 
 @shared_task
@@ -44,7 +47,7 @@ def evaluate_jitai_triggers():
         wearabledevice__is_active=True,
     )
 
-    p = float(os.environ.get('JITAI_RANDOMIZATION_PROBABILITY', '0.5'))
+    p = randomization_p()
 
     for user in enrolled_users:
         try:
@@ -119,8 +122,13 @@ def _evaluate_user(user, p):
             tolerance=pd.Timedelta('30min'),
         )
 
-    df = calculate_mssd(df, window=3)
-    result_df = apply_decision_rules(df)
+    df = calculate_mssd(df, window=MSSD_WINDOW)
+    result_df = apply_decision_rules(
+        df,
+        threshold_quantile=THRESHOLD_QUANTILE,
+        cooldown_minutes=JITAI_COOLDOWN_MINUTES,
+        max_prompts_per_day=DAILY_PROMPT_CAP,
+    )
 
     match = result_df[result_df['timestamp'] == pd.Timestamp(latest_new_ema.sent_at)]
     if match.empty:
@@ -168,7 +176,7 @@ def _evaluate_user(user, p):
             # Second-stage draw, confirmed by Dr. Chang 2026-08-25: 0.5/0.5
             # coping vs. active control, logged separately from the send
             # draw above so the two effects can be analyzed independently.
-            arm_p = float(os.environ.get('JITAI_ARM_RANDOMIZATION_PROBABILITY', '0.5'))
+            arm_p = arm_randomization_p()
             arm_draw = random.uniform(0, 1)
             message_arm = 'coping' if arm_draw < arm_p else 'control'
             if message_arm == 'control':

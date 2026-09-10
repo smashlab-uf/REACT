@@ -6,6 +6,7 @@ from django.utils import timezone
 
 from app.models import EMA, JITAILog, User, WearableDevice
 from app.tasks import _evaluate_user
+from dashboard.data.config import RANDOMIZATION_P_ENV, randomization_p
 
 
 SEP = '─' * 62
@@ -41,9 +42,9 @@ class Command(BaseCommand):
         push_token = options['push_token'].strip()
 
         if options['p'] is not None:
-            os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = str(options['p'])
+            os.environ[RANDOMIZATION_P_ENV] = str(options['p'])
 
-        p = float(os.environ.get('JITAI_RANDOMIZATION_PROBABILITY', '0.5'))
+        p = randomization_p()
 
         self.stdout.write(_hr('REACT — JITAI DEMO'))
         self.stdout.write(f'  p (randomization probability) : {p}')

@@ -1,6 +1,6 @@
 from datetime import timedelta
-from zoneinfo import ZoneInfo
 
+from dashboard.data.config import OUTCOME_WINDOW_HOURS, PARTICIPANT_TZ
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
@@ -76,8 +76,6 @@ class IsAdminUserOrDashboardAPIKey(BasePermission):
         return bool(expected_key) and provided_key == expected_key
 
 
-OUTCOME_WINDOW_HOURS = 2
-PARTICIPANT_TZ = ZoneInfo('America/New_York')
 _ema_items = ema_items
 
 
