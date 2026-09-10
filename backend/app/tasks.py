@@ -1,6 +1,6 @@
 import logging
 import random
-from datetime import datetime, time, timedelta
+from datetime import timedelta
 
 import pandas as pd
 from celery import shared_task
@@ -25,11 +25,11 @@ from dashboard.data.config import (
     NOTIFICATION_WINDOW_END_HOUR,
     NOTIFICATION_WINDOW_START_HOUR,
     PARTICIPANT_TZ,
-    SCHEDULED_CHECK_IN_DAILY_CAP,
     THRESHOLD_QUANTILE,
     arm_randomization_p,
     randomization_p,
 )
+from dashboard.data.windows import participant_day_bounds, scheduled_slot_bounds
 from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
 
 logger = logging.getLogger(__name__)
@@ -250,19 +250,6 @@ def _evaluate_user(user, p):
             mark_delivery_failed(jitai_log, 'missing push token')
 
 
-def _scheduled_slot_bounds(participant_date):
-    """The SCHEDULED_CHECK_IN_DAILY_CAP fixed time slots for one Eastern
-    calendar day, evenly spaced across the notification window (e.g. 6 slots
-    across 9am-9pm land ~2 hours apart, per Dr. Chang 2026-08-21)."""
-    window_start = datetime.combine(participant_date, time(NOTIFICATION_WINDOW_START_HOUR), tzinfo=PARTICIPANT_TZ)
-    window_end = datetime.combine(participant_date, time(NOTIFICATION_WINDOW_END_HOUR), tzinfo=PARTICIPANT_TZ)
-    slot_length = (window_end - window_start) / SCHEDULED_CHECK_IN_DAILY_CAP
-    return [
-        (window_start + i * slot_length, window_start + (i + 1) * slot_length)
-        for i in range(SCHEDULED_CHECK_IN_DAILY_CAP)
-    ]
-
-
 @shared_task
 def send_checkin_reminders():
     now = django_timezone.now()
@@ -295,10 +282,8 @@ def _maybe_send_reminder(user, now):
         return
 
     participant_now = now.astimezone(PARTICIPANT_TZ)
-    slots = _scheduled_slot_bounds(participant_now.date())
-
-    day_start = datetime.combine(participant_now.date(), time.min, tzinfo=PARTICIPANT_TZ)
-    day_end = day_start + timedelta(days=1)
+    slots = scheduled_slot_bounds(participant_now.date())
+    day_start, day_end = participant_day_bounds(participant_now.date())
     completed_at = list(
         EMA.objects.filter(
             user=user, ema_type='scheduled_check_in', status='completed',

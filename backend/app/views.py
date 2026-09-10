@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from dashboard.data.config import OUTCOME_WINDOW_HOURS, PARTICIPANT_TZ
+from dashboard.data.windows import participant_day_bounds
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
@@ -90,8 +91,7 @@ def _participant_day_bounds(now):
     level using Django's active timezone (settings.TIME_ZONE, UTC here), which
     would silently ignore this Eastern conversion and truncate in UTC instead.
     """
-    day_start = _participant_time(now).replace(hour=0, minute=0, second=0, microsecond=0)
-    return day_start, day_start + timedelta(days=1)
+    return participant_day_bounds(_participant_time(now).date())
 
 
 def _today_scheduled_check_in_count(user, now=None):
