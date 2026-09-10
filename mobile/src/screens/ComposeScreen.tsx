@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import {
-  Alert,
   Keyboard,
   ScrollView,
   StyleSheet,
@@ -14,6 +13,7 @@ import ComposeInput from '../components/ComposeInput';
 import { emitDraftDeleted, emitDraftSubmitted } from '../telemetry/composeTelemetry';
 import { useTelemetryStore, TelemetryEvent } from '../telemetry/telemetryStore';
 import { useAuthStore } from '../store/authStore';
+import { useAlertStore } from '../store/alertStore';
 import { jitai } from '../api/endpoints';
 import { log } from '../utils/logger';
 import { colors, radius } from '../theme';
@@ -25,6 +25,7 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
   const events = useTelemetryStore((s) => s.events);
   const flush = useTelemetryStore((s) => s.flush);
   const logout = useAuthStore((s) => s.logout);
+  const showAlert = useAlertStore((s) => s.show);
 
   const devNote = __DEV__ ? ' Check the console for telemetry.' : '';
   const userId = useAuthStore((s) => s.userId);
@@ -51,7 +52,7 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
       });
     } catch (e: any) {
       log('[SimPush] failed:', e?.response?.status ?? e?.message);
-      Alert.alert('Simulate failed', String(e?.response?.status ?? e?.message));
+      showAlert('Simulate failed', String(e?.response?.status ?? e?.message));
     }
   }
 
@@ -67,24 +68,24 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
       });
     } catch (e: any) {
       log('[SimReminder] failed:', e?.message);
-      Alert.alert('Simulate failed', String(e?.message ?? 'Could not schedule reminder'));
+      showAlert('Simulate failed', String(e?.message ?? 'Could not schedule reminder'));
     }
   }
 
   function handleSubmit() {
     if (!text.trim()) {
-      Alert.alert('Nothing to submit', 'Type something first.');
+      showAlert('Nothing to submit', 'Type something first.');
       return;
     }
     emitDraftSubmitted();
     setText('');
-    Alert.alert('Submitted', `Your draft was submitted.${devNote}`);
+    showAlert('Submitted', `Your draft was submitted.${devNote}`);
   }
 
   function handleDelete() {
     emitDraftDeleted();
     setText('');
-    Alert.alert('Deleted', `Draft cleared.${devNote}`);
+    showAlert('Deleted', `Draft cleared.${devNote}`);
   }
 
   return (
