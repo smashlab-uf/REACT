@@ -93,6 +93,12 @@ class EMA(models.Model):
     outcome_window_start = models.DateTimeField(null=True, blank=True)
     outcome_window_end = models.DateTimeField(null=True, blank=True)
     expires_at = models.DateTimeField(null=True, blank=True)
+    # Which sub-items this check-in actually put on screen, after the B4-B7
+    # rotation and the schedule_condition filter. Without it, "how many
+    # questions was this person asked" is unrecoverable, and item completeness
+    # can only be inferred from what they happened to answer. NULL on rows
+    # written before this field existed.
+    served_sub_item_ids = models.JSONField(null=True, blank=True)
     mood = models.PositiveSmallIntegerField(
         null=True, blank=True,
         validators=[MinValueValidator(1), MaxValueValidator(7)],

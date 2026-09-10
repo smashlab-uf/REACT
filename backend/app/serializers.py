@@ -91,10 +91,13 @@ class EMASerializer(serializers.ModelSerializer):
         fields = [
             'id', 'user', 'prompt_id', 'sent_at', 'responded_at', 'status',
             'ema_type', 'source_jitai_log', 'outcome_window_start',
-            'outcome_window_end', 'expires_at', 'mood', 'stress', 'energy',
-            'item_responses',
+            'outcome_window_end', 'expires_at', 'served_sub_item_ids',
+            'mood', 'stress', 'energy', 'item_responses',
         ]
-        read_only_fields = ('id', 'sent_at', 'user', 'responded_at', 'status', 'expires_at')
+        read_only_fields = (
+            'id', 'sent_at', 'user', 'responded_at', 'status', 'expires_at',
+            'served_sub_item_ids',
+        )
         extra_kwargs = {
             'mood':   {'min_value': 1, 'max_value': 7},
             'stress': {'min_value': 1, 'max_value': 7},
@@ -292,6 +295,19 @@ class EMAResponseSubmitSerializer(serializers.Serializer):
     jitai_log_id = serializers.IntegerField(required=False, allow_null=True)
     outcome_window_start = serializers.DateTimeField(required=False, allow_null=True)
     outcome_window_end = serializers.DateTimeField(required=False, allow_null=True)
+    # What the client was actually shown, echoed back from /ema/next/. Optional:
+    # the server recomputes the same set when a client does not send it.
+    served_sub_item_ids = serializers.ListField(
+        child=serializers.CharField(max_length=32), required=False, allow_null=True,
+    )
+
+    def validate_served_sub_item_ids(self, value):
+        if value is None:
+            return value
+        unknown = [sub_id for sub_id in value if sub_id not in EMA_SUB_ITEM_INDEX]
+        if unknown:
+            raise serializers.ValidationError(f'unknown sub_item_id values: {unknown}')
+        return list(dict.fromkeys(value))
 
     def validate_responses(self, value):
         sub_item_ids = [item['sub_item_id'] for item in value]

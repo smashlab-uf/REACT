@@ -100,10 +100,15 @@ def scheduled_slot_bounds(local_date):
     ]
 
 
-def slot_index_for(moment, local_date=None):
-    """Which check-in slot a timestamp falls in, or None if outside the window."""
+def slot_index_for(moment, local_date=None, slots=None):
+    """Which check-in slot a timestamp falls in, or None if outside the window.
+
+    Pass `slots` when bucketing many timestamps against the same day, to avoid
+    rebuilding the grid per call.
+    """
     local = participant_time(moment)
-    slots = scheduled_slot_bounds(local_date if local_date is not None else local.date())
+    if slots is None:
+        slots = scheduled_slot_bounds(local_date if local_date is not None else local.date())
     for index, (start, end) in enumerate(slots):
         if start <= local < end:
             return index
