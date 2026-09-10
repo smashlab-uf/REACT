@@ -116,7 +116,14 @@ def authenticated_client(app_user):
     )
     client = APIClient()
     refresh = RefreshToken.for_user(auth_user)
-    client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
+    credentials = {'HTTP_AUTHORIZATION': f'Bearer {str(refresh.access_token)}'}
+    # /jitai/receipt/ is neither exempt nor a dashboard prefix, so with API_KEY
+    # exported the receipt POSTs below are rejected 403 and every push silently
+    # lands with device_received_at NULL. The script then still reports clean,
+    # because a JWT alone is enough for the endpoint but not for the middleware.
+    if getattr(django_settings, 'API_KEY', ''):
+        credentials['HTTP_X_API_KEY'] = django_settings.API_KEY
+    client.credentials(**credentials)
     return client
 
 
@@ -412,6 +419,19 @@ def main():
     invalid_token_failures = JITAILog.objects.filter(
         user__email__endswith=f'@{EMAIL_DOMAIN}', delivery_error='invalid Expo push token',
     ).count()
+    # The receipt POSTs go through the real middleware, so anything that rejects
+    # them leaves every push with device_received_at NULL and delivered_n flat
+    # zero. Without this row the script reports clean on a delivery funnel that
+    # never once completed.
+    # Counted by push_sent_at, not by delivery_status: a receipt that lands
+    # advances the status from accepted_by_expo to received_on_device, so
+    # filtering on the former counts zero exactly when the funnel is healthy.
+    pushes_sent = JITAILog.objects.filter(
+        user__email__endswith=f'@{EMAIL_DOMAIN}', push_sent_at__isnull=False,
+    ).count()
+    receipts_landed = JITAILog.objects.filter(
+        user__email__endswith=f'@{EMAIL_DOMAIN}', device_received_at__isnull=False,
+    ).count()
 
     print('\n--- checks ---')
     print(f'total decision points logged      : {total_dp}')
@@ -420,9 +440,12 @@ def main():
     print(f'silent participant-days simulated  : {silent_participant_days}  (>0: {"OK" if silent_participant_days > 0 else "MISSING"})')
     print(f'missing-push-token failures logged : {missing_token_failures}  (>0: {"OK" if missing_token_failures > 0 else "MISSING"})')
     print(f'invalid-push-token failures logged : {invalid_token_failures}  (>0: {"OK" if invalid_token_failures > 0 else "MISSING"})')
+    print(f'delivery receipts landed           : {receipts_landed}/{pushes_sent}  '
+          f'(all: {"OK" if pushes_sent > 0 and receipts_landed == pushes_sent else "MISSING"})')
 
     clean = all([total_cooldown > 0, total_cap > 0, silent_participant_days > 0,
-                 missing_token_failures > 0, invalid_token_failures > 0])
+                 missing_token_failures > 0, invalid_token_failures > 0,
+                 pushes_sent > 0, receipts_landed == pushes_sent])
     print(f'\nAll target paths exercised and table computed straight from JITAILog/EMA: '
           f'{"YES — clean" if clean else "NO — see MISSING rows above"}')
 

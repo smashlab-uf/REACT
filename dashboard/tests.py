@@ -21,6 +21,7 @@ from app.models import (
     User,
     WearableDevice,
 )
+from django.conf import settings
 from django.contrib.admin.models import CHANGE, LogEntry
 from django.contrib.auth.models import User as AuthUser
 from django.contrib.contenttypes.models import ContentType
@@ -937,6 +938,21 @@ class RecomputeTests(TestCase):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+class TestEnvironmentTests(TestCase):
+    def test_api_keys_are_neutralised_for_the_whole_run(self):
+        """Regression: exporting API_KEY for a local server or the dress
+        rehearsal used to fail ~97 tests on a healthy tree, because
+        APIKeyMiddleware starts enforcing X-API-Key and all but two test classes
+        assume it is off. ReactTestRunner blanks both keys; this is what makes
+        that fix visible instead of silent."""
+        self.assertEqual(settings.API_KEY, '')
+        self.assertEqual(settings.DASHBOARD_API_KEY, '')
+
+    @override_settings(API_KEY='layered-on-top')
+    def test_override_settings_still_wins(self):
+        self.assertEqual(settings.API_KEY, 'layered-on-top')
+
 
 @override_settings(API_KEY='test-api-key', DASHBOARD_API_KEY=DASHBOARD_KEY)
 class MonitorEndpointTests(TestCase):

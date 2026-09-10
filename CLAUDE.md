@@ -49,8 +49,13 @@ python manage.py runserver 0.0.0.0:8000
 python manage.py createsuperuser
 
 # Tests run against SQLite in-memory via test_settings (do NOT hit the real DB)
-# A custom TEST_RUNNER supplies the default labels ('app', 'dashboard'): bare discovery starts
-# in backend/ and would never find the repo-root dashboard app.
+# A custom TEST_RUNNER (project/test_runner.py) does two things, both load-bearing:
+#   1. supplies the default labels ('app', 'dashboard') — bare discovery starts in backend/
+#      and would never find the repo-root dashboard app;
+#   2. blanks API_KEY and DASHBOARD_API_KEY for the run. All but two test classes assume
+#      APIKeyMiddleware is off, so an exported API_KEY used to fail ~97 tests on a clean
+#      tree. It lives in the runner, not test_settings.py, because CI runs bare
+#      `manage.py test` and never loads that module.
 python manage.py test --settings=project.test_settings                                  # full suite
 python manage.py test app.tests.EMANextViewTests --settings=project.test_settings        # one class
 python manage.py test dashboard.tests.WindowsTests.test_slot_index_boundaries_are_half_open --settings=project.test_settings
