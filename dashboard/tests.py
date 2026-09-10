@@ -35,7 +35,13 @@ from dashboard.data.cohort import compute_cohort, suppress_rate, wilson_interval
 from dashboard.data.config import DAILY_PROMPT_CAP, RUN_IN_DAYS, STUDY_DAYS
 from dashboard.data.daily import METRIC_FIELDS, compute_daily
 from dashboard.data.item_bank import load_item_bank, sub_item_index
-from dashboard.data.participant import compute_participant, compute_risk_score, refresh_risk_scores
+from dashboard.data.participant import (
+    RISK_SCORE_MAX,
+    RISK_WEIGHTS,
+    compute_participant,
+    compute_risk_score,
+    refresh_risk_scores,
+)
 from dashboard.models import Alert, MetricsCohort, MetricsDaily, MetricsParticipant
 from dashboard.tasks import recompute_metrics
 
@@ -480,26 +486,136 @@ class ComputeParticipantTests(TestCase):
         self.assertIsNone(payload['wear_rate'])
         self.assertEqual(payload['slot_coverage_den'], 0)
 
-    def test_risk_score_weights_and_cap(self):
-        user = make_participant('k@x.test', self.ENROLLED, device=False)
-        self.assertEqual(compute_risk_score(user), 0)
-        Alert.objects.create(user=user, rule_id='sync_stale', severity='warning')
-        Alert.objects.create(user=user, rule_id='no_ema_48h', severity='warning')
-        self.assertEqual(compute_risk_score(user), 30)
-        Alert.objects.create(user=user, rule_id='runin_violation', severity='critical')
-        self.assertEqual(compute_risk_score(user), 70)
-        Alert.objects.create(user=user, rule_id='cooldown_violation', severity='critical')
-        self.assertEqual(compute_risk_score(user), 100)
+    TODAY = date(2026, 9, 11)
 
+    def _healthy_days(self, user, n=7):
+        """A trailing week ending on the class's NOW that scores zero on every
+        term, so a test can move one term at a time and read the delta as that
+        term's contribution."""
+        for offset in range(n):
+            MetricsDaily.objects.create(
+                user=user, study_day=10 - offset,
+                local_date=self.TODAY - timedelta(days=offset),
+                is_run_in=False, is_active_day=True, item_bank_version='v1',
+                ema_scheduled_n=6, slots_expected=6, slots_covered=6,
+                wear_valid_pct=1.0, ema_missing_b1b2_n=0)
+
+    def _score(self, user, **kwargs):
+        kwargs.setdefault('phase', 'mrt')
+        kwargs.setdefault('last_sync_at', self.NOW)
+        kwargs.setdefault('now', self.NOW)
+        return compute_risk_score(user, **kwargs)
+
+    def test_risk_score_is_zero_for_a_fully_compliant_participant(self):
+        user = make_participant('k@x.test', self.ENROLLED, device=False)
+        self._healthy_days(user)
+        score, components = self._score(user)
+        self.assertEqual(score, 0)
+        self.assertEqual(set(components), set(RISK_WEIGHTS))
+        self.assertEqual(sum(components.values()), 0)
+
+    def test_each_risk_term_contributes_its_own_weight(self):
+        user = make_participant('t@x.test', self.ENROLLED, device=False)
+        self._healthy_days(user)
+
+        MetricsDaily.objects.filter(user=user, local_date__gte=date(2026, 9, 9)).update(
+            ema_scheduled_n=0, slots_covered=1, wear_valid_pct=0.1, ema_missing_b1b2_n=1)
+        Alert.objects.create(user=user, rule_id='wear_low', severity='critical')
+        score, components = self._score(user, last_sync_at=self.NOW - timedelta(hours=30))
+
+        self.assertEqual(components, {
+            'ema_stale': 3 * 3,       # last scheduled check-in was 2026-09-08
+            'low_coverage': 2 * 3,    # 1/6 covered on three days
+            'sync_stale': 2 * 1,
+            'low_wear': 1 * 3,
+            'missing_signal': 1 * 3,
+            'open_critical': 4 * 1,
+        })
+        self.assertEqual(score, sum(components.values()))
+
+    def test_risk_score_caps_hold_at_the_documented_ceiling(self):
+        user = make_participant('c@x.test', self.ENROLLED, device=False)
+        for offset in range(7):
+            MetricsDaily.objects.create(
+                user=user, study_day=10 - offset,
+                local_date=self.TODAY - timedelta(days=offset),
+                is_run_in=False, is_active_day=True, item_bank_version='v1',
+                ema_scheduled_n=0, slots_expected=6, slots_covered=0,
+                wear_valid_pct=0.0, ema_missing_b1b2_n=6)
+        Alert.objects.create(user=user, rule_id='wear_low', severity='critical')
+        score, components = self._score(user, last_sync_at=None)
+
+        self.assertEqual(score, RISK_SCORE_MAX)
+        self.assertEqual(score, 47)
+        self.assertEqual(components['ema_stale'], 3 * 5)
+        self.assertEqual(components['missing_signal'], 1 * 5)
+
+    def test_trailing_window_is_the_last_seven_active_days_not_rows(self):
+        """A gap in the middle must not pull an eighth day into the window, and
+        an inactive row must not occupy a slot in it."""
+        user = make_participant('w@x.test', self.ENROLLED, device=False)
+        for offset in range(10):
+            MetricsDaily.objects.create(
+                user=user, study_day=10 - offset,
+                local_date=self.TODAY - timedelta(days=offset),
+                is_run_in=False, is_active_day=offset != 3, item_bank_version='v1',
+                ema_scheduled_n=6, slots_expected=6,
+                slots_covered=0 if offset >= 7 else 6,
+                wear_valid_pct=1.0, ema_missing_b1b2_n=0)
+        _, components = self._score(user)
+        self.assertEqual(components['low_coverage'], 2 * 1)
+
+    def test_null_metrics_contribute_nothing_rather_than_counting_as_failure(self):
+        user = make_participant('nl@x.test', self.ENROLLED, device=False)
+        for offset in range(7):
+            MetricsDaily.objects.create(
+                user=user, study_day=10 - offset,
+                local_date=self.TODAY - timedelta(days=offset),
+                is_run_in=False, is_active_day=True, item_bank_version='v1',
+                ema_scheduled_n=6, slots_expected=None, slots_covered=None,
+                wear_valid_pct=None, ema_missing_b1b2_n=None)
+        _, components = self._score(user)
+        self.assertEqual(components['low_coverage'], 0)
+        self.assertEqual(components['low_wear'], 0)
+        self.assertEqual(components['missing_signal'], 0)
+
+    def test_risk_score_is_null_outside_the_active_phases(self):
+        """Withdrawn, complete and pre-enrollment participants score every term
+        as maximally bad, so scoring them would put people the study is not
+        asking anything of at the top of the RA's call list."""
+        user = make_participant('ph@x.test', self.ENROLLED, device=False)
+        for phase in ('pre_enrollment', 'complete', 'withdrawn'):
+            self.assertEqual(self._score(user, phase=phase), (None, None), phase)
+        self.assertIsNotNone(self._score(user, phase='run_in')[0])
+
+    def test_warning_alerts_do_not_move_the_score(self):
+        """Only critical counts. The spec names severity=high, which no alert
+        carries, so the term is scored against critical or it is dead."""
+        user = make_participant('wa@x.test', self.ENROLLED, device=False)
+        self._healthy_days(user)
+        Alert.objects.create(user=user, rule_id='sync_stale', severity='warning')
+        self.assertEqual(self._score(user)[0], 0)
+        Alert.objects.create(user=user, rule_id='wear_low', severity='critical')
+        self.assertEqual(self._score(user)[0], 4)
         Alert.objects.filter(user=user, severity='critical').update(resolved_at=self.NOW)
-        self.assertEqual(compute_risk_score(user), 30)
+        self.assertEqual(self._score(user)[0], 0)
 
     def test_refresh_risk_scores_updates_stored_rows(self):
         user = make_participant('rs@x.test', self.ENROLLED, device=False)
+        self._healthy_days(user)
         MetricsParticipant.objects.create(user=user, **compute_participant(user, now=self.NOW))
+        # 2, not 0: this participant has no device row, which scores as sync
+        # stale. compute_participant reads the device rather than being handed a
+        # sync time, so that term is live here.
+        self.assertEqual(MetricsParticipant.objects.get(user=user).risk_score, 2)
+
         Alert.objects.create(user=user, rule_id='wear_low', severity='critical')
-        self.assertEqual(refresh_risk_scores(), 1)
-        self.assertEqual(MetricsParticipant.objects.get(user=user).risk_score, 40)
+        self.assertEqual(refresh_risk_scores(now=self.NOW), 1)
+        row = MetricsParticipant.objects.get(user=user)
+        self.assertEqual(row.risk_score, 6)
+        self.assertEqual(row.risk_components['open_critical'], 4)
+        self.assertEqual(row.risk_score, sum(row.risk_components.values()))
+        self.assertEqual(refresh_risk_scores(now=self.NOW), 0)
 
 
 # ---------------------------------------------------------------------------
@@ -879,6 +995,65 @@ class MonitorEndpointTests(TestCase):
         self.assertTrue(all(value is not None for value in row['values'][:5]))
         self.assertTrue(all(value is None for value in row['values'][5:]))
         self.assertEqual(row['values'][0], 0)
+
+    def test_grid_overlays_align_with_values_and_null_out_together(self):
+        body = self.client.get('/api/monitor/grid?metric=wear_valid_pct',
+                               **self.headers).json()
+        row = body['rows'][0]
+        overlays = ['local_dates', 'run_in', 'covered', 'reminded', 'silent', 'alert']
+        for key in overlays:
+            self.assertEqual(len(row[key]), STUDY_DAYS, key)
+            # An overlay may only carry a value where the participant lived the
+            # day. Structural blank has to reach the wire on every array, not
+            # just on values, or the chart draws marks on days that never were.
+            for index, entry in enumerate(row[key]):
+                lived = index < 5
+                self.assertEqual(entry is not None, lived, f'{key}[{index}]')
+
+    def test_grid_three_way_split_sums_to_the_slots_expected(self):
+        body = self.client.get('/api/monitor/grid?metric=slots_expected',
+                               **self.headers).json()
+        row = body['rows'][0]
+        for index in range(5):
+            self.assertEqual(
+                row['covered'][index] + row['reminded'][index] + row['silent'][index],
+                row['values'][index], f'day {index}')
+
+    def test_grid_run_in_flag_marks_the_first_seven_days(self):
+        body = self.client.get('/api/monitor/grid', **self.headers).json()
+        self.assertTrue(all(body['rows'][0]['run_in'][:5]))
+
+    def test_grid_reports_the_daily_prompt_cap_for_the_ordinal_scale(self):
+        body = self.client.get('/api/monitor/grid', **self.headers).json()
+        self.assertEqual(body['daily_prompt_cap'], DAILY_PROMPT_CAP)
+
+    def test_grid_places_an_open_alert_on_its_own_firing_day(self):
+        # The recompute in setUp opens its own alerts on today's cell, so clear
+        # them first and let this test speak only to the date mapping.
+        Alert.objects.all().delete()
+        fired = datetime(self.today.year, self.today.month, self.today.day,
+                         12, 0, tzinfo=EASTERN) - timedelta(days=2)
+        Alert.objects.create(user=self.user, rule_id='wear_low', severity='critical',
+                             fired_at=fired)
+        row = self.client.get('/api/monitor/grid', **self.headers).json()['rows'][0]
+        self.assertEqual([index for index, flag in enumerate(row['alert']) if flag], [2])
+
+    def test_grid_ignores_cohort_alerts_which_belong_to_no_cell(self):
+        Alert.objects.all().delete()
+        Alert.objects.create(user=None, rule_id='pipeline_stalled', severity='critical')
+        row = self.client.get('/api/monitor/grid', **self.headers).json()['rows'][0]
+        self.assertFalse(any(flag for flag in row['alert'] if flag))
+
+    def test_grid_serves_every_metric_field(self):
+        """slots_covered, slots_reminded_uncovered and slots_silent are both
+        selectable metrics and overlay columns, so the underlying values_list
+        asks for the same field twice. Every metric has to survive that."""
+        for metric in sorted(METRIC_FIELDS):
+            response = self.client.get(f'/api/monitor/grid?metric={metric}', **self.headers)
+            self.assertEqual(response.status_code, 200, metric)
+            row = response.json()['rows'][0]
+            self.assertEqual(len(row['values']), STUDY_DAYS, metric)
+            self.assertEqual(len(row['covered']), STUDY_DAYS, metric)
 
     def test_grid_rejects_an_unknown_metric(self):
         response = self.client.get('/api/monitor/grid?metric=nope', **self.headers)

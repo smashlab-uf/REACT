@@ -7,3 +7,5 @@ statsmodels>=0.14
 Django>=5.1
 dj-database-url>=2.3
 psycopg2>=2.9
+streamlit>=1.53
+requests>=2.31

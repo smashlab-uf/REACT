@@ -114,7 +114,12 @@ class MetricsParticipant(models.Model):
     last_ema_at = models.DateTimeField(null=True, blank=True)
     last_sync_at = models.DateTimeField(null=True, blank=True)
     active_retention = models.BooleanField(null=True, blank=True)
+    # Null, not zero, for a participant the study is not currently asking
+    # anything of: pre-enrollment, complete, or withdrawn.
     risk_score = models.PositiveSmallIntegerField(null=True, blank=True)
+    # {term: points} behind risk_score, so the grid can print why a row is at
+    # the top instead of asking the RA to trust the number.
+    risk_components = models.JSONField(null=True, blank=True)
 
     # Cumulative benchmark rates, each stored with its numerator and denominator
     # so a suppressed rate can still be shown as raw counts.

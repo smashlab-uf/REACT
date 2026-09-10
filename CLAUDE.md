@@ -78,10 +78,15 @@ npx expo export --platform ios --output-dir /tmp/x
 ```bash
 # Analytics — from analytics/. Loaders bootstrap Django to read the live DB (scripts.py:_ensure_django).
 pip install -r requirements.txt
-# There is no Streamlit app: analytics/REACT-dashboard/ was deleted in commit 1fdc6f3.
-# Monitoring is served by the /api/monitor/* endpoints instead (see Monitoring data layer).
 python reconcile_monitoring.py          # checks the live metric tables against scripts.py;
                                          # seeds a synthetic cohort, so never point it at production
+
+# Stage 2 participant grid: a Streamlit prototype over the /api/monitor/* endpoints.
+# It holds no DB credential and imports no Django; both vars are env-only.
+# (The older analytics/REACT-dashboard/ Streamlit app was deleted in commit 1fdc6f3 and
+#  is unrelated — it read only the two /dashboard/* status endpoints.)
+export MONITOR_BASE_URL=http://localhost:8000 DASHBOARD_API_KEY=...
+streamlit run monitor_app/app.py
 ```
 
 ```bash
@@ -158,7 +163,8 @@ backend/
 mobile/            # Expo SDK 56 app; source under src/; committed android/ & ios/; dev-client required
 analytics/         # offline analysis: scripts.py (ORM-backed loaders + pandas metrics),
                    #   sensitivity_analysis/ (MSSD parameter recovery / robustness notebooks),
-                   #   reconcile_monitoring.py (live-vs-offline metric agreement check)
+                   #   reconcile_monitoring.py (live-vs-offline metric agreement check),
+                   #   monitor_app/ (Stage 2 participant grid: Streamlit over /api/monitor/*)
 dashboard/         # monitoring Django app at the repo root, NOT under backend/:
                    #   data/ (config.py constants, windows.py, daily/participant/cohort/alerts),
                    #   models.py (4 derived metric tables), views.py (/api/monitor/*), tasks.py
@@ -379,16 +385,19 @@ Expo push token is stored in `User.push_token` and updated on app launch.
 
 ## Researcher Dashboard
 
-Two separate surfaces exist:
+Three separate surfaces exist:
 
 1. **Django Admin** (`app/admin.py`) — full CRUD over every model (`ReadableAdminMixin` +
    one `ModelAdmin` per model), the default researcher/PI surface today.
 2. **Monitoring API** (`/api/monitor/*`, served by the `dashboard` app) — read-only
    feasibility and integrity metrics, auth'd with `DASHBOARD_API_KEY`. See Monitoring data
    layer below. Not a general study-data browser — that's still Django Admin.
-   The Streamlit app that used to fill this role (`analytics/REACT-dashboard/`) was deleted in
-   commit `1fdc6f3`; it only ever read the two `/dashboard/*` status endpoints and computed no
-   feasibility metrics.
+   The unrelated Streamlit app at `analytics/REACT-dashboard/` was deleted in commit `1fdc6f3`;
+   it only ever read the two `/dashboard/*` status endpoints and computed no feasibility metrics.
+3. **Participant grid** (`analytics/monitor_app/`) — a Streamlit prototype of the daily RA
+   view, "who needs a phone call today". Reads the monitoring API over HTTP with no database
+   credential and no Django import, so it also serves as a check on those endpoints. Local
+   prototype only; nothing deploys it. See `analytics/monitor_app/README.md`.
 
 ### Monitoring data layer
 
@@ -419,6 +428,15 @@ Three invariants the layer enforces, worth preserving in any change:
   and 30 units; below that the payload carries raw counts and a null value. Phase 1 (n=5) is
   therefore always counts, never percentages.
 - **A benchmark with no source is marked unmeasurable**, never reported as zero.
+
+**`risk_score` orders the participant grid** and is defined once, in
+`dashboard/data/participant.py`. Six weighted terms over the trailing seven *active* days,
+maximum 47, with each term's point contribution stored in `risk_components` so the ordering is
+arguable rather than opaque. Weights are a starting point to tune after Phase 1. Two properties
+to preserve: the score is **null, not zero**, for anyone the study is not currently asking
+anything of (pre-enrollment, complete, withdrawn), since every term reads as maximally bad for
+them and they would otherwise dominate the top of the RA's call list; and only `critical` alerts
+move it, because `Alert.SEVERITY_CHOICES` has no `high`.
 
 `EMA.served_sub_item_ids` records what a check-in actually put on screen, which is what makes
 item completeness measurable at all. `/ema/next/` returns the list, the client may echo it back,

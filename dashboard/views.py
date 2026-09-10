@@ -22,7 +22,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from dashboard.data.cohort import participants_for
-from dashboard.data.config import STUDY_DAYS
+from dashboard.data.config import DAILY_PROMPT_CAP, STUDY_DAYS
 from dashboard.data.daily import METRIC_FIELDS
 from dashboard.data.windows import (
     participant_day_bounds,
@@ -97,36 +97,86 @@ class MonitorGridView(APIView):
             row.user_id: row for row in MetricsParticipant.objects.filter(user__in=users)
         }
 
+        # Overlays travel with the metric because Stage 2 draws them on every
+        # metric, and fetching them per toggle would be four times the queries
+        # to paint the same marks.
         cells = {}
-        for user_id, study_day, value, is_active in (
+        for (
+            user_id, study_day, value, is_active, local_date, run_in,
+            covered, reminded, silent,
+        ) in (
             MetricsDaily.objects
             .filter(user__in=users)
-            .values_list('user_id', 'study_day', metric, 'is_active_day')
+            .values_list(
+                'user_id', 'study_day', metric, 'is_active_day', 'local_date',
+                'is_run_in', 'slots_covered', 'slots_reminded_uncovered', 'slots_silent',
+            )
         ):
             # A day the participant did not live through carries no value, even
             # if the column happens to hold one. Null and zero stay distinct all
-            # the way to the wire.
-            cells[(user_id, study_day)] = value if is_active else None
+            # the way to the wire, and every overlay nulls out with it.
+            cells[(user_id, study_day)] = (
+                {
+                    'value': value, 'local_date': local_date, 'run_in': run_in,
+                    'covered': covered, 'reminded': reminded, 'silent': silent,
+                }
+                if is_active else None
+            )
+
+        alert_days = self._alert_days(users)
 
         rows = []
         for user in sorted(users, key=lambda u: u.pk):
             rollup = rollups.get(user.pk)
+            days = [cells.get((user.pk, day)) for day in range(STUDY_DAYS)]
+            flagged = alert_days.get(user.pk, set())
             rows.append({
                 'user_id': user.pk,
                 'participant_id': participant_label(user),
                 'phase': rollup.phase if rollup else None,
                 'study_day_now': rollup.study_day_now if rollup else None,
                 'risk_score': rollup.risk_score if rollup else None,
-                'values': [cells.get((user.pk, day)) for day in range(STUDY_DAYS)],
+                'risk_components': rollup.risk_components if rollup else None,
+                'values': [day['value'] if day else None for day in days],
+                'local_dates': [day['local_date'] if day else None for day in days],
+                'run_in': [day['run_in'] if day else None for day in days],
+                'covered': [day['covered'] if day else None for day in days],
+                'reminded': [day['reminded'] if day else None for day in days],
+                'silent': [day['silent'] if day else None for day in days],
+                'alert': [
+                    (index in flagged) if day else None for index, day in enumerate(days)
+                ],
             })
 
         return Response({
             'metric': metric,
             'phase': phase,
             'study_days': list(range(STUDY_DAYS)),
+            # So the "dark at cap" scale is read from the constants authority
+            # rather than typed into a chart file.
+            'daily_prompt_cap': DAILY_PROMPT_CAP,
             'n_participants': len(rows),
             'rows': rows,
         })
+
+    @staticmethod
+    def _alert_days(users):
+        """Open alerts placed on the study day they fired on.
+
+        An alert is open or not rather than dated per day, so the cell it marks
+        is the one for its own firing date. Cohort alerts have no user and mark
+        nothing here; they belong to the Stage 1 header.
+        """
+        by_user = {}
+        for alert in (
+            Alert.objects
+            .filter(user__in=users, resolved_at__isnull=True)
+            .select_related('user')
+        ):
+            study_day = study_day_for(alert.user, participant_time(alert.fired_at).date())
+            if study_day is not None and 0 <= study_day < STUDY_DAYS:
+                by_user.setdefault(alert.user_id, set()).add(study_day)
+        return by_user
 
 
 class MonitorParticipantView(APIView):
