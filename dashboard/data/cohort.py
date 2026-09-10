@@ -1,4 +1,4 @@
-"""Cohort snapshot: the five feasibility benchmarks and the MRT integrity counts.
+"""Cohort snapshot: the feasibility benchmarks and the MRT integrity counts.
 
 Written once per compute run per phase filter, so Stage 1 reads a single row
 instead of re-aggregating MetricsDaily on every poll.
@@ -6,8 +6,8 @@ instead of re-aggregating MetricsDaily on every poll.
 Two rules are enforced here rather than left to the front end. A rate is only
 emitted once its denominator carries enough participants and enough units;
 below that the entry carries raw counts and a null value, so a percentage
-computed from five people can never reach a chart. And a benchmark with no data
-source is marked unmeasurable rather than reported as zero.
+computed from five people can never reach a chart. And a benchmark named in
+UNMEASURABLE_BENCHMARKS is marked unmeasurable rather than reported as zero.
 """
 
 import math
@@ -215,7 +215,6 @@ def compute_cohort(phase_filter, now=None):
             'retention': _benchmark(
                 'retention', retained, len(began), len(began), 'participants',
             ),
-            'hair': _benchmark('hair', 0, 0, 0, 'sub-study samples'),
         },
         'series_14d': _series(users, now),
         **{key: value or 0 for key, value in integrity.items()},

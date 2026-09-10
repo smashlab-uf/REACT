@@ -33,6 +33,29 @@ def compute_risk_score(user):
     return min(RISK_SCORE_MAX, total)
 
 
+def withdrawal_at(user, existing=None, now=None):
+    """The withdrawal proxy for a participant, carried forward once set.
+
+    Split out from compute_participant so the recompute can resolve it before
+    computing daily rows, which need it to decide is_active_day. Otherwise a
+    withdrawal observed this run would not reach the day rows until the next one.
+    """
+    now = now or django_timezone.now()
+    existing_value = existing.first_seen_not_enrolled_at if existing is not None else None
+    if existing_value is not None:
+        return existing_value
+    if user.enrolled_at is None or user.is_enrolled:
+        return None
+    study_day_now = study_day_for(user, today_local(now))
+    # Unenrolling someone who already reached the last study day is how the
+    # study closes out, not a dropout. A mid-study withdrawal that happened
+    # before monitoring existed is recovered by the backfill_withdrawals
+    # command, which reads the admin audit log.
+    if study_day_now is not None and study_day_now >= STUDY_DAYS:
+        return None
+    return now
+
+
 def _phase(study_day_now, withdrawn_at):
     # Withdrawal is checked first and is permanent: someone who left on day 10
     # is still withdrawn once day 35 rolls past, not complete.
@@ -94,16 +117,7 @@ def compute_participant(user, existing=None, daily_rows=None, now=None):
     """
     now = now or django_timezone.now()
     study_day_now = study_day_for(user, today_local(now))
-    past_last_day = study_day_now is not None and study_day_now >= STUDY_DAYS
-
-    withdrawn_at = existing.first_seen_not_enrolled_at if existing is not None else None
-    # Unenrolling someone who already reached the last study day is how the
-    # study closes out, not a dropout. A mid-study withdrawal that happened
-    # before monitoring existed is recovered by the backfill_withdrawals
-    # command, which reads the admin audit log.
-    if (withdrawn_at is None and user.enrolled_at is not None
-            and not user.is_enrolled and not past_last_day):
-        withdrawn_at = now
+    withdrawn_at = withdrawal_at(user, existing, now)
 
     if daily_rows is None:
         daily_rows = list(MetricsDaily.objects.filter(user=user, is_active_day=True))

@@ -151,9 +151,8 @@ class MetricsCohort(models.Model):
     n_active = models.IntegerField()
 
     # {name: {value, wilson_low, wilson_high, numerator, denominator,
-    #         suppressed, measurable}}. Held as one document rather than 25
-    #  columns because the row is always read whole; the 'hair' entry is always
-    #  measurable=false, since hair_sample has no production table.
+    #         suppressed, measurable, ...}}. Held as one document rather than as
+    # a column per benchmark per bound, because the row is always read whole.
     benchmarks = models.JSONField(null=True, blank=True)
     # Pre-aggregated daily series so a 60-second poll never re-aggregates
     # MetricsDaily.

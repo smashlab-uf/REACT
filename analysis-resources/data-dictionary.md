@@ -30,7 +30,7 @@ Database and modeling is based on Dustin's [Django model.](../analysis-resources
 
 | Tag | Definition |
 |-----|------------|
-| **Labfront/Garmin** | Imported from the participant's Garmin wearable via the Labfront research platform (batch CSV/ZIP export). See [How Labfront/Garmin data is produced](#how-labfrontgarmin-data-is-actually-produced-collection-mechanics--caveats). |
+| **Labfront/Garmin** | Imported from the participant's Garmin wearable via the Labfront research platform (batch CSV/ZIP export). See [How Labfront/Garmin data is produced](#how-labfrontgarmin-data-is-produced-collection-mechanics--caveats). |
 | **EMA push** | Self-reported by the participant in-app after a push-notification prompt (Ecological Momentary Assessment). |
 | **Decision engine** | Computed / emitted server-side by the JITAI decision logic at each decision point. |
 | **App telemetry** | Client-app events and push-delivery receipts reported by the phone. |
@@ -59,6 +59,7 @@ Three data streams are collected during the study period:
 | **JITAI interventions & engagement** | Decision engine + phone app | [`app_jitailog`](#28-app_jitailog), [`app_engagementlog`](#29-app_engagementlog), [`app_phonetelemetry`](#210-app_phonetelemetry) |
 | **Garmin wearable telemetry** | Labfront import | [`app_heartratesample`](#25-app_heartratesample), [`app_stresssample`](#26-app_stresssample), [`app_wearabledevice`](#27-app_wearabledevice) |
 | **Study calendar** | Backend / admin | [`app_eventday`](#24-app_eventday) |
+| **Live monitoring** (derived, not collected) | Celery recompute every 10 min | `dashboard_metricsdaily`, `dashboard_metricsparticipant`, `dashboard_metricscohort`, `dashboard_alert` |
 | **Biomarker sub-study (Tier 2)** | Kertes Lab hair assay + Qualtrics hygiene intake | [`hair_sample`](#211-hair_sample), [`hair_hygiene_covariates`](#212-hair_hygiene_covariates) |
 
 ---
@@ -199,7 +200,7 @@ Heart-rate samples imported from Garmin via Labfront.
 | `id` | INT (PK) | Labfront/Garmin | Primary key. |
 | `user_id` | INT (FK → `user.user_id`) | Labfront/Garmin | Participant. |
 | `timestamp` | DATETIME | Labfront/Garmin | Sample time. Real cadence ~1-sec/epoch; subject to 2–5 min sync latency. Synthetic data is minute-level, optionally thinned via `--hr-every` (`db_seed.py:133`). |
-| `bpm` | SMALLINT | Labfront/Garmin | Heart rate in beats per minute. `0`/NULL ≈ **inferred non-wear** (no explicit wear flag -- see [collection caveats](#how-labfrontgarmin-data-is-actually-produced-collection-mechanics--caveats)). |
+| `bpm` | SMALLINT | Labfront/Garmin | Heart rate in beats per minute. `0`/NULL ≈ **inferred non-wear** (no explicit wear flag -- see [collection caveats](#how-labfrontgarmin-data-is-produced-collection-mechanics--caveats)). |
 | `source` | VARCHAR(32) | Labfront/Garmin | Import/provenance tag; seeder writes `garmin_labfront` (`db_seed.py:191`). |
 
 ### 2.6 `app_stresssample`
@@ -293,9 +294,22 @@ User interactions with a delivered JITAI prompt.
 | `id` | INT (PK) | App telemetry | Primary key. |
 | `user_id` | INT (FK → `user.user_id`) | App telemetry | Participant. |
 | `jitai_log_id` | INT (FK → `jitai_log.id`) | App telemetry | The prompt interacted with. |
-| `event_type` | VARCHAR(64) | App telemetry | Interaction type: `prompt_opened`, `prompt_acted`, `prompt_dismissed`. |
+| `event_type` | VARCHAR(64) | App telemetry | One of `ema_opened`, `ema_dismissed`, `ema_completed`, `notification_tapped`, `notification_dismissed`. |
 | `occurred_at` | DATETIME | App telemetry | When the interaction happened (device clock). |
 | `recorded_at` | DATETIME | App telemetry | When the event was persisted server-side. |
+
+> **Corrected 2026-09-10.** Earlier revisions of this row listed `prompt_opened`,
+> `prompt_acted` and `prompt_dismissed`. Those values have never existed; the authoritative
+> list is `ENGAGEMENT_EVENT_TYPES` in `backend/app/models.py`. The monitoring layer maps them
+> as: **opened** = `notification_tapped`; **dismissed** = `notification_dismissed`; **acted**
+> has no engagement event at all and is derived instead from the C0 quick-rating EMA, counting
+> a `C0_behavior_change` answer of *"I paused or waited"* or *"I changed what I was going to
+> do"*.
+
+> **Clock skew.** `recorded_at − occurred_at` is signed. A device clock running ahead of the
+> server puts `occurred_at` after `recorded_at`, which is a real and diagnostic condition, not
+> corrupt data. The monitoring layer reports its 95th percentile per participant-day as
+> `clock_skew_p95_ms`.
 
 ### 2.10 `app_phonetelemetry`
 
@@ -357,22 +371,33 @@ One row per participant capturing biological covariates required to interpret st
 One row per **"time to check in" reminder push** sent to a participant. Distinct from `ema`,
 which only gets a row once the participant actually submits a check-in — `checkin_reminder`
 records that a nudge was *sent*, so analysts can separate "prompted but did not respond" from
-"never prompted." Generated by the `send_checkin_reminders` Celery task
-(`backend/app/tasks.py:192`): it fires only within the participant-local window (09:00–21:00),
-skips participants who currently have an active JITAI prompt, enforces a 120-minute cooldown
-between reminders, and stops once the participant reaches the daily check-in cap.
+"never prompted."
+
+Generated by the `send_checkin_reminders` Celery task (`backend/app/tasks.py`). The
+participant-local day (09:00–21:00 Eastern) is divided into **six fixed two-hour slots**:
+slot 0 = [09,11), 1 = [11,13), 2 = [13,15), 3 = [15,17), 4 = [17,19), 5 = [19,21). Each slot's
+reminder fires **once**, 30 minutes after the slot opens, only if no check-in has landed in
+that slot, and then lapses with no catch-up. Reminders are also suppressed while the
+participant has an active JITAI outcome window open. Confirmed by Dr. Chang, 2026-08-21.
 
 | Name | Type | Source stream | Meaning |
 |------|------|---------------|---------|
 | `id` | INT (PK) | Backend / scheduler | Primary key. |
 | `user_id` | INT (FK → `user.user_id`) | Backend / scheduler | Participant who received the reminder. |
 | `sent_at` | DATETIME | Backend / scheduler | When the reminder push was sent (`auto_now_add`). |
-| `daily_count_at_send` | SMALLINT | Backend / scheduler | Number of EMA check-ins the participant had **already submitted that participant-local day** at the moment the reminder fired (from `_today_ema_count`). `0` = had not yet checked in today. **Not** a count of reminders. |
+| `daily_count_at_send` | SMALLINT | Backend / scheduler | **The 0-indexed check-in slot this reminder was for** (0–5). Despite the column name it is not a count of anything. |
 
-> **Semantics note:** `daily_count_at_send` increments only when a new `ema` row is recorded, so a
-> run of reminders on the same day sharing the same value means the participant had still not
-> checked in between those nudges. Use this to reconstruct how many reminders preceded each
-> check-in — see §3 *Reminder-to-check-in latency* and *Reminders-to-check-in*.
+> **Corrected 2026-09-10.** Earlier revisions described `daily_count_at_send` as the number of
+> check-ins already submitted that day, and the task as enforcing a 120-minute cooldown. Both
+> are wrong. The column is a slot index (see the model comment at `backend/app/models.py`),
+> and there is no cooldown: the 120 minutes some readers inferred is simply the slot length,
+> 12 hours divided by the six-per-day cap.
+>
+> One consequence matters for analysis. Because at most one reminder exists per slot, the §3
+> *Reminders-to-check-in* metric can only ever be **0 or 1**, never the higher counts that
+> section's "reminder fatigue" framing implies. Disengagement shows up instead as the number
+> of slots that were reminded and stayed uncovered, which the monitoring layer reports per
+> participant-day as `slots_reminded_uncovered`.
 
 ### 2.14 Relationships (foreign keys)
 
@@ -404,12 +429,13 @@ follow `JITAI-analysis-plan.md` and `syntheticData/decision/`.
 | **Expected MSSD** | FLOAT | `2·σ²·(1−ρ)` from latent AR(1) parameters. | Ground-truth benchmark used to validate recovery (`syntheticData/SCHEMA.md`). |
 | **AR(1) ρ̂** (autocorrelation) | FLOAT | Lag-1 autocorrelation over consecutive answered EMA pairs. | Recovery **degrades below ~80%** response rate -- an analytic requirement, distinct from the 75% feasibility benchmark. |
 | **AR(1) σ̂** (residual SD) | FLOAT | Sample SD of demeaned answered EMA. | More robust than ρ̂ across response rates. |
-| **Response latency** | INT (min) | `responded_at − sent_at`. | Must be ≤ 30 min to count in-window. |
+| **Response latency** | INT (min) | `responded_at − sent_at`. | **Structurally unmeasurable, always 0.** An `ema` row is created only when the participant submits (`EMAResponseView` is the sole writer and `sent_at` is `auto_now_add`), so there is no delivery-time row to measure from and `responded_at` always equals `sent_at`. The 30-minute in-window test cannot be evaluated from the data as collected. Slot coverage carries compliance instead. |
 | **Reminder-to-check-in latency** | INT (min) | For each `checkin_reminder`, `MIN(ema.sent_at) − checkin_reminder.sent_at` over the same participant's `ema` rows submitted after that reminder and before the next reminder (or end of participant-local day); NULL if no check-in followed. | "Prompt response time" for nudges — how quickly a reminder converts to a check-in. Distinct from **Response latency** (which times an opened EMA prompt → submit). Long or NULL latencies flag ineffective reminders. |
-| **Reminders-to-check-in** | INT | Per participant per participant-local day, the count of `checkin_reminder` rows sent before the next `ema` submission — i.e. the run of reminders sharing the same `daily_count_at_send` up to the check-in that increments it. | Diagnoses how many nudges it takes to get a response. High counts (or reaching the daily cap with many reminders but few check-ins) flag disengagement or reminder fatigue. |
+| **Reminders-to-check-in** | INT | Per participant per participant-local day, whether the covering check-in in each slot was preceded by that slot's reminder. | **Bounded to 0 or 1**: `daily_count_at_send` is a slot index and at most one reminder exists per slot (see §2.13), so the "many nudges" reading is not reachable. For disengagement use `slots_reminded_uncovered` — slots where we asked and no check-in followed. |
+| **Slot coverage** | FLOAT (%) | Per participant-day, `slots_covered / slots_expected` over the six fixed check-in slots; cumulatively, the same ratio summed across active days. | The compliance denominator. `ema` rows exist only on submission, so the day's slots — not EMA rows — are what "we asked" is counted against. Covered and reminded-uncovered are disjoint; the remainder is silent. |
 | **Wear time** | FLOAT (%) | Coverage over standardized waking hours **8:00 AM–10:00 PM** (14 h/day): numerator = 14 h − gaps > **2 consecutive hours**; denominator = 14 h. | Benchmark ≥ 8 h/day, ≥ 5 days/week. Non-wear inferred (no wear flag); BBI/EMA used as supporting evidence (`JITAI-analysis-plan.md:31-36`). |
-| **Intervention dosage** | INT / day | `COUNT(send_prompt = TRUE)` per participant per day (active study days in Weeks 2–5 only; Week 1 run-in excluded). | Hard cap = **4 prompts/day**; expected delivery ~2–3/day when eligible. Flag days exceeding cap or showing 0 deliveries when eligible. |
-| **Cooldown compliance** | -- | Minimum gap between consecutive triggers per participant. | Flag if < **60 minutes**. Violations indicate a decision-engine logic error. |
+| **Intervention dosage** | INT / day | `COUNT(send_prompt = TRUE)` per participant per day (active study days in Weeks 2–5 only; Week 1 run-in excluded). | Hard cap = **4 prompts/day**; expected delivery ~2–3/day when eligible. **The engine does not actually exclude Week 1** — no run-in gate exists, so prompts do fire on days 0–6 and must be excluded in analysis; `runin_violation_n` counts them. The engine also enforces its cap over **UTC** days while every other boundary is Eastern, so the two disagree for prompts after 19:00 Eastern. |
+| **Cooldown compliance** | -- | Minimum gap between consecutive triggers per participant. | Flag if < **60 minutes**. Violations indicate a decision-engine logic error. Note the clock differs by tool: `check_cooldown_compliance` keys on `triggered_at`, the live monitor on `push_sent_at` falling back to `decision_made_at`. All three are written in the same request in production and coincide there. |
 | **Delivery-funnel conversion** | FLOAT (%) | Conversion across `push_sent_at → device_received_at → receipt_reported_at → engagement`. | Diagnoses loss at each stage. |
 | **HR-MSSD vs EMA-MSSD** | FLOAT | Rolling MSSD on minute-level HR vs EMA-based MSSD. | Concordance between physiological and self-report volatility. |
 | **Completed check-in rate** | FLOAT (%) | Completed EMAs / delivered EMAs (delivery failures excluded from denominator). | Preregistered benchmark **75%**. |
@@ -509,6 +535,14 @@ remains a secondary reference. The earlier "divergences" below are **resolved**:
 | `user.is_enrolled`, `enrolled_at` | Not present; Fitbit-token/height/goal fields | Both present; legacy Fitbit/height/goal fields stripped (`0031`) |
 | `jitai_log` | Simpler notification audit (~8 cols) | Full decision + delivery lifecycle, **27 columns** |
 | `phone_telemetry`, `engagement_log`, `ema_item_response`, `event_day` | No production models | All exist as models + tables (`0029`, `0038`, `0039`, `0040`) |
+
+**Update 2026-09-10 — monitoring layer.** Migrations `0042`–`0044` and the new `dashboard` app
+have landed since the reconciliation above. `app_jitailog` now has **34** columns, not 27: `0042`
+added the second-stage coping-versus-control randomization and `0043` the routing audit.
+Migration `0044` added `app_ema.served_sub_item_ids`, which records what a check-in actually put
+on screen. Four derived `dashboard_*` tables now hold the precomputed monitoring metrics. All are
+documented in [`production_schema.md`](./production_schema.md), which stays authoritative; study
+constants live in one place, `dashboard/data/config.py`.
 
 **Known gaps / follow-ups:**
 

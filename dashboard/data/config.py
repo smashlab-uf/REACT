@@ -114,17 +114,19 @@ def arm_randomization_p():
 # How long a delivered JITAI prompt keeps the outcome window open.
 OUTCOME_WINDOW_HOURS = 2
 
-# Feasibility benchmarks. 'hair' has no production source: hair_sample is
-# documented in the analysis schema but absent from the Django backend, so the
-# cohort snapshot carries the column as null rather than reporting a rate.
+# Feasibility benchmarks reported by the live monitor. The hair sub-study
+# benchmark is deliberately absent: it belongs to a later stage of the study and
+# has no production table, so reporting it now could only ever be a null column.
 BENCHMARKS = {
     'slot_coverage': 0.75,
     'prompt_response': 0.60,
     'wear': 0.80,
     'retention': 0.85,
-    'hair': 0.90,
 }
-UNMEASURABLE_BENCHMARKS = frozenset({'hair'})
+# Benchmarks that are defined but have no data source yet. Entries named here
+# are emitted with measurable=false rather than as a zero. Empty today; the hair
+# sub-study lands here when it starts.
+UNMEASURABLE_BENCHMARKS = frozenset()
 
 # Display a rate only once the denominator carries this many participants and
 # units; otherwise show raw counts. Phase 1 therefore never shows percentages.
@@ -138,6 +140,9 @@ ITEM_BANK_VERSION = 'v1'
 # Trailing local days recomputed on every monitoring run, wide enough to absorb
 # Labfront batch lag and late device sync.
 METRICS_RECOMPUTE_TRAILING_DAYS = 3
+# How long cohort snapshots are kept. They are written once per run per phase
+# filter, so at a 10-minute cadence this is roughly 13k rows.
+METRICS_COHORT_RETENTION_DAYS = 30
 
 # The two caps are different quantities and nothing else in the repo states both
 # in one place: 6 scheduled B1-B8 check-ins per day versus 4 JITAI prompts.

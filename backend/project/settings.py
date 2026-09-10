@@ -217,6 +217,8 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
+TEST_RUNNER = 'project.test_runner.ReactTestRunner'
+
 TIME_ZONE = 'UTC'
 
 USE_I18N = True
@@ -274,6 +276,13 @@ CELERY_BEAT_SCHEDULE = {
     'send-checkin-reminders': {
         'task': 'app.tasks.send_checkin_reminders',
         'schedule': schedule(180.0),
+    },
+    # Slower than the three above on purpose: the trailing recompute is an
+    # aggregate refresh, and 10 minutes matches the Labfront batch cadence, so
+    # a shorter interval would only reread the same rows.
+    'recompute-monitoring-metrics': {
+        'task': 'dashboard.tasks.recompute_monitoring_metrics',
+        'schedule': schedule(600.0),
     },
 }
 

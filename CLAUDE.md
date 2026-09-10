@@ -30,7 +30,7 @@ November/early December, ~12–14 weeks).
 | Database | PostgreSQL |
 | Task Queue | Celery + Redis |
 | Frontend | React Native (Expo) |
-| Deployment | Heroku (`Procfile`) and GCP App Engine/Cloud Run (`cloudbuild.yaml`); Sentry for errors |
+| Deployment | Heroku (`Procfile`) — the only live target; Sentry for errors. `cloudbuild.yaml` exists but is dormant, and its build context is `./backend`, so it would miss the repo-root `dashboard/` app if revived |
 | Push Notifications | Expo Push Notification Service → Firebase/APNs |
 | Wearable Data Layer | Labfront API (intermediary for Garmin Health API) |
 | Wearable Device | Garmin Venu 3 |
@@ -49,9 +49,11 @@ python manage.py runserver 0.0.0.0:8000
 python manage.py createsuperuser
 
 # Tests run against SQLite in-memory via test_settings (do NOT hit the real DB)
-python manage.py test --settings=project.test_settings                              # full suite
-python manage.py test app.tests.EMAViewTests --settings=project.test_settings        # one class
-python manage.py test app.tests.EMAViewTests.test_name --settings=project.test_settings  # one test
+# A custom TEST_RUNNER supplies the default labels ('app', 'dashboard'): bare discovery starts
+# in backend/ and would never find the repo-root dashboard app.
+python manage.py test --settings=project.test_settings                                  # full suite
+python manage.py test app.tests.EMANextViewTests --settings=project.test_settings        # one class
+python manage.py test dashboard.tests.WindowsTests.test_slot_index_boundaries_are_half_open --settings=project.test_settings
 
 # Decision-engine scenario tests are plain unittest (pure pandas, no Django)
 python -m unittest decision_engine.test_decision_engine_scenarios
@@ -76,8 +78,20 @@ npx expo export --platform ios --output-dir /tmp/x
 ```bash
 # Analytics — from analytics/. Loaders bootstrap Django to read the live DB (scripts.py:_ensure_django).
 pip install -r requirements.txt
-streamlit run REACT-dashboard/app.py    # reads live data only if REACT_USE_MOCK_DATA=false and
-                                         # REACT_DASHBOARD_API_KEY is set (matches backend DASHBOARD_API_KEY)
+# There is no Streamlit app: analytics/REACT-dashboard/ was deleted in commit 1fdc6f3.
+# Monitoring is served by the /api/monitor/* endpoints instead (see Monitoring data layer).
+python reconcile_monitoring.py          # checks the live metric tables against scripts.py;
+                                         # seeds a synthetic cohort, so never point it at production
+```
+
+```bash
+# Monitoring data layer — from backend/
+python manage.py recompute_metrics                 # what the periodic task does: trailing 3 days
+python manage.py recompute_metrics --all           # initial fill / after a definition change
+python manage.py recompute_metrics --user 12 --days 2
+python manage.py dump_item_bank --check            # fails if EMA_ITEM_BANK drifted from the frozen JSON
+python manage.py backfill_withdrawals --dry-run    # backdate withdrawals from django_admin_log
+python manage.py test dashboard --settings=project.test_settings
 ```
 
 ```bash
@@ -100,24 +114,30 @@ not `test_settings`). A push to `main` that passes then auto-deploys to Heroku.
 Three cooperating processes (`Procfile`) plus the mobile client:
 
 - **web** — `gunicorn project.wsgi` — the DRF API and Django Admin (the primary researcher
-  surface; see Researcher Dashboard below for the separate Streamlit monitoring app).
+  surface; see Researcher Dashboard below for the read-only monitoring API alongside it).
 - **worker** — `celery -A project.celery worker` — executes the JITAI / notification tasks.
-- **beat** — `celery -A project.celery beat` — fires all three periodic tasks every **180 s**
-  (`CELERY_BEAT_SCHEDULE` in `settings.py`): `ingest_wearable_data`, `evaluate_jitai_triggers`,
-  `send_checkin_reminders`, all defined in `app/tasks.py`.
+- **beat** — `celery -A project.celery beat` — fires four periodic tasks (`CELERY_BEAT_SCHEDULE`
+  in `settings.py`). Three run every **180 s** and live in `app/tasks.py`:
+  `ingest_wearable_data`, `evaluate_jitai_triggers`, `send_checkin_reminders`. The fourth,
+  `dashboard.tasks.recompute_monitoring_metrics`, runs every **600 s** — an aggregate refresh
+  paced to the Labfront batch cadence, so a shorter interval would only reread the same rows.
 
 Auth is two-layered: `APIKeyMiddleware` (`app/middleware.py`) rejects API routes that lack a matching
 `X-API-Key` when `API_KEY` is set (it keeps an exempt-path list), and DRF layers SimpleJWT on top.
-The two `/dashboard/*` endpoints use a third scheme instead (`IsAdminUserOrDashboardAPIKey` in
-`app/views.py`): staff session auth OR a bearer `DASHBOARD_API_KEY`, for the Streamlit dashboard.
+The `/dashboard/*` and `/api/monitor/*` endpoints use a third scheme instead
+(`IsAdminUserOrDashboardAPIKey` in `app/views.py`): staff session auth OR a
+`X-Dashboard-API-Key` header. `APIKeyMiddleware.DASHBOARD_PREFIXES` lists the path prefixes
+that key is accepted for.
 `settings.py` is fully env-driven and picks the database by environment: `DATABASE_URL`
 (Heroku/dj-database-url) → Cloud SQL when `K_SERVICE` is set (GCP) → discrete `DATABASE_*` vars. Key
 env vars: `SECRET_KEY`, `API_KEY`, `DASHBOARD_API_KEY`, `REDIS_URL`, `SENTRY_DSN`,
 `JITAI_RANDOMIZATION_PROBABILITY` (default `0.5` — coin-flip gate in `evaluate_jitai_triggers`).
 
 Two push types reach the device (details in `mobile/README.md`): a **visible check-in reminder**
-(`send_checkin_reminders`, gated to 9–21 participant-local time with a 120-min cooldown, skipped once
-the daily EMA cap is hit) and a **silent JITAI prompt** (`evaluate_jitai_triggers`, sent only after a
+(`send_checkin_reminders`, which divides 9–21 participant-local time into six fixed two-hour
+slots and fires at most one reminder per slot, 30 min after it opens, only where no check-in
+has landed and never as a catch-up; there is no cooldown, and the 120 minutes sometimes quoted
+as one is just the slot length) and a **silent JITAI prompt** (`evaluate_jitai_triggers`, sent only after a
 newly completed EMA passes eligibility + randomization). The MSSD trigger math is isolated in
 `backend/decision_engine/decision_engine.py` (`calculate_mssd`, `apply_decision_rules`) and is
 regression-tested against a golden CSV (`scenario_test_outputs.csv`) in that directory.
@@ -137,8 +157,11 @@ backend/
   dress_rehearsal.py, full_circle_test.py  # manual end-to-end QA scripts, see Commands
 mobile/            # Expo SDK 56 app; source under src/; committed android/ & ios/; dev-client required
 analytics/         # offline analysis: scripts.py (ORM-backed loaders + pandas metrics),
-                   #   REACT-dashboard/ (Streamlit, reads /dashboard/* endpoints),
-                   #   sensitivity_analysis/ (MSSD parameter recovery / robustness notebooks)
+                   #   sensitivity_analysis/ (MSSD parameter recovery / robustness notebooks),
+                   #   reconcile_monitoring.py (live-vs-offline metric agreement check)
+dashboard/         # monitoring Django app at the repo root, NOT under backend/:
+                   #   data/ (config.py constants, windows.py, daily/participant/cohort/alerts),
+                   #   models.py (4 derived metric tables), views.py (/api/monitor/*), tasks.py
 analysis-resources/# data-dictionary.md and production_schema.md (authoritative live-schema map)
 docs/superpowers/  # schema design specs/plans from the original REACT model buildout — historical
                    #   context for why the models look the way they do, not a live source of truth
@@ -149,9 +172,11 @@ docs/superpowers/  # schema design specs/plans from the original REACT model bui
 ## Schema authority
 
 The **Django Models** section below is a simplified design reference and is intentionally leaner than
-what is deployed. The live schema is richer — e.g. `JITAILog` has ~27 columns; `EMA` carries
-`ema_type` and outcome-window fields; and there are additional tables (`EMAItemResponse`,
-`EngagementLog`, `PhoneTelemetry`, `EventDay`, `CheckinReminder`). For the actual deployed schema,
+what is deployed. The live schema is richer — e.g. `JITAILog` has **34** columns (the message-arm
+randomization and routing audit landed in migrations `0042`–`0043`); `EMA` carries `ema_type`,
+outcome-window fields and `served_sub_item_ids`; there are additional tables (`EMAItemResponse`,
+`EngagementLog`, `PhoneTelemetry`, `EventDay`, `CheckinReminder`); and four derived
+`dashboard_*` monitoring tables. For the actual deployed schema,
 trust `backend/app/models.py` and `analysis-resources/production_schema.md` (the latter maps every
 production table to its `data-dictionary.md` logical name).
 
@@ -264,12 +289,19 @@ but that file doesn't exist in the repo — don't chase it.)
 | GET | `/telemetry/stress/{user_id}/` | Fetch recent stress samples (dashboard use) |
 | POST | `/telemetry/phone/` | Ingest compose surface event from mobile app |
 | POST | `/telemetry/engagement/` | Ingest EMA/notification engagement event from mobile app |
-| GET | `/dashboard/participants/` | Per-participant sync/push/receipt status + staleness (Streamlit dashboard) |
-| GET | `/dashboard/latency-events/` | Recent push→receipt latency events (Streamlit dashboard) |
+| GET | `/dashboard/participants/` | Per-participant sync/push/receipt status + staleness |
+| GET | `/dashboard/latency-events/` | Recent push→receipt latency events |
+| GET | `/api/monitor/cohort` | Latest cohort snapshot: benchmarks, Wilson bounds, 14-day series |
+| GET | `/api/monitor/grid` | `MetricsDaily` pivoted to participant × study_day for one metric |
+| GET | `/api/monitor/participant/{id}` | Participant rollup + every daily row + open alerts |
+| GET | `/api/monitor/participant/{id}/timeline` | One participant-day from raw tables |
+| GET | `/api/monitor/alerts` | Open alerts, with severity counts |
 | GET | `/swagger/` | drf-yasg OpenAPI UI |
 
-The two `/dashboard/*` endpoints are read-only and gated by `IsAdminUserOrDashboardAPIKey`
-(staff session or `DASHBOARD_API_KEY`), not the standard `IsAuthenticated` used elsewhere.
+The `/dashboard/*` and `/api/monitor/*` endpoints are read-only and gated by
+`IsAdminUserOrDashboardAPIKey` (staff session or `DASHBOARD_API_KEY`), not the standard
+`IsAuthenticated` used elsewhere. `APIKeyMiddleware.DASHBOARD_PREFIXES` is what lets the
+dashboard key through for both path prefixes.
 
 ---
 
@@ -351,10 +383,54 @@ Two separate surfaces exist:
 
 1. **Django Admin** (`app/admin.py`) — full CRUD over every model (`ReadableAdminMixin` +
    one `ModelAdmin` per model), the default researcher/PI surface today.
-2. **Streamlit feasibility dashboard** (`analytics/REACT-dashboard/`) — a read-only monitoring
-   view fed by the two `/dashboard/*` API endpoints (participant sync/push/receipt staleness,
-   push→receipt latency events), auth'd with `DASHBOARD_API_KEY`. Not a general study-data
-   browser — that's still Django Admin.
+2. **Monitoring API** (`/api/monitor/*`, served by the `dashboard` app) — read-only
+   feasibility and integrity metrics, auth'd with `DASHBOARD_API_KEY`. See Monitoring data
+   layer below. Not a general study-data browser — that's still Django Admin.
+   The Streamlit app that used to fill this role (`analytics/REACT-dashboard/`) was deleted in
+   commit `1fdc6f3`; it only ever read the two `/dashboard/*` status endpoints and computed no
+   feasibility metrics.
+
+### Monitoring data layer
+
+The `dashboard` app lives at the **repo root**, not under `backend/`. `settings.py` puts the
+repo root on `sys.path` so it is importable from web, worker and beat, all of which run with
+`backend/` as their working directory.
+
+**`dashboard/data/config.py` is the single authority for study constants.** Anything the
+protocol fixes — the notification window, the caps, the cooldown, the threshold quantile, the
+randomization probabilities, the benchmarks, the timezone — is defined there exactly once, and
+`app/tasks.py`, `app/views.py` and `analytics/scripts.py` all import from it. `_evaluate_user`
+passes those values explicitly into `apply_decision_rules` rather than relying on the engine's
+defaults, so the engine and the monitor cannot drift apart silently. Do not reintroduce a
+literal for any of them.
+
+Four derived tables (`MetricsDaily`, `MetricsParticipant`, `MetricsCohort`, `Alert`) are
+recomputed by `dashboard.tasks.recompute_monitoring_metrics` every **600 s**, on a trailing
+3-day window that absorbs Labfront batch lag. They hold no collected data and can be dropped
+and rebuilt. Only `/api/monitor/participant/{id}/timeline` reads raw tables, and only for one
+participant-day.
+
+Three invariants the layer enforces, worth preserving in any change:
+
+- **Structural null is not zero.** A participant-day outside the active range renders blank; a
+  day inside it with no activity renders zero. Every metric column is nullable for this reason,
+  and the grid endpoint carries the distinction to the wire.
+- **Rates are suppressed on thin denominators.** A rate is emitted only above 10 participants
+  and 30 units; below that the payload carries raw counts and a null value. Phase 1 (n=5) is
+  therefore always counts, never percentages.
+- **A benchmark with no source is marked unmeasurable**, never reported as zero.
+
+`EMA.served_sub_item_ids` records what a check-in actually put on screen, which is what makes
+item completeness measurable at all. `/ema/next/` returns the list, the client may echo it back,
+and the server recomputes the same set on submit when it does not.
+
+Two engine defects the monitor deliberately surfaces rather than works around, both documented
+in `analysis-resources/production_schema.md`: `evaluate_jitai_triggers` has **no run-in gate**,
+and `apply_decision_rules` counts its **daily cap over UTC days** while everything else is
+Eastern.
+
+`analytics/reconcile_monitoring.py` is what keeps the ORM implementation and
+`analytics/scripts.py` in step. Run it after changing any metric definition.
 
 The originally planned `researcher_pi` (full access) / `researcher_ra` (read-only, no User PII)
 Django permission-group split is **not implemented** — everyone with Django Admin access currently
