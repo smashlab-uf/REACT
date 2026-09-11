@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import sys
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -58,6 +59,8 @@ WEAR_BENCHMARK_HOURS = BENCHMARKS['wear'] * WAKING_HOURS_PER_DAY
 
 
 _DJANGO_READY = False
+_DJANGO_ERROR = None
+_UNDATED_WARNED = False
 
 
 def _ensure_django() -> None:
@@ -70,22 +73,43 @@ def _ensure_django() -> None:
     once per process. That cost is paid lazily so `import scripts` works without
     a database (the compute_* functions below operate purely on DataFrames).
 
+    A failed setup is remembered and re-raised. django.setup() aborting partway
+    leaves Django's app registry flagged as populating, so every later call dies
+    with "populate() isn't reentrant" and the real cause — usually an empty
+    SECRET_KEY or an unreachable database — is gone. In a notebook that means the
+    first cell shows the actual problem, and every retry after it shows a
+    misleading one until the kernel is restarted.
+
     Example:
         _ensure_django()            # first call configures Django
         _ensure_django()            # subsequent calls are no-ops
     Source of data:
-        backend/project/settings.py (reads DATABASE_URL / SECRET_KEY from env).
+        backend/project/settings.py, which reads SECRET_KEY and then either
+        DATABASE_URL or the discrete DATABASE_NAME/USER/HOST/PORT vars. Note
+        that a postgres:// DATABASE_URL forces sslmode=require, which Heroku
+        supports and a default local Postgres does not.
     """
-    global _DJANGO_READY
+    global _DJANGO_READY, _DJANGO_ERROR
     if _DJANGO_READY:
         return
+    if _DJANGO_ERROR is not None:
+        raise RuntimeError(
+            "django.setup() already failed in this process: "
+            f"{type(_DJANGO_ERROR).__name__}: {_DJANGO_ERROR}. "
+            "Fix the configuration and restart the kernel or process — the app "
+            "registry cannot be re-initialised in place."
+        ) from _DJANGO_ERROR
 
     import os
 
     import django
 
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "project.settings")
-    django.setup()
+    try:
+        django.setup()
+    except Exception as exc:                                    # noqa: BLE001
+        _DJANGO_ERROR = exc
+        raise
     _DJANGO_READY = True
 
 
@@ -159,7 +183,73 @@ def load_users(user_id: Optional[int] = None) -> pd.DataFrame:
             "gender", "is_enrolled", "enrolled_at",
         )
     )
-    return _to_utc(df, ["enrolled_at"])
+    df = _to_utc(df, ["enrolled_at"])
+    _warn_undated_enrollments(df)
+    return df
+
+
+def undated_enrollments(user_df: pd.DataFrame) -> List[int]:
+    """
+    Purpose:
+        List participants who are enrolled but carry no enrolled_at. Every
+        phase-aware metric measures forward from that timestamp, so a null one
+        is not a participant with no data — it is a participant whose data
+        cannot be placed on the study clock at all.
+
+    Inputs:
+        user_df - pd.DataFrame from load_users(). Must contain columns:
+                  user_id, is_enrolled, enrolled_at.
+
+    Outputs:
+        list of int user_ids, ascending. Empty when every enrolled participant
+        is dated.
+
+    Example:
+        undated_enrollments(load_users())  ->  [430]
+    Source of data:
+        app_user.is_enrolled / app_user.enrolled_at.
+    """
+    if user_df is None or user_df.empty:
+        return []
+    if not {"is_enrolled", "enrolled_at"}.issubset(user_df.columns):
+        return []
+    enrolled = user_df["is_enrolled"].fillna(False).astype(bool)
+    undated = pd.to_datetime(user_df["enrolled_at"], utc=True, errors="coerce").isna()
+    return sorted(int(uid) for uid in user_df.loc[enrolled & undated, "user_id"])
+
+
+def _warn_undated_enrollments(user_df: pd.DataFrame) -> None:
+    """
+    Warn once per process when enrolled participants have no enrolled_at.
+
+    Nothing wrote the column until recently, so production still holds enrolled
+    participants with a null one. Every function that measures forward from
+    enrollment drops those rows, which turns a real participant into a silent
+    zero: compute_retention reports nobody began the study, run-in MSSD and
+    dosage come back NaN, and the scorecard gives no clue why. The fix is
+    `python manage.py backfill_enrollment`, not a default date invented here.
+
+    Example:
+        _warn_undated_enrollments(users)   # warns naming the affected user_ids
+    Source of data:
+        app_user.is_enrolled / app_user.enrolled_at.
+    """
+    global _UNDATED_WARNED
+    if _UNDATED_WARNED:
+        return
+    affected = undated_enrollments(user_df)
+    if not affected:
+        return
+    _UNDATED_WARNED = True
+    warnings.warn(
+        f"{len(affected)} enrolled participant(s) have no enrolled_at: "
+        f"{affected}. Every phase-aware metric (retention, run-in MSSD, dosage, "
+        "active-phase windows) measures forward from that timestamp and will "
+        "drop these rows, reporting NaN or zero rather than the truth. Run "
+        "`python manage.py backfill_enrollment` in backend/ to stamp them from "
+        "their earliest recorded activity.",
+        stacklevel=3,
+    )
 
 
 def load_ema(
@@ -1766,7 +1856,9 @@ def compute_retention(user_df: pd.DataFrame) -> Dict:
         dict with keys:
             overall_n, retained_n, overall_retention_pct,
             run_in_retained_n, run_in_retention_pct,
-            active_retained_n, active_retention_pct.
+            active_retained_n, active_retention_pct,
+            undated_enrolled_n (enrolled but no enrolled_at; excluded from
+            every count above, so a non-zero value is why overall_n is low).
 
     Example:
         20 began, 18 still enrolled  ->  overall_retention_pct=90.0
@@ -1778,12 +1870,18 @@ def compute_retention(user_df: pd.DataFrame) -> Dict:
             "overall_n": 0, "retained_n": 0, "overall_retention_pct": np.nan,
             "run_in_retained_n": 0, "run_in_retention_pct": np.nan,
             "active_retained_n": 0, "active_retention_pct": np.nan,
+            "undated_enrolled_n": 0,
         }
 
     df = user_df.copy()
     df["enrolled_at"] = pd.to_datetime(
         df["enrolled_at"], utc=True, errors="coerce"
     )
+    # Reported alongside the counts because an undated enrollment is dropped
+    # from every figure below. Without it an overall_n of 0 reads as "nobody
+    # ever started" when the truth is "nobody has a start date recorded", and
+    # those two call for opposite actions.
+    undated_n = len(undated_enrollments(df))
     began = df[df["enrolled_at"].notna()]
     overall_n = int(began.shape[0])
     enrolled = began["is_enrolled"].fillna(False).astype(bool)
@@ -1807,6 +1905,7 @@ def compute_retention(user_df: pd.DataFrame) -> Dict:
         "run_in_retention_pct": _pct(run_in_n),
         "active_retained_n": active_n,
         "active_retention_pct": _pct(active_n),
+        "undated_enrolled_n": undated_n,
     }
 
 
@@ -2360,7 +2459,11 @@ def summarize_feasibility(
             daily_cap_violation_count,
             delivery_funnel_received_pct,
             run_in_mssd_mean             (mean Week-1 base MSSD across participants),
-            overall_lt_mssd_mean         (mean LT-MSSD across participants).
+            overall_lt_mssd_mean         (mean LT-MSSD across participants),
+            enrolled_without_enrolled_at (enrolled participants with no
+                                          enrolled_at; non-zero means the NaNs
+                                          above are a missing study clock, not
+                                          missing data).
 
     Example:
         summarize_feasibility(ema, jitai, hr, users, item)  ->  dict of 10 metrics
@@ -2434,6 +2537,10 @@ def summarize_feasibility(
         "delivery_funnel_received_pct": received_pct,
         "run_in_mssd_mean": run_in_mean,
         "overall_lt_mssd_mean": overall_lt_mean,
+        # Explains the NaNs above rather than leaving them to be read as "no
+        # data". Retention, dosage and run-in MSSD are all measured forward from
+        # enrolled_at, so a participant without one is dropped from each.
+        "enrolled_without_enrolled_at": retention["undated_enrolled_n"],
     }
 
 
@@ -2655,7 +2762,11 @@ def plot_delivery_funnel(jitai_df: pd.DataFrame) -> plt.Figure:
     data = [latency[c].dropna() for c in cols if c in latency.columns]
     labels = ["sent→\nreceived", "received→\nreported", "total\npipeline"]
     if any(len(d) for d in data):
-        ax2.boxplot([d for d in data], labels=labels, showfliers=False, showmeans=True)
+        # Set the tick labels afterwards rather than passing labels=: matplotlib
+        # renamed that argument to tick_labels in 3.9 and removed it in 3.11.
+        ax2.boxplot([d for d in data], showfliers=False, showmeans=True)
+        ax2.set_xticks(range(1, len(data) + 1))
+        ax2.set_xticklabels(labels[: len(data)])
         ax2.set_ylabel("seconds")
         ax2.set_title("Stage transition latency")
     else:
@@ -3193,7 +3304,9 @@ def plot_intervention_dosage(
     users = sorted(active["user_id"].unique())
     data = [active.loc[active["user_id"] == u, "prompts_sent"].values for u in users]
     fig, ax = plt.subplots(figsize=(min(1 + 0.7 * len(users), 14), 5))
-    ax.boxplot(data, labels=[str(u) for u in users], showmeans=True)
+    ax.boxplot(data, showmeans=True)
+    ax.set_xticks(range(1, len(users) + 1))
+    ax.set_xticklabels([str(u) for u in users])
     ax.axhline(4, color="red", linestyle="--", label="daily cap = 4")
     ax.set_xlabel("participant")
     ax.set_ylabel("prompts sent per active day")
