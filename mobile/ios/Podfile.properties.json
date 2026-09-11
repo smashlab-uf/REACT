@@ -3,5 +3,6 @@
   "EX_DEV_CLIENT_NETWORK_INSPECTOR": "true",
   "expo.inlineModules.watchedDirectories": "[]",
   "expo.inlineModules.xcodeProjectTargets": "{\"mainTarget\":\"REACT\",\"targets\":[]}",
-  "EXPO_USE_PRECOMPILED_MODULES": "false"
+  "EXPO_USE_PRECOMPILED_MODULES": "false",
+  "ios.buildReactNativeFromSource": "true"
 }
