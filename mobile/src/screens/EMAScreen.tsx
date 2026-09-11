@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   LayoutAnimation,
   Modal,
   NativeScrollEvent,
@@ -26,6 +25,7 @@ import { ema as emaApi, telemetry } from '../api/endpoints';
 import { EMAAnswerValue, EMAItem, EMANextShowResponse, EMASubItem } from '../api/types';
 import { isAnswered, isSubItemVisible, pruneHiddenAnswers, visibleSubItems } from '../ema/visibility';
 import { useAuthStore } from '../store/authStore';
+import { useAlertStore } from '../store/alertStore';
 import { log } from '../utils/logger';
 import { colors, radius, typography } from '../theme';
 
@@ -58,6 +58,7 @@ function isSupported(sub: EMASubItem) {
 
 export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
   const userId = useAuthStore((s) => s.userId);
+  const showAlert = useAlertStore((s) => s.show);
 
   const [phase, setPhase] = useState<Phase>('loading');
   const [survey, setSurvey] = useState<EMANextShowResponse | null>(null);
@@ -189,7 +190,7 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     } catch (e: any) {
       const status = e?.response?.status;
       log('[EMA] submit failed:', status, e?.response?.data);
-      Alert.alert(
+      showAlert(
         'Could not submit',
         status === 400 || status === 404
           ? 'This check-in is no longer valid. Close and try again later.'

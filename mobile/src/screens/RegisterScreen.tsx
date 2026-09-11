@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -13,12 +12,14 @@ import {
 } from 'react-native';
 import { auth } from '../api/endpoints';
 import { useAuthStore } from '../store/authStore';
+import { useAlertStore } from '../store/alertStore';
 import { colors, radius, typography } from '../theme';
 
 type Props = { onGoToLogin: () => void };
 
 export default function RegisterScreen({ onGoToLogin }: Props) {
   const login = useAuthStore((s) => s.login);
+  const showAlert = useAlertStore((s) => s.show);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -28,11 +29,11 @@ export default function RegisterScreen({ onGoToLogin }: Props) {
 
   async function handleRegister() {
     if (!email || !password) {
-      Alert.alert('Error', 'Email and password are required.');
+      showAlert('Error', 'Email and password are required.');
       return;
     }
     if (password.length < 8) {
-      Alert.alert('Error', 'Password must be at least 8 characters.');
+      showAlert('Error', 'Password must be at least 8 characters.');
       return;
     }
 
@@ -41,7 +42,7 @@ export default function RegisterScreen({ onGoToLogin }: Props) {
       // Check email availability first
       const checkRes = await auth.checkEmail(email);
       if (checkRes.data.exists) {
-        Alert.alert('Email taken', 'An account with this email already exists.');
+        showAlert('Email taken', 'An account with this email already exists.');
         return;
       }
 
@@ -56,7 +57,7 @@ export default function RegisterScreen({ onGoToLogin }: Props) {
       const msg = err.response?.data
         ? JSON.stringify(err.response.data)
         : 'Registration failed. Please try again.';
-      Alert.alert('Error', msg);
+      showAlert('Error', msg);
     } finally {
       setLoading(false);
     }
