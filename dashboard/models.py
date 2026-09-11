@@ -162,6 +162,15 @@ class MetricsCohort(models.Model):
     # Pre-aggregated daily series so a 60-second poll never re-aggregates
     # MetricsDaily.
     series_14d = models.JSONField(null=True, blank=True)
+    # The MRT integrity strip: eligibility, send rate, randomization audit,
+    # cap-hit, cooldown and outcome capture, restricted to weeks 2-5. Held whole
+    # like `benchmarks` because the board reads every gauge at once. These are
+    # never suppressed at thin denominators the way benchmarks are: Phase 1 is
+    # exactly when you want to catch the engine misbehaving.
+    integrity = models.JSONField(null=True, blank=True)
+    # Enrollment funnel stages. 'consented' carries measurable=False because
+    # nothing in the schema records consent.
+    funnel = models.JSONField(null=True, blank=True)
 
     decision_points_n = models.IntegerField(null=True, blank=True)
     eligible_n = models.IntegerField(null=True, blank=True)
@@ -181,10 +190,23 @@ class MetricsCohort(models.Model):
 
 
 class Alert(models.Model):
+    # Ordered warning < high < critical. The tiers are about what is at stake,
+    # not how long it has been true: critical means trial integrity is already
+    # compromised or the whole pipeline is down, high means one participant's
+    # data is being lost right now, warning means worth watching but not worth a
+    # call today.
     SEVERITY_CHOICES = [
         ('critical', 'Critical'),
+        ('high', 'High'),
         ('warning', 'Warning'),
     ]
+    # Most severe first, for ordering a response. Sorting on the column itself
+    # puts critical before warning only by accident of spelling, and drops high
+    # in the wrong place entirely.
+    SEVERITY_RANK = {'critical': 0, 'high': 1, 'warning': 2}
+    # The severities that mean "someone should act on this participant today",
+    # which is what the risk score's alert term is asking about.
+    ACTIONABLE_SEVERITIES = ('critical', 'high')
 
     user = models.ForeignKey(
         'app.User', on_delete=models.CASCADE, null=True, blank=True, related_name='alerts',

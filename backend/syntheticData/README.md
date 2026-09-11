@@ -8,7 +8,7 @@
 
 This directory serves two purposes:
 
-1. **Production-aligned cohort generation** — `react_cohort.py` (canonical) emits synthetic DataFrames that match the deployed schema (`analysis-resources/production_schema.md`) and the Labfront / Garmin Venu 3 wearable source, so offline analysis code (`analytics/scripts.py`, `analytics/example_analysis.ipynb`) can run without a live database.
+1. **Production-aligned cohort generation** — `react_cohort.py` (canonical) emits synthetic DataFrames that match the deployed schema (`analytics/analysis-resources/production_schema.md`) and the Labfront / Garmin Venu 3 wearable source, so offline analysis code (`analytics/scripts.py`, `analytics/example_analysis.ipynb`) can run without a live database.
 2. **MSSD construct validation** — `synthetic_generator.py` (legacy) generates EMA/HR signals with known latent volatility to validate MSSD (Mean of Squared Successive Differences) as a measure of temporal instability.
 
 # Scope
@@ -19,7 +19,7 @@ The wearable data source is **Labfront (Garmin Venu 3)** — not Fitabase or Fit
 
 ### `react_cohort.py`
 
-**Canonical, production-aligned generator.** `generate_react_cohort(...)` returns synthetic DataFrames keyed to the deployed `app_*` tables (users, ema, ema_item_responses, jitai, heart_rate, stress_samples, engagement, wearable_devices), matching `analysis-resources/production_schema.md`. EMA Likert values are **1–7** (matching `MinValueValidator(1)`/`MaxValueValidator(7)` in `backend/app/models.py`); the wearable `source` is `garmin_labfront` and device ids are `labfront_participant_id`. `patch_scripts_loaders()` monkeypatches the `analytics/scripts.py` loaders to serve these frames, so the analysis notebook runs with no database. It reuses `_clustered_missing_mask` from `synthetic_generator.py`.
+**Canonical, production-aligned generator.** `generate_react_cohort(...)` returns synthetic DataFrames keyed to the deployed `app_*` tables (users, ema, ema_item_responses, jitai, heart_rate, stress_samples, engagement, wearable_devices), matching `analytics/analysis-resources/production_schema.md`. EMA Likert values are **1–7** (matching `MinValueValidator(1)`/`MaxValueValidator(7)` in `backend/app/models.py`); the wearable `source` is `garmin_labfront` and device ids are `labfront_participant_id`. `patch_scripts_loaders()` monkeypatches the `analytics/scripts.py` loaders to serve these frames, so the analysis notebook runs with no database. It reuses `_clustered_missing_mask` from `synthetic_generator.py`.
 
 ### `main.py`
 
@@ -128,7 +128,7 @@ $$MSSD = \frac{1}{N-1} \sum_{t=1}^{N-1} (z_{t+1} - z_t)^2$$
 
 * Wearable profile is **Garmin Venu 3 via Labfront** — `source = "garmin_labfront"`, device id `labfront_participant_id`. No Fitabase or Fitbit.
 * EMA Likert scale is **1–7**, matching the production model validators.
-* Output frames match `analysis-resources/production_schema.md` and feed `analytics/scripts.py` via `patch_scripts_loaders()`.
+* Output frames match `analytics/analysis-resources/production_schema.md` and feed `analytics/scripts.py` via `patch_scripts_loaders()`.
 
 **Known limitations / not implemented:**
 

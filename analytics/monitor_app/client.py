@@ -82,6 +82,13 @@ def participant(user_id):
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def timeline(user_id, local_date=None):
-    return _get(f'/api/monitor/participant/{user_id}/timeline',
-                {'date': local_date} if local_date else None)
+def timeline(user_id, local_date=None, days=1):
+    params = {'days': days}
+    if local_date:
+        params['date'] = local_date
+    return _get(f'/api/monitor/participant/{user_id}/timeline', params)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def funnel(user_id):
+    return _get(f'/api/monitor/participant/{user_id}/funnel')

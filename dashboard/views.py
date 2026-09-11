@@ -5,7 +5,7 @@ poll costs one indexed query and never re-aggregates. The timeline is the single
 exception and is deliberately narrow: one participant, one day.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.models import (
     CheckinReminder,
@@ -24,6 +24,13 @@ from rest_framework.views import APIView
 from dashboard.data.cohort import participants_for
 from dashboard.data.config import DAILY_PROMPT_CAP, STUDY_DAYS
 from dashboard.data.daily import METRIC_FIELDS
+from dashboard.data.timeline import (
+    completeness_matrix,
+    delivery_funnel,
+    mssd_lane,
+    sync_lane,
+    wear_lane,
+)
 from dashboard.data.windows import (
     participant_day_bounds,
     participant_time,
@@ -44,6 +51,10 @@ from dashboard.serializers import (
 
 PHASE_FILTERS = {choice for choice, _ in MetricsCohort.PHASE_FILTER_CHOICES}
 DEFAULT_PHASE = MetricsCohort.PHASE_ALL
+
+# The timeline is the one endpoint that reads raw tables, so the number of days
+# it will assemble in a single request is bounded rather than left to a caller.
+MAX_TIMELINE_DAYS = 14
 
 
 def _phase_param(request):
@@ -222,6 +233,30 @@ class MonitorTimelineView(APIView):
         else:
             local_date = today_local()
 
+        try:
+            days = int(request.query_params.get('days', 1))
+        except ValueError:
+            return Response({'error': 'days must be an integer'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if not 1 <= days <= MAX_TIMELINE_DAYS:
+            return Response(
+                {'error': f'days must be between 1 and {MAX_TIMELINE_DAYS}'},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        if days > 1:
+            # Oldest first, ending on the requested date, so the strips read top
+            # to bottom the way the dates run.
+            return Response({
+                'user_id': user.pk,
+                'participant_id': participant_label(user),
+                'days': [
+                    self._day(user, local_date - timedelta(days=offset))
+                    for offset in range(days - 1, -1, -1)
+                ],
+            })
+        return Response(self._day(user, local_date))
+
+    def _day(self, user, local_date):
         day_start, day_end = participant_day_bounds(local_date)
         slots = scheduled_slot_bounds(local_date)
         events = []
@@ -230,6 +265,7 @@ class MonitorTimelineView(APIView):
             EMA.objects
             .filter(user=user, sent_at__gte=day_start, sent_at__lt=day_end)
             .annotate(answered=Count('item_responses'))
+            .prefetch_related('item_responses')
             .order_by('sent_at')
         )
         covered = {}
@@ -238,7 +274,7 @@ class MonitorTimelineView(APIView):
             if ema.ema_type == 'scheduled_check_in' and ema.status == 'completed' and index is not None:
                 covered.setdefault(index, ema.sent_at)
             events.append({
-                'kind': 'ema', 'at': ema.sent_at, 'ema_type': ema.ema_type,
+                'kind': 'ema', 'id': ema.pk, 'at': ema.sent_at, 'ema_type': ema.ema_type,
                 'status': ema.status, 'slot': index, 'answered': ema.answered,
                 'served': len(ema.served_sub_item_ids or []) or None,
                 'source_jitai_log': ema.source_jitai_log_id,
@@ -263,11 +299,19 @@ class MonitorTimelineView(APIView):
         )
         events.extend({
             'kind': 'decision', 'at': log.decision_made_at, 'id': log.id,
+            'decision_point_id': log.decision_point_id,
             'trigger_reason': log.trigger_reason, 'observed_mssd': log.observed_mssd,
+            'threshold_at_decision': log.threshold_at_decision,
+            'threshold_source': log.threshold_source or None,
+            'randomization_probability': log.randomization_probability,
+            'randomization_draw': log.randomization_draw,
             'eligible': log.randomization_draw is not None,
             'send_prompt': log.send_prompt, 'prompt_id': log.prompt_id or None,
             'message_arm': log.message_arm, 'push_sent_at': log.push_sent_at,
             'device_received_at': log.device_received_at,
+            'receipt_reported_at': log.receipt_reported_at,
+            'receipt_platform': log.receipt_platform or None,
+            'receipt_app_state': log.receipt_app_state or None,
             'delivery_status': log.delivery_status, 'delivery_error': log.delivery_error or None,
         } for log in logs)
 
@@ -282,18 +326,13 @@ class MonitorTimelineView(APIView):
         ))
 
         window_start, window_end = waking_window_bounds(local_date)
-        samples = list(
-            HeartRateSample.objects
-            .filter(user=user, timestamp__gte=window_start, timestamp__lt=window_end, bpm__gt=0)
-            .order_by('timestamp')
-            .values_list('timestamp', flat=True)
-        )
 
-        return Response({
+        return {
             'user_id': user.pk,
             'participant_id': participant_label(user),
             'local_date': local_date,
             'study_day': study_day_for(user, local_date),
+            'day_start': day_start,
             'slots': [
                 {
                     'index': index, 'start': start, 'end': end,
@@ -303,15 +342,38 @@ class MonitorTimelineView(APIView):
                 }
                 for index, (start, end) in enumerate(slots)
             ],
-            # A day of heart rate is thousands of rows, so the timeline reports
-            # the edges and the density rather than the samples themselves.
+            # Spans, not 1440 per-minute booleans: seven days of minute bins is
+            # ten thousand values to draw a few dozen bars.
             'wear': {
                 'window_start': window_start, 'window_end': window_end,
-                'samples': len(samples),
-                'first_sample': samples[0] if samples else None,
-                'last_sample': samples[-1] if samples else None,
+                **wear_lane(user, local_date),
             },
+            'sync': sync_lane(user, local_date),
+            'mssd': mssd_lane(user, local_date),
+            'completeness': completeness_matrix(emas),
             'events': sorted(events, key=lambda event: event['at']),
+        }
+
+
+class MonitorFunnelView(APIView):
+    """One participant's delivery waterfall over the whole study.
+
+    Aggregated in the database rather than looped per day: this is the panel
+    that says where prompts stop reaching people, and it is only meaningful
+    across the full record.
+    """
+
+    permission_classes = [IsAdminUserOrDashboardAPIKey]
+
+    def get(self, request, user_id):
+        user = User.objects.filter(pk=user_id).select_related('wearabledevice').first()
+        if user is None:
+            return Response({'error': 'participant not found'},
+                            status=status.HTTP_404_NOT_FOUND)
+        return Response({
+            'user_id': user.pk,
+            'participant_id': participant_label(user),
+            **delivery_funnel(user),
         })
 
 
@@ -323,16 +385,20 @@ class MonitorAlertsView(APIView):
             Alert.objects
             .filter(resolved_at__isnull=True)
             .select_related('user', 'user__wearabledevice')
-            .order_by('severity', '-fired_at')
+            .order_by('-fired_at')
         )
         severity = request.query_params.get('severity')
         if severity:
             alerts = alerts.filter(severity=severity)
 
-        data = AlertSerializer(alerts, many=True).data
-        return Response({
-            'open': len(data),
-            'critical': sum(1 for alert in data if alert['severity'] == 'critical'),
-            'warning': sum(1 for alert in data if alert['severity'] == 'warning'),
-            'alerts': data,
-        })
+        # Ordered by the severity ladder, not by the column: sorting on the
+        # string puts critical before warning only by accident of spelling, and
+        # would drop high between them rather than after critical.
+        data = sorted(
+            AlertSerializer(alerts, many=True).data,
+            key=lambda alert: Alert.SEVERITY_RANK.get(alert['severity'], 99),
+        )
+        counts = {tier: 0 for tier, _ in Alert.SEVERITY_CHOICES}
+        for alert in data:
+            counts[alert['severity']] = counts.get(alert['severity'], 0) + 1
+        return Response({'open': len(data), **counts, 'alerts': data})

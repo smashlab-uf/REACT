@@ -29,6 +29,8 @@ from .models import (
     StressSample,
     User,
     WearableDevice,
+    WearableSync,
+    record_sync,
 )
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -505,12 +507,13 @@ class TelemetryIngestView(APIView):
             return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
         device_payload = data.get("wearable_device") or {}
+        synced_at = device_payload.get("last_synced_at") if device_payload else None
         if device_payload:
             WearableDevice.objects.update_or_create(
                 user=user,
                 defaults={
                     "labfront_participant_id": device_payload["labfront_participant_id"],
-                    "last_synced_at": device_payload.get("last_synced_at"),
+                    "last_synced_at": synced_at,
                     "is_active": device_payload.get("is_active", True),
                 },
             )
@@ -566,6 +569,16 @@ class TelemetryIngestView(APIView):
             EngagementLog.objects.create(user=user, **event)
             created_counts["engagement_events"] += 1
 
+        # Recorded after the samples land so samples_written reflects what this
+        # sync actually delivered. This is the ingestion-side writer: it is what
+        # lets the timeline tell a data-delivery outage apart from genuine
+        # non-wear, which last_synced_at alone cannot do.
+        record_sync(
+            user, synced_at, 'ingest',
+            samples_written=(created_counts["heart_rate_samples"]
+                             + created_counts["stress_samples"]),
+        )
+
         return Response(
             {
                 "message": "Telemetry ingested.",
@@ -610,6 +623,9 @@ class WearableDeviceView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         serializer.save()
+        # Client-reported, so this says the phone checked in, not that Labfront
+        # delivered anything. The source field keeps the two apart.
+        record_sync(device.user, serializer.instance.last_synced_at, 'client')
         return Response(serializer.data)
 
 

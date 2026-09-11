@@ -22,10 +22,12 @@ for _path in (str(_REPO_ROOT), str(_REPO_ROOT / "backend")):
         sys.path.insert(0, _path)
 
 from dashboard.data.config import (  # noqa: E402
+    BENCHMARKS,
     DAILY_PROMPT_CAP,
     EMA_RESPONSE_WINDOW_MINUTES,
     JITAI_COOLDOWN_MINUTES,
     MSSD_WINDOW,
+    OUTCOME_WINDOW_HOURS,
     RUN_IN_DAYS,
     STUDY_DAYS,
     THRESHOLD_QUANTILE,
@@ -34,12 +36,22 @@ from dashboard.data.config import (  # noqa: E402
     WEAR_GAP_MIN,
 )
 
+# The wear benchmark, expressed the two ways this module needs it. It used to be
+# hardcoded as ">= 8 h/day, >= 5 days/week" and attributed to the analysis plan,
+# which in fact states the wear *computation* and no threshold at all. 8 h of the
+# 14-hour waking window is 57%, while the dashboard scores 80%, so the two
+# surfaces disagreed about who was compliant. config.py is the constants
+# authority, so it wins.
+WAKING_HOURS_PER_DAY = WAKING_WINDOW_END_HOUR - WAKING_WINDOW_START_HOUR
+WEAR_BENCHMARK_PCT = BENCHMARKS['wear'] * 100.0
+WEAR_BENCHMARK_HOURS = BENCHMARKS['wear'] * WAKING_HOURS_PER_DAY
+
 
 # DATA LOADING
 # Source tables: app_user, app_ema, app_emaitemresponse, app_jitailog,
 #               app_heartratesample, app_stresssample, app_engagementlog,
 #               app_phonetelemetry, app_wearabledevice
-# Column names follow analysis-resources/data-dictionary.md and
+# Column names follow analytics/analysis-resources/data-dictionary.md and
 # Resources/react_schema.csv. Loaders bind to the live/seeded REACT database
 # through the Django ORM (see _ensure_django below); the pure-DataFrame
 # analysis functions further down never touch the database.
@@ -527,7 +539,7 @@ def load_ema_item_responses(
 # Analytic requirement for AR(1) parameter recovery: 80% (reported separately).
 
 # How long a participant has to answer a prompt before it closes
-# (analysis-resources/JITAI-analysis-plan.md). Three durations in this codebase
+# (analytics/analysis-resources/JITAI-analysis-plan.md). Three durations in this codebase
 # are routinely confused; they are NOT interchangeable:
 #   30 min - this one, the EMA response window
 #   60 min - the JITAI refractory between two sent prompts
@@ -1099,7 +1111,8 @@ def _prep_trigger_signal(
 # WEARABLE / WEAR TIME
 # No explicit wear flag in Garmin exports; non-wear is inferred.
 # Waking window: 8:00 AM - 10:00 PM local time (14 h/day).
-# Benchmark: >= 8 h wear / day, >= 5 days / week.
+# Benchmark: config.BENCHMARKS['wear'] of the waking window. Not a fixed hour
+# count: the analysis plan defines the computation and states no threshold.
 
 def flag_non_wear(hr_df: pd.DataFrame) -> pd.Series:
     """
@@ -1197,8 +1210,8 @@ def compute_wear_time(hr_df: pd.DataFrame) -> pd.DataFrame:
     Purpose:
         Compute daily wearable coverage percentage for each participant over the
         standardized waking window (8:00 AM - 10:00 PM, 14 h/day).
-        Non-wear = gaps > 2 consecutive hours. Benchmark: >= 8 h/day,
-        >= 5 days/week.
+        Non-wear = gaps > 2 consecutive hours. Benchmark:
+        config.BENCHMARKS['wear'] of the 14 h window.
 
     Inputs:
         hr_df - pd.DataFrame from load_heart_rate(). Must contain columns:
@@ -1325,12 +1338,16 @@ def audit_decision_stages(jitai_df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
 
     df = jitai_df.copy()
-    df["_eligible"] = df["randomization_draw"].notna()
+    # Coerce before comparing. The ORM hands back Python None for a null draw,
+    # and a column that is entirely or mostly None arrives as object dtype, where
+    # Series.lt raises TypeError instead of propagating NaN. Production carries 23
+    # decision points with no draw at all -- rows written before the two-stage
+    # randomization existed -- so this is the normal case, not an edge one.
+    draw = pd.to_numeric(df["randomization_draw"], errors="coerce")
+    probability = pd.to_numeric(df["randomization_probability"], errors="coerce")
+    df["_eligible"] = draw.notna()
     df["_sent"] = df["send_prompt"].fillna(False).astype(bool)
-    df["_randomized_to_send"] = (
-        df["_eligible"]
-        & df["randomization_draw"].lt(df["randomization_probability"])
-    )
+    df["_randomized_to_send"] = df["_eligible"] & draw.lt(probability)
 
     def _summary(label, frame):
         eligible = int(frame["_eligible"].sum())
@@ -2335,8 +2352,8 @@ def summarize_feasibility(
     Outputs:
         dict with keys:
             ema_response_rate_pct        (benchmark >= 75),
-            wear_time_mean_hrs_per_day   (benchmark >= 8),
-            wear_time_days_meeting_goal  (benchmark >= 5 days/week),
+            wear_time_mean_hrs_per_day   (benchmark WEAR_BENCHMARK_HOURS),
+            wear_time_days_meeting_goal  (days at or above that benchmark),
             retention_pct                (Day 1 through Day 35),
             intervention_dosage_mean_per_day,
             cooldown_violation_count,
@@ -2361,7 +2378,7 @@ def summarize_feasibility(
     if not wear.empty:
         wear_hours = wear["wear_minutes"] / 60.0
         wear_mean_hrs = float(wear_hours.mean())
-        days_meeting_goal = int((wear_hours >= 8).sum())
+        days_meeting_goal = int((wear_hours >= WEAR_BENCHMARK_HOURS).sum())
     else:
         wear_mean_hrs = np.nan
         days_meeting_goal = 0
@@ -2854,7 +2871,8 @@ def build_participant_report(user_id: int) -> Dict:
 # FEASIBILITY REPORT FIGURES
 # Each returns a matplotlib.figure.Figure (no file I/O) and reuses the compute_*
 # functions above as its data source. Benchmark reference lines follow the
-# analysis plan: EMA >=75%, wear >=8 h/day & >=5 days/week, cooldown 60 min,
+# analysis plan: EMA >=75%, cooldown 60 min, and the wear benchmark from
+# config.BENCHMARKS (the plan itself states no wear threshold),
 # daily cap 4, randomization p=0.5.
 
 
@@ -2889,7 +2907,7 @@ def plot_wear_time_heatmap(hr_df: pd.DataFrame) -> plt.Figure:
         return _empty_figure("No wear-time data")
 
     pivot = wear.pivot(index="user_id", columns="date", values="wear_pct")
-    fail_pct = 100.0 * 8.0 / 14.0  # < 8 h of the 14 h waking window fails the goal
+    fail_pct = WEAR_BENCHMARK_PCT  # below the benchmark share of the waking window
 
     # participant-days containing a > 2 h non-wear gap
     gaps = identify_wear_gaps(hr_df)
@@ -2907,14 +2925,14 @@ def plot_wear_time_heatmap(hr_df: pd.DataFrame) -> plt.Figure:
             val = pivot.iloc[i, j]
             if pd.isna(val):
                 continue
-            if val < fail_pct:  # fails the >= 8 h/day goal
+            if val < fail_pct:  # below the wear benchmark
                 ax.text(j + 0.5, i + 0.5, "✗", ha="center", va="center",
                         color="red", fontsize=8, fontweight="bold")
             elif (uid, day) in gap_days:  # passes 8h but has a > 2 h gap
                 ax.text(j + 0.5, i + 0.5, "·", ha="center", va="center",
                         color="black", fontsize=12)
 
-    ax.set_title("Daily wearable coverage (wear %) — ✗ fails ≥8 h/day, "
+    ax.set_title(f"Daily wearable coverage (wear %) — ✗ below {WEAR_BENCHMARK_PCT:.0f}%, "
                  "· has >2 h gap")
     ax.set_xlabel("date")
     ax.set_ylabel("participant")
@@ -2926,7 +2944,7 @@ def plot_wear_hours_distribution(hr_df: pd.DataFrame) -> plt.Figure:
     """
     Purpose:
         Distribution of daily wear-hours across all participant-days, with the
-        >= 8 h/day benchmark drawn as a reference line.
+        wear benchmark drawn as a reference line.
 
     Inputs:
         hr_df - pd.DataFrame from load_heart_rate().
@@ -2946,7 +2964,8 @@ def plot_wear_hours_distribution(hr_df: pd.DataFrame) -> plt.Figure:
     hours = wear["wear_minutes"] / 60.0
     fig, ax = plt.subplots(figsize=(8, 5))
     sns.histplot(hours, ax=ax, bins=20, kde=False, alpha=0.7)
-    ax.axvline(8, color="red", linestyle="--", label="8 h/day benchmark")
+    ax.axvline(WEAR_BENCHMARK_HOURS, color="red", linestyle="--",
+               label=f"{WEAR_BENCHMARK_HOURS:.1f} h/day benchmark")
     ax.set_xlabel("wear hours per day")
     ax.set_ylabel("participant-days")
     ax.set_title("Distribution of daily wear time")
@@ -2955,35 +2974,102 @@ def plot_wear_hours_distribution(hr_df: pd.DataFrame) -> plt.Figure:
     return fig
 
 
-def plot_response_latency(ema_df: pd.DataFrame) -> plt.Figure:
+def compute_post_prompt_response_time(ema_df: pd.DataFrame,
+                                      jitai_df: pd.DataFrame) -> pd.DataFrame:
     """
     Purpose:
-        Distribution of EMA response latency (minutes from prompt to submission),
-        with the 30-minute in-window boundary drawn as a reference line.
+        Minutes from an intervention prompt reaching the phone to the linked
+        post-prompt check-in being submitted. This is the ONLY real response-time
+        anchor in the schema, and it covers prompted check-ins only.
+
+        EMA response latency is not computable. An app_ema row is created when
+        the participant submits, and sent_at and responded_at are both stamped
+        from the same clock read at that moment, so every latency is ~0 and every
+        response falls inside the 30-minute window. A histogram of it shows a
+        flawless compliance curve that is an artefact of how the row is written.
+        Measure against the 2-hour outcome window, never the 30-minute one.
 
     Inputs:
-        ema_df - pd.DataFrame from load_ema() (sent_at, responded_at).
+        ema_df   - pd.DataFrame from load_ema(). Needs responded_at, ema_type,
+                   source_jitai_log_id.
+        jitai_df - pd.DataFrame from load_jitai(). Needs id, push_sent_at.
 
     Outputs:
-        plt.Figure. Histogram of response latency with a 30-min window line.
+        pd.DataFrame with columns:
+            user_id, jitai_log_id, push_sent_at, responded_at, minutes.
+        One row per post-prompt check-in that links back to a pushed prompt.
 
     Example:
-        plot_response_latency(ema_df)  ->  Figure, x=latency minutes
+        compute_post_prompt_response_time(ema_df, jitai_df)  ->  DataFrame
     Source of data:
-        app_ema.sent_at / responded_at via compute_response_latency().
+        app_ema.responded_at joined to app_jitailog.push_sent_at via
+        app_ema.source_jitai_log_id.
     """
-    latency = compute_response_latency(ema_df).dropna()
-    if latency.empty:
-        return _empty_figure("No answered EMAs")
+    empty = pd.DataFrame(columns=["user_id", "jitai_log_id", "push_sent_at",
+                                  "responded_at", "minutes"])
+    if ema_df.empty or jitai_df.empty:
+        return empty
 
+    linked = ema_df[
+        (ema_df["ema_type"] == "post_prompt")
+        & ema_df["source_jitai_log_id"].notna()
+        & ema_df["responded_at"].notna()
+    ]
+    if linked.empty:
+        return empty
+
+    pushes = jitai_df.loc[jitai_df["push_sent_at"].notna(), ["id", "push_sent_at"]]
+    merged = linked.merge(pushes, left_on="source_jitai_log_id", right_on="id",
+                          how="inner", suffixes=("", "_jitai"))
+    if merged.empty:
+        return empty
+
+    merged["minutes"] = (
+        pd.to_datetime(merged["responded_at"], utc=True)
+        - pd.to_datetime(merged["push_sent_at"], utc=True)
+    ).dt.total_seconds() / 60.0
+    return merged.rename(columns={"source_jitai_log_id": "jitai_log_id"})[
+        ["user_id", "jitai_log_id", "push_sent_at", "responded_at", "minutes"]
+    ]
+
+
+def plot_post_prompt_response_time(ema_df: pd.DataFrame,
+                                   jitai_df: pd.DataFrame) -> plt.Figure:
+    """
+    Purpose:
+        Distribution of post-prompt response time, with the outcome window drawn
+        as a reference line.
+
+        Deliberately NOT "EMA response latency", which replaced a figure that
+        could only ever show a perfect curve: see
+        compute_post_prompt_response_time for why that quantity is unmeasurable.
+
+    Inputs:
+        ema_df, jitai_df - as for compute_post_prompt_response_time().
+
+    Outputs:
+        plt.Figure. Histogram of minutes from push to linked check-in.
+
+    Example:
+        plot_post_prompt_response_time(ema_df, jitai_df)  ->  Figure
+    Source of data:
+        app_ema.responded_at, app_jitailog.push_sent_at.
+    """
+    times = compute_post_prompt_response_time(ema_df, jitai_df)
+    if times.empty:
+        return _empty_figure("No post-prompt check-ins linked to a pushed prompt")
+
+    minutes = times["minutes"].dropna()
     fig, ax = plt.subplots(figsize=(8, 5))
-    upper = float(np.nanpercentile(latency, 99))
-    sns.histplot(latency.clip(upper=upper), ax=ax, bins=30, alpha=0.7)
-    ax.axvline(EMA_RESPONSE_WINDOW_MINUTES, color="red", linestyle="--",
-               label=f"{EMA_RESPONSE_WINDOW_MINUTES}-min response window")
-    ax.set_xlabel("response latency (minutes)")
-    ax.set_ylabel("EMA responses")
-    ax.set_title("EMA response latency")
+    upper = float(np.nanpercentile(minutes, 99)) if len(minutes) > 1 else None
+    sns.histplot(minutes.clip(upper=upper) if upper else minutes,
+                 ax=ax, bins=30, alpha=0.7)
+    window_minutes = OUTCOME_WINDOW_HOURS * 60
+    ax.axvline(window_minutes, color="red", linestyle="--",
+               label=f"{OUTCOME_WINDOW_HOURS}-hour outcome window")
+    ax.set_xlabel("minutes from push to linked check-in")
+    ax.set_ylabel("post-prompt check-ins")
+    ax.set_title("Post-prompt response time")
     ax.legend()
     fig.tight_layout()
     return fig

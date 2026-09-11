@@ -20,6 +20,8 @@ from app.models import (
     JITAILog,
     User,
     WearableDevice,
+    WearableSync,
+    record_sync,
 )
 from django.conf import settings
 from django.contrib.admin.models import CHANGE, LogEntry
@@ -28,11 +30,19 @@ from django.contrib.contenttypes.models import ContentType
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import IntegrityError, transaction
+from django.db.models import Sum
 from django.test import Client, TestCase, override_settings
 
+from dashboard.data import timeline as tl
 from dashboard.data import windows as w
 from dashboard.data.alerts import Context, evaluate_alerts, pipeline_stalled
-from dashboard.data.cohort import compute_cohort, suppress_rate, wilson_interval
+from dashboard.data.cohort import (
+    WEAR_DIVERGENCE,
+    compute_cohort,
+    ks_uniform,
+    suppress_rate,
+    wilson_interval,
+)
 from dashboard.data.config import DAILY_PROMPT_CAP, RUN_IN_DAYS, STUDY_DAYS
 from dashboard.data.daily import METRIC_FIELDS, compute_daily
 from dashboard.data.item_bank import load_item_bank, sub_item_index
@@ -505,6 +515,9 @@ class ComputeParticipantTests(TestCase):
         kwargs.setdefault('phase', 'mrt')
         kwargs.setdefault('last_sync_at', self.NOW)
         kwargs.setdefault('now', self.NOW)
+        # These tests are about the arithmetic of each term, so sync is asserted
+        # measurable. The unmeasurable case has its own test below.
+        kwargs.setdefault('sync_measurable', True)
         return compute_risk_score(user, **kwargs)
 
     def test_risk_score_is_zero_for_a_fully_compliant_participant(self):
@@ -605,18 +618,39 @@ class ComputeParticipantTests(TestCase):
         user = make_participant('rs@x.test', self.ENROLLED, device=False)
         self._healthy_days(user)
         MetricsParticipant.objects.create(user=user, **compute_participant(user, now=self.NOW))
-        # 2, not 0: this participant has no device row, which scores as sync
-        # stale. compute_participant reads the device rather than being handed a
-        # sync time, so that term is live here.
-        self.assertEqual(MetricsParticipant.objects.get(user=user).risk_score, 2)
+        # 0, not 2: nobody in this fixture has ever reported a sync, so the
+        # signal is unmeasurable and its term contributes nothing rather than
+        # putting the same 2 points on everyone.
+        self.assertEqual(MetricsParticipant.objects.get(user=user).risk_score, 0)
 
         Alert.objects.create(user=user, rule_id='wear_low', severity='critical')
         self.assertEqual(refresh_risk_scores(now=self.NOW), 1)
         row = MetricsParticipant.objects.get(user=user)
-        self.assertEqual(row.risk_score, 6)
+        self.assertEqual(row.risk_score, 4)
         self.assertEqual(row.risk_components['open_critical'], 4)
         self.assertEqual(row.risk_score, sum(row.risk_components.values()))
         self.assertEqual(refresh_risk_scores(now=self.NOW), 0)
+
+    def test_sync_term_is_zero_while_nothing_writes_the_sync_clock(self):
+        """Unmeasurable is not late. Nothing writes last_synced_at today, so
+        scoring 'never synced' as stale would put an identical 2 points on every
+        participant and flatten the ordering the score exists to produce."""
+        user = make_participant('sm@x.test', self.ENROLLED, device=False)
+        self._healthy_days(user)
+        _, unmeasurable = self._score(user, last_sync_at=None, sync_measurable=False)
+        self.assertEqual(unmeasurable['sync_stale'], 0)
+        _, measurable = self._score(user, last_sync_at=None, sync_measurable=True)
+        self.assertEqual(measurable['sync_stale'], 2)
+
+    def test_a_high_alert_moves_the_score_like_a_critical(self):
+        user = make_participant('hi@x.test', self.ENROLLED, device=False)
+        self._healthy_days(user)
+        Alert.objects.create(user=user, rule_id='wear_low', severity='high')
+        self.assertEqual(self._score(user)[0], 4)
+        Alert.objects.filter(user=user).update(severity='warning')
+        self.assertEqual(self._score(user)[0], 0)
+        Alert.objects.filter(user=user).update(severity='critical')
+        self.assertEqual(self._score(user)[0], 4)
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +660,25 @@ class ComputeParticipantTests(TestCase):
 class CohortTests(TestCase):
     NOW = datetime(2026, 9, 20, 16, 0, tzinfo=UTC)
     ENROLLED = datetime(2026, 9, 1, 14, 0, tzinfo=UTC)
+
+    def test_ks_uniform_matches_scipy(self):
+        """The KS test is hand-rolled because scipy is not in the backend
+        requirements and the Celery worker cannot have it. These are the values
+        scipy.stats.kstest(sample, 'uniform', method='asymp') returns, checked
+        in the analytics environment where scipy does exist."""
+        cases = [
+            ([(i + 0.5) / 100 for i in range(100)], 0.005, 1.0),
+            ([0.3 + 0.7 * (i / 299) for i in range(300)], 0.3, 7.065257144401614e-24),
+            ([0.42], 0.58, 0.8896056376475567),
+            ([0.1, 0.9], 0.4, 0.9062063895703105),
+        ]
+        for sample, statistic, p_value in cases:
+            got_d, got_p = ks_uniform(sample)
+            self.assertAlmostEqual(got_d, statistic, places=9)
+            self.assertAlmostEqual(got_p, p_value, places=9)
+
+    def test_ks_uniform_has_nothing_to_say_about_an_empty_sample(self):
+        self.assertEqual(ks_uniform([]), (None, None))
 
     def test_wilson_matches_the_score_equation(self):
         expected = {
@@ -713,9 +766,130 @@ class CohortTests(TestCase):
         self._seed_cohort(12, 's')
         snapshot = compute_cohort('all', now=self.NOW)
         encoded = json.dumps(
-            {'benchmarks': snapshot['benchmarks'], 'series_14d': snapshot['series_14d']},
+            {'benchmarks': snapshot['benchmarks'], 'series_14d': snapshot['series_14d'],
+             'integrity': snapshot['integrity'], 'funnel': snapshot['funnel']},
             default=str)
         self.assertLess(len(encoded), 200 * 1024)
+
+    def test_pooled_and_participant_mean_differ_when_day_counts_differ(self):
+        """Pooling weights each participant by how many days they contributed, so
+        someone who lasted 2 days counts a fifteenth of someone who lasted 30.
+        The benchmark is stated about participants, so both readings go on the
+        tile."""
+        self._seed_cohort(11, 'long', days=30)
+        self._seed_cohort(1, 'short', days=2)
+        MetricsParticipant.objects.filter(user__email__startswith='short').update(
+            slot_coverage_num=0, slot_coverage_den=12, slot_coverage_rate=0.0)
+        for row in MetricsParticipant.objects.exclude(user__email__startswith='short'):
+            row.slot_coverage_rate = row.slot_coverage_num / row.slot_coverage_den
+            row.save(update_fields=['slot_coverage_rate'])
+
+        entry = compute_cohort('all', now=self.NOW)['benchmarks']['slot_coverage']
+        self.assertTrue(entry['proxy'])
+        # Pooled barely notices the short participant; the participant mean does.
+        self.assertAlmostEqual(entry['value'], 11 * 150 / (11 * 180 + 12), places=4)
+        self.assertAlmostEqual(entry['participant_mean'], 11 * (5 / 6) / 12, places=4)
+        self.assertLess(entry['participant_mean'], entry['value'])
+
+    def test_integrity_excludes_run_in_days(self):
+        self._seed_cohort(12, 'r')
+        MetricsDaily.objects.filter(study_day__lt=2).update(is_run_in=True)
+        integrity = compute_cohort('all', now=self.NOW)['integrity']
+        # 6 seeded days each, 2 now run-in, so 4 MRT days x 12 participants.
+        self.assertEqual(integrity['cap_hit_rate']['denominator'], 12 * 4)
+        self.assertEqual(integrity['eligibility_rate']['denominator'], 12 * 4 * 5)
+
+    def test_eligibility_gauge_carries_the_compliance_confound(self):
+        """A decision point only exists when an EMA is submitted, so
+        availability is confounded with compliance. The ratio has to stay on
+        screen or the gauge reads as a property of the engine alone."""
+        self._seed_cohort(12, 'c')
+        MetricsDaily.objects.update(ema_scheduled_n=6)
+        gauge = compute_cohort('all', now=self.NOW)['integrity']['eligibility_rate']
+        self.assertAlmostEqual(gauge['decision_points_per_scheduled_ema'], 5 / 6)
+        self.assertEqual(gauge['ema_scheduled_n'], 12 * 6 * 6)
+
+    def test_randomization_audit_catches_a_contradicted_draw(self):
+        self._seed_cohort(12, 'ra')
+        user = MetricsParticipant.objects.first().user
+        make_decision(user, self.NOW, send=True, reason='prompt sent')
+        clean = compute_cohort('all', now=self.NOW)['integrity']['randomization_audit']
+        self.assertEqual(clean['mismatches'], 0)
+
+        # draw 0.9 against p 0.5 cannot have produced send_prompt=True
+        JITAILog.objects.update(randomization_draw=0.9, randomization_probability=0.5)
+        audited = compute_cohort('all', now=self.NOW)['integrity']['randomization_audit']
+        self.assertEqual(audited['mismatches'], 1)
+        self.assertEqual(audited['draws'], 1)
+
+    def test_active_retention_moves_when_formal_retention_cannot(self):
+        """Formal retention only asks whether someone withdrew, so it cannot
+        move before Day 35. Active retention moves the week someone goes quiet,
+        which is the whole reason both are on the tile."""
+        self._seed_cohort(12, 'ar')
+        MetricsDaily.objects.update(local_date=date(2026, 9, 20), ema_scheduled_n=3)
+        silent = MetricsParticipant.objects.first().user
+        MetricsDaily.objects.filter(user=silent).update(
+            local_date=date(2026, 9, 1), ema_scheduled_n=0)
+
+        retention = compute_cohort('all', now=self.NOW)['benchmarks']['retention']
+        self.assertEqual(retention['numerator'], 12)          # nobody withdrew
+        self.assertEqual(retention['active']['numerator'], 11)  # one went quiet
+        self.assertEqual(retention['active']['denominator'], 12)
+
+    def test_wear_tile_carries_both_readings_and_flags_burst_charging(self):
+        """wear_valid_pct is (840 - gaps>2h)/840 and drives the benchmark;
+        hr_minutes_valid counts minutes that actually carry a sample. A day high
+        on the first and low on the second is a watch worn in short bursts, and
+        the gap definition is flattering it."""
+        self._seed_cohort(12, 'bc', wear=0.95)
+        MetricsDaily.objects.update(hr_minutes_valid=int(0.5 * 840))
+        entry = compute_cohort('all', now=self.NOW)['benchmarks']['wear']
+        self.assertAlmostEqual(entry['mean_coverage'], 0.95)
+        self.assertAlmostEqual(entry['mean_minute_coverage'], 0.5, places=3)
+        self.assertEqual(entry['burst_charging_days'], 12 * 6)
+        self.assertEqual(entry['divergence_threshold'], WEAR_DIVERGENCE)
+
+    def test_every_series_rate_obeys_the_same_suppression_as_its_tile(self):
+        """A sparkline is a sequence of rates. Publishing one from five
+        participants while withholding the tile above it would let a trend in
+        through the back door."""
+        self._seed_cohort(9, 'thin')
+        thin = compute_cohort('all', now=self.NOW)
+        self.assertTrue(all(entry['suppressed'] for entry in thin['benchmarks'].values()))
+        for day in thin['series_14d']:
+            for field in ('slot_coverage', 'prompt_response', 'wear_pass_rate'):
+                self.assertIsNone(day[field], f"{field} on {day['date']}")
+            # The raw counts stay, so the tile can print them.
+            self.assertIsNotNone(day['slots_covered'])
+
+        self._seed_cohort(3, 'more')
+        wide = compute_cohort('all', now=self.NOW)
+        self.assertFalse(wide['benchmarks']['slot_coverage']['suppressed'])
+        self.assertIsNotNone(wide['series_14d'][0]['slot_coverage'])
+
+    def test_a_gauge_numerator_above_its_denominator_is_flagged(self):
+        """Production sends prompts on decision points that carry no
+        randomization draw, which makes sent_n/eligible_n read 1/0. Rendering
+        that as 'no data' would hide the very thing the strip exists to catch."""
+        self._seed_cohort(12, 'cd')
+        MetricsDaily.objects.update(eligible_n=0, sent_n=3, is_run_in=False)
+        gauge = compute_cohort('all', now=self.NOW)['integrity']['send_rate']
+        self.assertEqual((gauge['numerator'], gauge['denominator']), (12 * 6 * 3, 0))
+        self.assertTrue(gauge['contradiction'])
+        self.assertIsNone(gauge['value'])
+
+        MetricsDaily.objects.update(eligible_n=3)
+        healthy = compute_cohort('all', now=self.NOW)['integrity']['send_rate']
+        self.assertFalse(healthy['contradiction'])
+
+    def test_funnel_marks_consent_as_having_no_source(self):
+        self._seed_cohort(12, 'f')
+        funnel = {row['stage']: row for row in compute_cohort('all', now=self.NOW)['funnel']}
+        self.assertFalse(funnel['consented']['measurable'])
+        self.assertIsNone(funnel['consented']['n'])
+        self.assertEqual(funnel['started day 1']['n'], 12)
+        self.assertEqual(funnel['active today']['n'], 12)
 
 
 # ---------------------------------------------------------------------------
@@ -782,7 +956,9 @@ class AlertTests(TestCase):
         evaluate_alerts(now=self.NOW)
 
         self.assertEqual(self._open_rules(), {
-            (faults['runin'].pk, 'runin_violation'),
+            # Cohort-scoped: the engine has no run-in gate, so it violates the
+            # baseline identically for everyone. One alert, not one each.
+            (None, 'runin_violation'),
             (faults['cool'].pk, 'cooldown_violation'),
             (faults['cap'].pk, 'cap_exceeded'),
             (faults['stale'].pk, 'sync_stale'),
@@ -797,7 +973,7 @@ class AlertTests(TestCase):
         self.assertEqual(
             Alert.objects.get(user=faults['stale'], rule_id='sync_stale').severity, 'warning')
         self.assertEqual(
-            Alert.objects.get(user=faults['dead'], rule_id='sync_stale').severity, 'critical')
+            Alert.objects.get(user=faults['dead'], rule_id='sync_stale').severity, 'high')
 
     def test_re_running_changes_nothing(self):
         """Regression: payloads once held elapsed hours, so every poll looked
@@ -818,7 +994,9 @@ class AlertTests(TestCase):
 
         evaluate_alerts(now=self.NOW + timedelta(hours=50))
         alert = Alert.objects.get(user=user, rule_id='sync_stale', resolved_at__isnull=True)
-        self.assertEqual(alert.severity, 'critical')
+        # High, not critical: one silent device is data being lost now, but the
+        # trial is intact and the pipeline is up. Critical is reserved for those.
+        self.assertEqual(alert.severity, 'high')
         self.assertEqual(alert.fired_at, fired_at)
 
     def test_resolve_then_refire_opens_a_new_incident(self):
@@ -837,6 +1015,48 @@ class AlertTests(TestCase):
         self.assertEqual(Alert.objects.filter(rule_id='no_wearable_data').count(), 2)
         self.assertEqual(Alert.objects.filter(rule_id='no_wearable_data',
                                               resolved_at__isnull=True).count(), 1)
+
+    def test_sync_stale_is_unmeasurable_when_nothing_writes_the_clock(self):
+        """Nothing writes last_synced_at today: the mobile app does not call
+        /wearable/ and ingest_wearable_data is a stub. Measuring staleness from
+        enrollment would turn every participant critical 72 hours in and keep
+        them there all study, which is a fact about the pipeline wearing a
+        per-participant costume."""
+        for index in range(4):
+            self._participant(f'um{index}@x.test', last_sync=None, last_ema=self.NOW)
+        evaluate_alerts(now=self.NOW)
+
+        self.assertEqual(
+            Alert.objects.filter(rule_id='sync_stale', user__isnull=False).count(), 0)
+        cohort = Alert.objects.get(rule_id='sync_stale', user__isnull=True)
+        self.assertEqual(cohort.severity, 'critical')
+        self.assertIn('no writer', cohort.payload['detail'])
+
+    def test_one_reported_sync_restores_the_per_participant_rule(self):
+        stale = self._participant('sy@x.test', last_sync=self.NOW - timedelta(hours=30),
+                                  last_ema=self.NOW)
+        evaluate_alerts(now=self.NOW)
+        self.assertFalse(
+            Alert.objects.filter(rule_id='sync_stale', user__isnull=True,
+                                 resolved_at__isnull=True).exists())
+        self.assertTrue(
+            Alert.objects.filter(rule_id='sync_stale', user=stale,
+                                 resolved_at__isnull=True).exists())
+
+    def test_runin_violation_is_one_alert_however_many_participants(self):
+        for index in range(3):
+            user = self._participant(f'rv{index}@x.test', last_sync=self.NOW, last_ema=self.NOW)
+            self._day(user, index, runin_violation_n=2)
+        evaluate_alerts(now=self.NOW)
+
+        alerts = Alert.objects.filter(rule_id='runin_violation', resolved_at__isnull=True)
+        self.assertEqual(alerts.count(), 1)
+        alert = alerts.get()
+        self.assertIsNone(alert.user_id)
+        self.assertEqual(alert.payload['participants'], 3)
+        self.assertEqual(
+            alert.payload['prompts'],
+            MetricsDaily.objects.aggregate(n=Sum('runin_violation_n'))['n'])
 
     def test_open_alert_cannot_duplicate(self):
         user = self._participant('u@x.test', last_sync=self.NOW, last_ema=self.NOW)
@@ -1104,14 +1324,350 @@ class MonitorEndpointTests(TestCase):
     def test_alerts_summarise_by_severity(self):
         Alert.objects.create(user=self.user, rule_id='wear_low', severity='warning')
         body = self.client.get('/api/monitor/alerts', **self.headers).json()
-        self.assertEqual(body['warning'], sum(
-            1 for alert in body['alerts'] if alert['severity'] == 'warning'))
+        for tier in ('critical', 'high', 'warning'):
+            self.assertEqual(body[tier], sum(
+                1 for alert in body['alerts'] if alert['severity'] == tier), tier)
         self.assertEqual(body['open'], len(body['alerts']))
+
+    def test_alert_link_date_prefers_the_offending_day(self):
+        """Rules that know which days offended say so in the payload, and that is
+        the day someone wants the timeline to open on. fired_at is the fallback,
+        not the answer."""
+        Alert.objects.all().delete()
+        Alert.objects.create(user=self.user, rule_id='wear_low', severity='high',
+                             payload={'days': {'2026-09-03': 0.1, '2026-09-02': 0.2}})
+        Alert.objects.create(user=self.user, rule_id='no_ema_48h', severity='high',
+                             payload={'last_ema_at': None})
+        body = self.client.get('/api/monitor/alerts', **self.headers).json()
+        links = {alert['rule_id']: alert['link_date'] for alert in body['alerts']}
+        self.assertEqual(links['wear_low'], '2026-09-02')
+        self.assertEqual(links['no_ema_48h'], w.today_local().isoformat())
+
+    def test_alerts_are_ordered_by_the_severity_ladder(self):
+        """Ordering on the column itself puts critical before warning only by
+        accident of spelling, and drops high between them rather than after
+        critical."""
+        Alert.objects.all().delete()
+        for rule_id, severity in (('wear_low', 'warning'), ('no_ema_48h', 'critical'),
+                                  ('delivery_failures', 'high')):
+            Alert.objects.create(user=self.user, rule_id=rule_id, severity=severity)
+        body = self.client.get('/api/monitor/alerts', **self.headers).json()
+        self.assertEqual([alert['severity'] for alert in body['alerts']],
+                         ['critical', 'high', 'warning'])
+
+
+# ---------------------------------------------------------------------------
+# Participant timeline (Stage 3)
+# ---------------------------------------------------------------------------
+
+class TimelineTests(TestCase):
+    LOCAL = date(2026, 9, 15)
+
+    def setUp(self):
+        enrolled = datetime(2026, 9, 11, 10, 0, tzinfo=EASTERN)
+        self.user = make_participant('tl@x.test', enrolled)
+        self.day_start, _ = w.participant_day_bounds(self.LOCAL)
+
+    def _at(self, hour, minute=0):
+        # hour=24 means the next midnight, so a span can reach the end of day.
+        midnight = datetime(self.LOCAL.year, self.LOCAL.month, self.LOCAL.day,
+                            0, 0, tzinfo=EASTERN)
+        return midnight + timedelta(hours=hour, minutes=minute)
+
+    def _wear(self, spans):
+        for start_hour, end_hour in spans:
+            moment = self._at(start_hour)
+            while moment < self._at(end_hour):
+                HeartRateSample.objects.create(user=self.user, timestamp=moment, bpm=70)
+                moment += timedelta(minutes=1)
+
+    def test_wear_runs_reconstruct_the_covered_minutes(self):
+        self._wear([(9, 10), (12, 13)])
+        lane = tl.wear_lane(self.user, self.LOCAL)
+        self.assertEqual(
+            [(span['start'], span['end']) for span in lane['covered']],
+            [(9 * 60, 10 * 60), (12 * 60, 13 * 60)])
+        self.assertEqual(lane['covered_minutes'], 120)
+        self.assertTrue(lane['has_data'])
+
+    def test_a_gap_is_measured_only_inside_the_waking_window(self):
+        """A gap that straddles the window edge must not be counted whole: only
+        the part inside 08:00-22:00 belongs to the wear denominator."""
+        self._wear([(6, 7), (23, 24)])
+        lane = tl.wear_lane(self.user, self.LOCAL)
+        straddling = next(g for g in lane['gaps'] if g['start'] == 7 * 60)
+        self.assertEqual(straddling['minutes'], 16 * 60)        # 07:00 to 23:00
+        self.assertEqual(straddling['waking_minutes'], 14 * 60)  # 08:00 to 22:00
+        self.assertTrue(straddling['over_threshold'])
+
+    def test_an_overnight_gap_is_not_a_compliance_problem(self):
+        self._wear([(8, 22)])
+        lane = tl.wear_lane(self.user, self.LOCAL)
+        self.assertTrue(all(not gap['over_threshold'] for gap in lane['gaps']))
+
+    def test_no_samples_reports_absence_rather_than_zero_wear(self):
+        lane = tl.wear_lane(self.user, self.LOCAL)
+        self.assertFalse(lane['has_data'])
+        self.assertEqual(lane['covered'], [])
+
+    def test_sync_lane_separates_no_history_from_a_quiet_device(self):
+        empty = tl.sync_lane(self.user, self.LOCAL)
+        self.assertFalse(empty['observed'])
+
+        WearableSync.objects.create(
+            user=self.user, observed_at=self._at(9), source='ingest',
+            last_synced_at=self._at(9), samples_written=40)
+        WearableSync.objects.create(
+            user=self.user, observed_at=self._at(11), source='client',
+            last_synced_at=self._at(11))
+        lane = tl.sync_lane(self.user, self.LOCAL)
+        self.assertTrue(lane['observed'])
+        self.assertEqual(len(lane['advances']), 2)
+        self.assertEqual([a['source'] for a in lane['advances']], ['ingest', 'client'])
+
+    def test_sync_lane_carries_in_the_value_from_before_midnight(self):
+        WearableSync.objects.create(
+            user=self.user, observed_at=self._at(9) - timedelta(days=1),
+            source='ingest', last_synced_at=self._at(9) - timedelta(days=1))
+        lane = tl.sync_lane(self.user, self.LOCAL)
+        self.assertIsNotNone(lane['carried_in'])
+        self.assertEqual(lane['advances'], [])
+        # Observed but silent: the step trace starts somewhere and stays flat,
+        # which is what an outage looks like.
+        self.assertTrue(lane['observed'])
+
+    def test_record_sync_only_appends_when_the_clock_advances(self):
+        self.assertIsNotNone(record_sync(self.user, self._at(9), 'ingest'))
+        self.assertIsNone(record_sync(self.user, self._at(9), 'ingest'))
+        self.assertIsNone(record_sync(self.user, self._at(8), 'ingest'))
+        self.assertIsNotNone(record_sync(self.user, self._at(10), 'client'))
+        self.assertEqual(WearableSync.objects.filter(user=self.user).count(), 2)
+
+    def test_completeness_matrix_agrees_with_the_daily_metric(self):
+        """If these disagree the grid and the timeline tell different stories
+        about one number, so both score through _askable_sub_item_ids."""
+        make_ema(self.user, self._at(9, 30),
+                 answers={'B1_valence': 5, 'B1_arousal': 4},
+                 served=['B1_valence', 'B1_arousal', 'B2_stress'])
+        emas = list(EMA.objects.filter(user=self.user).prefetch_related('item_responses'))
+        row = tl.completeness_matrix(emas)[0]
+
+        self.assertEqual(sorted(row['answered']), ['B1_arousal', 'B1_valence'])
+        self.assertAlmostEqual(row['completeness'], 2 / 3)
+        daily = compute_daily(self.user, self.LOCAL, study_day=4)
+        self.assertAlmostEqual(daily['completeness_mean'], row['completeness'])
+
+    def test_a_check_in_without_b1_and_b2_is_flagged_as_a_hole_in_the_mrt(self):
+        make_ema(self.user, self._at(9, 30), answers={'B3_sleep': 5},
+                 served=['B3_sleep'])
+        make_ema(self.user, self._at(13, 30),
+                 answers={'B1_valence': 5, 'B1_arousal': 4, 'B2_stress': 3},
+                 served=['B1_valence', 'B1_arousal', 'B2_stress'])
+        emas = list(EMA.objects.filter(user=self.user)
+                    .prefetch_related('item_responses').order_by('sent_at'))
+        flags = [row['missing_signal'] for row in tl.completeness_matrix(emas)]
+        self.assertEqual(flags, [True, False])
+
+    def test_mssd_lane_flags_an_engine_row_that_should_have_been_eligible(self):
+        make_decision(self.user, self._at(10), send=False,
+                      reason='below within-person threshold',
+                      observed_mssd=9.0, threshold_at_decision=4.0,
+                      threshold_source='engine')
+        point = tl.mssd_lane(self.user, self.LOCAL)[0]
+        self.assertTrue(point['unexplained'])
+
+    def test_mssd_lane_will_not_accuse_the_engine_on_a_reconstructed_threshold(self):
+        """A replayed threshold can disagree with the engine for reasons that are
+        not the engine's fault, so it is never grounds for the accusation."""
+        make_decision(self.user, self._at(10), send=False,
+                      reason='below within-person threshold',
+                      observed_mssd=9.0, threshold_at_decision=4.0,
+                      threshold_source='reconstructed')
+        point = tl.mssd_lane(self.user, self.LOCAL)[0]
+        self.assertFalse(point['unexplained'])
+
+    def test_mssd_lane_leaves_a_missing_threshold_as_a_gap(self):
+        make_decision(self.user, self._at(10), send=False,
+                      reason='insufficient within-person history', observed_mssd=9.0)
+        point = tl.mssd_lane(self.user, self.LOCAL)[0]
+        self.assertIsNone(point['threshold'])
+        self.assertFalse(point['unexplained'])
+
+    def test_delivery_funnel_stages_never_increase(self):
+        make_decision(self.user, self._at(10), send=True,
+                      device_received_at=self._at(10, 1),
+                      receipt_reported_at=self._at(10, 2),
+                      receipt_platform='ios', receipt_app_state='background')
+        make_decision(self.user, self._at(12), send=True)
+        make_decision(self.user, self._at(14), send=False, reason='cooldown active')
+
+        funnel = tl.delivery_funnel(self.user)
+        counts = [stage['n'] for stage in funnel['stages']]
+        self.assertEqual(counts, sorted(counts, reverse=True))
+        self.assertEqual(counts[0], 2)
+        self.assertEqual(dict(zip([s['stage'] for s in funnel['stages']], counts))['device_received'], 1)
+        self.assertEqual(funnel['by_platform'], [{'receipt_platform': 'ios', 'n': 1}])
+
+    def test_a_prompt_that_skips_a_stage_cannot_inflate_a_later_one(self):
+        """Real production data carries 20 prompts with a device receipt and only
+        4 with a push timestamp. Filtering each stage independently made
+        device_received larger than the push_sent above it, which is not a
+        waterfall. Stages nest; the skipped rows are reported as anomalies."""
+        log = make_decision(self.user, self._at(10), send=True,
+                            device_received_at=self._at(10, 1),
+                            receipt_reported_at=self._at(10, 2))
+        JITAILog.objects.filter(pk=log.pk).update(push_sent_at=None)
+        EngagementLog.objects.create(user=self.user, jitai_log=log,
+                                     event_type='notification_tapped',
+                                     occurred_at=self._at(10, 3))
+
+        funnel = tl.delivery_funnel(self.user)
+        stages = {stage['stage']: stage['n'] for stage in funnel['stages']}
+        self.assertEqual(stages['eligible_sent'], 1)
+        self.assertEqual(stages['push_sent'], 0)
+        # Everything downstream of the skipped stage is 0, not 1.
+        self.assertEqual(stages['device_received'], 0)
+        self.assertEqual(stages['receipt_reported'], 0)
+        self.assertEqual(stages['engaged'], 0)
+        counts = [stage['n'] for stage in funnel['stages']]
+        self.assertEqual(counts, sorted(counts, reverse=True))
+        # The prompt is not lost: it is counted where it actually went wrong.
+        self.assertEqual(funnel['anomalies']['received_without_push'], 1)
+        self.assertEqual(funnel['anomalies']['engaged_without_receipt'], 1)
+
+
+@override_settings(API_KEY='test-api-key', DASHBOARD_API_KEY=DASHBOARD_KEY)
+class TimelineEndpointTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.headers = {'HTTP_X_DASHBOARD_API_KEY': DASHBOARD_KEY}
+        self.today = w.today_local()
+        enrolled = datetime(self.today.year, self.today.month, self.today.day,
+                            10, 0, tzinfo=EASTERN) - timedelta(days=4)
+        self.user = make_participant('tle@x.test', enrolled)
+
+    def test_multi_day_returns_oldest_first(self):
+        body = self.client.get(
+            f'/api/monitor/participant/{self.user.pk}/timeline?days=7',
+            **self.headers).json()
+        dates = [day['local_date'] for day in body['days']]
+        self.assertEqual(len(dates), 7)
+        self.assertEqual(dates, sorted(dates))
+        self.assertEqual(dates[-1], self.today.isoformat())
+
+    def test_single_day_keeps_the_original_flat_shape(self):
+        body = self.client.get(
+            f'/api/monitor/participant/{self.user.pk}/timeline', **self.headers).json()
+        self.assertNotIn('days', body)
+        for key in ('slots', 'wear', 'sync', 'mssd', 'completeness', 'events'):
+            self.assertIn(key, body)
+
+    def test_days_is_bounded(self):
+        for value in ('0', '99', 'many'):
+            response = self.client.get(
+                f'/api/monitor/participant/{self.user.pk}/timeline?days={value}',
+                **self.headers)
+            self.assertEqual(response.status_code, 400, value)
+
+    def test_funnel_endpoint_is_served_and_gated(self):
+        path = f'/api/monitor/participant/{self.user.pk}/funnel'
+        self.assertEqual(self.client.get(path).status_code, 403)
+        body = self.client.get(path, **self.headers).json()
+        self.assertEqual([s['stage'] for s in body['stages']],
+                         ['eligible_sent', 'push_sent', 'device_received',
+                          'receipt_reported', 'engaged'])
+
+    def test_funnel_rejects_an_unknown_participant(self):
+        self.assertEqual(
+            self.client.get('/api/monitor/participant/999999/funnel',
+                            **self.headers).status_code, 404)
 
 
 # ---------------------------------------------------------------------------
 # Withdrawal backfill
 # ---------------------------------------------------------------------------
+
+class EnrollmentStampTests(TestCase):
+    """enrolled_at is what every study day is counted from, and nothing used to
+    set it: it is exposed on the serializer and nowhere else, so ticking the box
+    in Django Admin left it NULL and the participant vanished from every metric.
+    """
+
+    ADMIN_TICK = datetime(2026, 8, 27, 4, 2, tzinfo=UTC)
+    FIRST_EMA = datetime(2026, 8, 21, 4, 57, tzinfo=UTC)
+
+    def setUp(self):
+        self.staff = AuthUser.objects.create_user(username='ra2', password='pw', is_staff=True)
+        self.content_type = ContentType.objects.get_for_model(User)
+
+    def _user(self, email, is_enrolled=False):
+        return User.objects.create(email=email, birthdate=date(2005, 1, 1),
+                                   gender='other', is_enrolled=is_enrolled)
+
+    def _tick(self, user, when):
+        entry = LogEntry.objects.create(
+            user=self.staff, content_type=self.content_type, object_id=str(user.pk),
+            object_repr=str(user), action_flag=CHANGE,
+            change_message='[{"changed": {"fields": ["Is enrolled"]}}]')
+        LogEntry.objects.filter(pk=entry.pk).update(action_time=when)
+
+    def test_enrolling_stamps_the_timestamp(self):
+        user = self._user('e1@x.test')
+        self.assertIsNone(user.enrolled_at)
+        user.is_enrolled = True
+        user.save()
+        self.assertIsNotNone(User.objects.get(pk=user.pk).enrolled_at)
+
+    def test_a_user_created_already_enrolled_gets_one(self):
+        user = self._user('e2@x.test', is_enrolled=True)
+        self.assertIsNotNone(user.enrolled_at)
+
+    def test_day_zero_never_moves_once_set(self):
+        """Re-saving, or unenrolling and re-enrolling, must not renumber the
+        study days of data already collected."""
+        user = self._user('e3@x.test', is_enrolled=True)
+        original = user.enrolled_at
+        user.save()
+        user.is_enrolled = False
+        user.save()
+        user.is_enrolled = True
+        user.save()
+        self.assertEqual(User.objects.get(pk=user.pk).enrolled_at, original)
+
+    def test_update_fields_still_writes_the_stamp(self):
+        user = self._user('e4@x.test')
+        user.is_enrolled = True
+        user.save(update_fields=['is_enrolled'])
+        self.assertIsNotNone(User.objects.get(pk=user.pk).enrolled_at)
+
+    def test_backfill_prefers_earliest_activity_over_a_later_admin_tick(self):
+        """The production case: user 430's admin tick is 2026-08-27 but their
+        first EMA is 2026-08-21, six days earlier. Stamping the tick would put
+        those submissions at study day -6, where is_active_day is False and they
+        disappear from every metric."""
+        user = self._user('e5@x.test')
+        User.objects.filter(pk=user.pk).update(is_enrolled=True)
+        make_ema(user, self.FIRST_EMA)
+        self._tick(user, self.ADMIN_TICK)
+
+        call_command('backfill_enrollment', stdout=StringIO())
+        self.assertEqual(User.objects.get(pk=user.pk).enrolled_at, self.FIRST_EMA)
+
+    def test_backfill_leaves_unenrolled_users_alone_even_with_data(self):
+        """Three production users have EMAs but are not enrolled. Stamping them
+        would fabricate the denominator every benchmark divides by."""
+        user = self._user('e6@x.test')
+        make_ema(user, self.FIRST_EMA)
+        call_command('backfill_enrollment', stdout=StringIO())
+        self.assertIsNone(User.objects.get(pk=user.pk).enrolled_at)
+
+    def test_backfill_dry_run_writes_nothing(self):
+        user = self._user('e7@x.test')
+        User.objects.filter(pk=user.pk).update(is_enrolled=True)
+        make_ema(user, self.FIRST_EMA)
+        call_command('backfill_enrollment', '--dry-run', stdout=StringIO())
+        self.assertIsNone(User.objects.get(pk=user.pk).enrolled_at)
+
 
 class BackfillWithdrawalsTests(TestCase):
     NOW = datetime(2026, 9, 20, 16, 0, tzinfo=UTC)

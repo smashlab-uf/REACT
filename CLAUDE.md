@@ -86,12 +86,15 @@ pip install -r requirements.txt
 python reconcile_monitoring.py          # checks the live metric tables against scripts.py;
                                          # seeds a synthetic cohort, so never point it at production
 
-# Stage 2 participant grid: a Streamlit prototype over the /api/monitor/* endpoints.
+# Monitoring prototype over the /api/monitor/* endpoints: a Streamlit multipage app with the
+# Stage 2 participant grid and the Stage 3 participant timeline under monitor_app/pages/.
 # It holds no DB credential and imports no Django; both vars are env-only.
+# Do NOT export API_KEY here — it switches APIKeyMiddleware on for every route and silently
+# 403s the dress rehearsal's delivery receipts. DASHBOARD_API_KEY is all the monitor needs.
 # (The older analytics/REACT-dashboard/ Streamlit app was deleted in commit 1fdc6f3 and
 #  is unrelated — it read only the two /dashboard/* status endpoints.)
 export MONITOR_BASE_URL=http://localhost:8000 DASHBOARD_API_KEY=...
-streamlit run monitor_app/app.py
+streamlit run monitor_app/app.py       # entry; pages appear in the sidebar
 ```
 
 ```bash
@@ -101,6 +104,8 @@ python manage.py recompute_metrics --all           # initial fill / after a defi
 python manage.py recompute_metrics --user 12 --days 2
 python manage.py dump_item_bank --check            # fails if EMA_ITEM_BANK drifted from the frozen JSON
 python manage.py backfill_withdrawals --dry-run    # backdate withdrawals from django_admin_log
+python manage.py backfill_thresholds --dry-run     # fill JITAILog.threshold_at_decision on
+                                                   #   rows written before the engine kept it
 python manage.py test dashboard --settings=project.test_settings
 ```
 
@@ -169,11 +174,12 @@ mobile/            # Expo SDK 56 app; source under src/; committed android/ & io
 analytics/         # offline analysis: scripts.py (ORM-backed loaders + pandas metrics),
                    #   sensitivity_analysis/ (MSSD parameter recovery / robustness notebooks),
                    #   reconcile_monitoring.py (live-vs-offline metric agreement check),
-                   #   monitor_app/ (Stage 2 participant grid: Streamlit over /api/monitor/*)
+                   #   monitor_app/ (Streamlit over /api/monitor/*: pages/ holds the Stage 2
+                   #     participant grid and the Stage 3 participant timeline)
 dashboard/         # monitoring Django app at the repo root, NOT under backend/:
                    #   data/ (config.py constants, windows.py, daily/participant/cohort/alerts),
                    #   models.py (4 derived metric tables), views.py (/api/monitor/*), tasks.py
-analysis-resources/# data-dictionary.md and production_schema.md (authoritative live-schema map)
+analytics/analysis-resources/# data-dictionary.md and production_schema.md (authoritative live-schema map)
 docs/superpowers/  # schema design specs/plans from the original REACT model buildout — historical
                    #   context for why the models look the way they do, not a live source of truth
 ```
@@ -183,12 +189,13 @@ docs/superpowers/  # schema design specs/plans from the original REACT model bui
 ## Schema authority
 
 The **Django Models** section below is a simplified design reference and is intentionally leaner than
-what is deployed. The live schema is richer — e.g. `JITAILog` has **34** columns (the message-arm
-randomization and routing audit landed in migrations `0042`–`0043`); `EMA` carries `ema_type`,
+what is deployed. The live schema is richer — e.g. `JITAILog` has **36** columns (the message-arm
+randomization and routing audit landed in migrations `0042`–`0043`, and
+`threshold_at_decision` / `threshold_source` in `0046`); `EMA` carries `ema_type`,
 outcome-window fields and `served_sub_item_ids`; there are additional tables (`EMAItemResponse`,
-`EngagementLog`, `PhoneTelemetry`, `EventDay`, `CheckinReminder`); and four derived
+`EngagementLog`, `PhoneTelemetry`, `EventDay`, `CheckinReminder`, `WearableSync`); and four derived
 `dashboard_*` monitoring tables. For the actual deployed schema,
-trust `backend/app/models.py` and `analysis-resources/production_schema.md` (the latter maps every
+trust `backend/app/models.py` and `analytics/analysis-resources/production_schema.md` (the latter maps every
 production table to its `data-dictionary.md` logical name).
 
 ---
@@ -305,7 +312,8 @@ but that file doesn't exist in the repo — don't chase it.)
 | GET | `/api/monitor/cohort` | Latest cohort snapshot: benchmarks, Wilson bounds, 14-day series |
 | GET | `/api/monitor/grid` | `MetricsDaily` pivoted to participant × study_day for one metric |
 | GET | `/api/monitor/participant/{id}` | Participant rollup + every daily row + open alerts |
-| GET | `/api/monitor/participant/{id}/timeline` | One participant-day from raw tables |
+| GET | `/api/monitor/participant/{id}/timeline` | Participant-days from raw tables (`?days=1..14`) |
+| GET | `/api/monitor/participant/{id}/funnel` | One participant's whole-study delivery waterfall |
 | GET | `/api/monitor/alerts` | Open alerts, with severity counts |
 | GET | `/swagger/` | drf-yasg OpenAPI UI |
 
@@ -399,10 +407,13 @@ Three separate surfaces exist:
    layer below. Not a general study-data browser — that's still Django Admin.
    The unrelated Streamlit app at `analytics/REACT-dashboard/` was deleted in commit `1fdc6f3`;
    it only ever read the two `/dashboard/*` status endpoints and computed no feasibility metrics.
-3. **Participant grid** (`analytics/monitor_app/`) — a Streamlit prototype of the daily RA
-   view, "who needs a phone call today". Reads the monitoring API over HTTP with no database
+3. **Monitoring prototype** (`analytics/monitor_app/`) — a Streamlit multipage app: the
+   participant grid ("who needs a phone call today") and the participant timeline ("what
+   actually happened to this person"). Reads the monitoring API over HTTP with no database
    credential and no Django import, so it also serves as a check on those endpoints. Local
    prototype only; nothing deploys it. See `analytics/monitor_app/README.md`.
+   Lanes are drawn as separate charts, never a composed one: Streamlit refuses selections on
+   composed charts, and versions differ on whether they even allow rendering them.
 
 ### Monitoring data layer
 
@@ -421,8 +432,25 @@ literal for any of them.
 Four derived tables (`MetricsDaily`, `MetricsParticipant`, `MetricsCohort`, `Alert`) are
 recomputed by `dashboard.tasks.recompute_monitoring_metrics` every **600 s**, on a trailing
 3-day window that absorbs Labfront batch lag. They hold no collected data and can be dropped
-and rebuilt. Only `/api/monitor/participant/{id}/timeline` reads raw tables, and only for one
-participant-day.
+and rebuilt. Only the timeline and funnel endpoints read raw tables, and only for one
+participant at a time; the timeline is bounded to 14 days per request.
+
+Two fields exist so the timeline can tell absence apart from failure, and both are
+load-bearing:
+
+- **`WearableSync`** is an append-only log of a device's sync clock advancing, written by
+  `record_sync` from `/telemetry/ingest/` (source `ingest`) and the wearable PATCH (source
+  `client`). `WearableDevice.last_synced_at` is a single mutable column, so without this
+  table a sync outage cannot be told apart from genuine non-wear. **Nothing writes the sync
+  clock today**: the mobile client is the intended writer but has no wearable code, and
+  `ingest_wearable_data` is a stub. The layer reports that as unmeasurable — one cohort
+  alert, no participant alerts, and no contribution to `risk_score` — rather than turning
+  all 40 participants critical 72 hours after enrolling and leaving them there.
+- **`JITAILog.threshold_at_decision`** records what `observed_mssd` was actually compared
+  against; the engine always computed it as `user_threshold` and then discarded it.
+  `threshold_source` is `engine` or `reconstructed` (via `manage.py backfill_thresholds`,
+  which replays `app.tasks.build_decision_frame`, the same code path the live decision ran
+  through). The dashboard's "should have been eligible" marker fires only on `engine` rows.
 
 Three invariants the layer enforces, worth preserving in any change:
 
@@ -432,7 +460,23 @@ Three invariants the layer enforces, worth preserving in any change:
 - **Rates are suppressed on thin denominators.** A rate is emitted only above 10 participants
   and 30 units; below that the payload carries raw counts and a null value. Phase 1 (n=5) is
   therefore always counts, never percentages.
-- **A benchmark with no source is marked unmeasurable**, never reported as zero.
+- **A benchmark with no source is marked unmeasurable**, never reported as zero. The same
+  applies to alerts: a rule whose signal has no writer emits one cohort alert saying so,
+  never one alert per participant.
+- **An alert about the system is cohort-scoped, not per-participant.** `runin_violation` and
+  `sync_stale`-with-no-writer are facts about the engine and the pipeline, and raising them
+  per participant put an identical open critical on everyone, which flattened `risk_score`
+  and buried the alerts view. Per-participant detail stays in `MetricsDaily`.
+
+`Alert.SEVERITY_CHOICES` is a three-tier ladder, warning < high < critical, ordered by what is
+at stake rather than by how long it has been true. **critical**: trial integrity is already
+compromised or the whole pipeline is down (`runin_violation`, `cooldown_violation`,
+`cap_exceeded`, `pipeline_stalled`, `no_wearable_data`). **high**: one participant's data is
+being lost now and will keep being lost until someone acts (`sync_stale` past 72 h,
+`no_ema_48h`, `wear_low`, `delivery_failures`). **warning**: worth watching, not worth a call
+today. `Alert.SEVERITY_RANK` orders a response; sorting on the column puts critical before
+warning only by accident of spelling. `Alert.ACTIONABLE_SEVERITIES` is what the risk score's
+alert term reads.
 
 **`risk_score` orders the participant grid** and is defined once, in
 `dashboard/data/participant.py`. Six weighted terms over the trailing seven *active* days,
@@ -448,7 +492,7 @@ item completeness measurable at all. `/ema/next/` returns the list, the client m
 and the server recomputes the same set on submit when it does not.
 
 Two engine defects the monitor deliberately surfaces rather than works around, both documented
-in `analysis-resources/production_schema.md`: `evaluate_jitai_triggers` has **no run-in gate**,
+in `analytics/analysis-resources/production_schema.md`: `evaluate_jitai_triggers` has **no run-in gate**,
 and `apply_decision_rules` counts its **daily cap over UTC days** while everything else is
 Eastern.
 

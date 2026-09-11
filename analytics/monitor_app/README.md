@@ -1,6 +1,10 @@
-# Participant grid (Stage 2)
+# Monitoring prototype (Stages 2 and 3)
 
-A Streamlit prototype of the daily RA view: who needs a phone call today.
+Two Streamlit pages over the monitoring API:
+
+- **Participant grid** — the daily RA view: who needs a phone call today.
+- **Participant timeline** — one participant, one day per strip: what actually
+  happened to this person.
 
 It reads the `/api/monitor/*` endpoints over HTTP and holds no database
 credential and no Django import. Anything it renders is something the API can
@@ -96,10 +100,68 @@ pre-enrollment, complete, or withdrawn. Those rows sort last rather than first,
 because every term reads as maximally bad for a participant who is not in the
 field.
 
+## The timeline
+
+One participant, one day per strip, every lane on the same 00:00 to 24:00 local
+clock so events line up vertically. That alignment is the point: **a wear gap
+under a flat sync trace is a data-delivery failure, and the same gap under a live
+sync trace is genuine non-wear.**
+
+| Lane | Reads |
+|---|---|
+| Wear | minute coverage from heart-rate samples, gaps over 2 h labelled, waking window shaded |
+| Sync | how far behind the sync clock had fallen, stepped, coloured by ingestion or client |
+| Check-ins | submissions on the six-slot grid, filled by completeness, reminders as ticks beneath |
+| Decision points | one mark per decision, by outcome: below threshold, cooldown, cap, eligible sent or not |
+| Delivered prompts | push to receipt as bar length, so delivery lag reads as distance |
+| Volatility | observed MSSD against the threshold the engine actually compared it to |
+
+Below the strips sit the whole-study delivery funnel and, per day, the item
+completeness matrix. A check-in missing B1 or B2 is called out in red: those feed
+the volatility calculation, so a submission without them produces no decision
+point at all. That is a hole in the trial, not a data-quality note.
+
+### Two things the timeline is honest about
+
+**Nothing writes the sync clock yet, so the lane is blank.** The mobile client is
+the intended writer, through `PATCH /wearable/{id}/`. It does not call it: the app
+has no wearable code at all. `ingest_wearable_data` is still a stub. So
+`last_synced_at` has no writer in production and `WearableSync` stays empty.
+
+That absence is reported as unmeasurable rather than as failure, which matters
+more than it sounds. `sync_stale` measures from `last_sync_at or enrolled_at`, so
+scoring it anyway would turn every participant warning at 24 hours and critical
+at 72, permanently, and pin an identical 4 points of risk on all forty. Instead
+one cohort alert says sync reporting is not implemented, no participant alert
+fires, and the risk score's sync term contributes nothing until a writer lands.
+
+**A threshold is either recorded or replayed, and the difference matters.**
+`JITAILog.threshold_source` is `engine` when the engine wrote what it compared
+against, and `reconstructed` when `backfill_thresholds` replayed it. The red
+marker accusing the engine of missing an eligible decision point fires only on
+`engine` rows: a replayed number can disagree for reasons that are not the
+engine's fault, so it is never grounds for the accusation.
+
+## What the timeline deliberately omits
+
+Response latency and the 30-minute in-window flag. An EMA row is only created
+when a participant submits, and `sent_at` and `responded_at` are stamped from the
+same clock read at that moment, so every latency is about zero and every response
+is in-window. Charting them would draw a flawless compliance curve that means
+nothing.
+
+The one real anchor is push to linked post-prompt check-in, measured against the
+two-hour outcome window. It is labelled **post-prompt response time**, never EMA
+latency, because it covers only prompted check-ins and says nothing about
+scheduled ones.
+
 ## Files
 
 | File | Role |
 |---|---|
-| `client.py` | the five endpoints, cached for 60 s |
-| `frame.py` | grid JSON to one participant-day frame that every chart reads |
-| `app.py` | layout and charts |
+| `app.py` | entry page and shared config |
+| `pages/1_Participant_grid.py` | Stage 2 |
+| `pages/2_Participant_timeline.py` | Stage 3 |
+| `client.py` | the endpoints, cached for 60 s |
+| `frame.py` | grid JSON to one participant-day frame |
+| `timeline.py` | timeline JSON to one frame per lane |

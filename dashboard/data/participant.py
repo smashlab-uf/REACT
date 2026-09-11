@@ -77,7 +77,8 @@ def _days_since_scheduled_ema(daily_rows, local_date):
     return (local_date - max(dates)).days
 
 
-def compute_risk_score(user, phase=None, daily_rows=None, last_sync_at=None, now=None):
+def compute_risk_score(user, phase=None, daily_rows=None, last_sync_at=None, now=None,
+                       sync_measurable=None):
     """The transparent risk score that orders the participant grid.
 
     Returns (score, components). Components hold points rather than raw counts,
@@ -116,17 +117,23 @@ def compute_risk_score(user, phase=None, daily_rows=None, last_sync_at=None, now
         RISK_MISSING_SIGNAL_CAP,
         sum(row.ema_missing_b1b2_n or 0 for row in trailing),
     )
-    # Never synced counts as stale. A participant with no device row at all is a
-    # different problem, caught by the no_wearable_data cohort alert, but from
-    # the RA's side both are still a call worth making.
-    sync_stale = (
+    # Unmeasurable is not late. Nothing writes last_synced_at today, so scoring
+    # "never synced" as stale would put the same 2 points on every participant
+    # and flatten the ordering this score exists to produce. When no participant
+    # anywhere has reported a sync, the term contributes nothing and the
+    # sync_stale cohort alert carries the fact instead.
+    if sync_measurable is None:
+        sync_measurable = MetricsParticipant.objects.filter(
+            last_sync_at__isnull=False).exists()
+    sync_stale = sync_measurable and (
         last_sync_at is None
         or elapsed_minutes(last_sync_at, now) / 60 > RISK_SYNC_STALE_HOURS
     )
-    # The spec names severity=high, which no alert can carry: Alert.SEVERITY_CHOICES
-    # is critical/warning. Scored against critical, otherwise the term is dead.
-    open_critical = Alert.objects.filter(
-        user=user, resolved_at__isnull=True, severity='critical',
+    # Critical or high: both mean someone should act on this participant today.
+    # Scoring only the middle tier while ignoring the worst one would be perverse.
+    open_actionable = Alert.objects.filter(
+        user=user, resolved_at__isnull=True,
+        severity__in=Alert.ACTIONABLE_SEVERITIES,
     ).exists()
 
     counts = {
@@ -135,7 +142,7 @@ def compute_risk_score(user, phase=None, daily_rows=None, last_sync_at=None, now
         'sync_stale': int(sync_stale),
         'low_wear': low_wear,
         'missing_signal': missing_signal,
-        'open_critical': int(open_critical),
+        'open_critical': int(open_actionable),
     }
     components = {term: count * RISK_WEIGHTS[term] for term, count in counts.items()}
     return sum(components.values()), components
@@ -249,7 +256,7 @@ def compute_participant(user, existing=None, daily_rows=None, now=None):
         'last_ema_at': last_ema,
         'last_sync_at': last_sync_at,
         # Retention is "never withdrew", not "responded recently": missing
-        # prompts is not dropout (analysis-resources/JITAI-analysis-plan.md).
+        # prompts is not dropout (analytics/analysis-resources/JITAI-analysis-plan.md).
         'active_retention': None if user.enrolled_at is None else withdrawn_at is None,
         'risk_score': risk_score,
         'risk_components': risk_components,
@@ -278,11 +285,15 @@ def refresh_risk_scores(users=None, now=None):
     ):
         daily_by_user.setdefault(daily.user_id, []).append(daily)
 
+    # Resolved once for the whole pass: it is a property of the cohort, not of
+    # any one participant, and it would otherwise be a query per row.
+    sync_measurable = MetricsParticipant.objects.filter(last_sync_at__isnull=False).exists()
+
     updated = []
     for row in rows:
         score, components = compute_risk_score(
             row.user, phase=row.phase, daily_rows=daily_by_user.get(row.user_id, []),
-            last_sync_at=row.last_sync_at, now=now)
+            last_sync_at=row.last_sync_at, now=now, sync_measurable=sync_measurable)
         if (row.risk_score, row.risk_components) != (score, components):
             row.risk_score = score
             row.risk_components = components

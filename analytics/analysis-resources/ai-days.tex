@@ -1,0 +1,176 @@
+\documentclass[10pt,letterpaper]{article}
+
+% Packages
+\usepackage[top=0.55in,bottom=0.55in,left=0.65in,right=0.65in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{tcolorbox}
+
+% Color Palette
+\definecolor{primary}{RGB}{15,44,89}
+\definecolor{accent}{RGB}{20,110,180}
+\definecolor{lightblue}{RGB}{239,246,252}
+\definecolor{darktext}{RGB}{33,37,41}
+\definecolor{muted}{RGB}{90,100,110}
+
+\color{darktext}
+
+% Hyperref
+\hypersetup{
+    colorlinks=true,
+    linkcolor=accent,
+    citecolor=accent,
+    urlcolor=accent
+}
+
+% Section Formatting
+\titleformat{\section}
+    {\color{primary}\large\bfseries}
+    {}{0em}
+    {}
+    [\vspace{-3pt}\color{accent}\rule{\textwidth}{0.7pt}]
+
+\titlespacing*{\section}{0pt}{8pt}{4pt}
+
+\titleformat{\subsection}
+    {\color{primary}\normalsize\bfseries}
+    {}{0em}{}
+
+\titlespacing*{\subsection}{0pt}{4pt}{2pt}
+
+% Paragraph / List Formatting
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3.5pt}
+
+\setlist[itemize]{
+    itemsep=1.5pt,
+    topsep=2pt,
+    parsep=0pt,
+    leftmargin=1.3em
+}
+
+% Key Finding Box
+\newtcolorbox{keybox}{
+    colback=lightblue,
+    colframe=accent,
+    boxrule=0.5pt,
+    arc=2pt,
+    left=6pt,
+    right=6pt,
+    top=4pt,
+    bottom=4pt
+}
+
+% Page Style
+\pagestyle{empty}
+
+% Document
+\begin{document}
+
+% TITLE
+\begin{center}
+
+{\LARGE\bfseries\color{primary}
+Algorithmic Calibration of a JITAI Decision Engine}
+
+\vspace{2pt}
+
+{\large\bfseries\color{accent}
+A Sensitivity Analysis Approach for Adaptive Micro-Randomized Trials}
+
+\vspace{3pt}
+
+{\normalsize\bfseries\color{primary}
+Tien Le}
+
+\vspace{2pt}
+
+{\small
+\textcolor{muted}{
+Simulation-Based Calibration of Intervention Thresholds, Participant Burden, and EMA Compliance
+}}
+
+\end{center}
+
+\vspace{-4pt}
+
+% PURPOSE
+\section{Purpose}
+
+Just-In-Time Adaptive Interventions (JITAIs) aim to deliver timely behavioral nudges during acute moments of psychological vulnerability and emotional volatility. However, calibrating trigger thresholds presents a fundamental trade-off: over-sensitive thresholds induce notification fatigue, while overly conservative cutoffs miss critical therapeutic windows. This research introduces a simulation-based sensitivity framework to calibrate a randomized JITAI decision engine prior to clinical deployment.
+
+The framework evaluates the relationship between intervention dosage, Ecological Momentary Assessment (EMA) compliance, and statistical efficiency. Our simulation identifies a \textbf{70\% compliance floor} below which parameter recovery degrades meaningfully, confirming a deliberate margin for the trial's pre-registered \textbf{75\% feasibility benchmark}, while calibrating an \textbf{80th-percentile within-person threshold} that yields an expected dosage of \textbf{4 decision points per week}.
+
+
+{\footnotesize
+\textbf{\color{primary}Keywords:}
+Just-In-Time Adaptive Interventions (JITAI);
+Micro-Randomized Trials (MRT);
+Affective Computing;
+Algorithmic Sensitivity Analysis;
+Behavioral Informatics
+}
+
+% APPROACH
+\section{Approach}
+
+\subsection{Decision Engine}
+
+The decision engine detects acute emotional volatility using the \textbf{Mean Squared Successive Difference (MSSD)}, computed over consecutive EMA observations (e.g., mood, stress, energy) within a rolling observation window:
+
+\begin{equation}
+\text{MSSD}
+=
+\frac{1}{n-1}
+\sum_{i=1}^{n-1}
+(x_{i+1}-x_i)^2
+\end{equation}
+
+Observed MSSD is evaluated against an empirical percentile threshold derived from the participant's historical data. The primary decision rule uses an \textbf{80th-percentile threshold}, a 3-observation window, a 60-minute cooldown, and a safety cap of four prompts daily. Observations exceeding this boundary trigger an eligible intervention decision point for micro-randomization within a Micro-Randomized Trial (MRT).
+
+\subsection{Threshold Sensitivity Analysis}
+
+To characterize how design choices affect intervention dosage, we evaluated a multi-parameter grid across MSSD percentiles, burn-in periods, and compliance rates.
+
+\begin{center}
+\footnotesize
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Parameter} & \textbf{Evaluated Grid Values} & \textbf{Design Objective} \\
+\midrule
+MSSD threshold ($\Theta$)
+& 70th, 75th, 80th, 85th, 90th percentile
+& Regulate prompt frequency \\
+
+Burn-in period ($B$)
+& 0, 1, 2, 3, 5, 7 days
+& Evaluate baseline warm-up effects \\
+
+EMA response rate ($R$)
+& 70\%, 80\%, 90\%
+& Characterize missing-data sensitivity \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+To rigorously test the engine, the simulation framework modeled cohorts of 150 participants over 28 days, assuming \textbf{5 EMA opportunities per day as a fixed simulation parameter} (evaluating the 5--6 daily prompts scheduled in the clinical protocol). Across 10 random seeds, each threshold--burn-in combination was tested over \textbf{1,500 participant-level realizations}. The 80th-percentile threshold consistently produced a target dosage of \textbf{4-5 decision points per participant per week} following the burn-in period.
+
+\subsection{Parameter Recovery \& Compliance Sensitivity}
+
+A second sensitivity sweep evaluated latent parameter recovery across response rates from $70\%$ to $90\%$ (10\% increments; $N=1,500$ per level). Recovery of process volatility ($\sigma$) remained robust across missingness conditions. In contrast, recovering the temporal autocorrelation ($\rho$) proved highly sensitive to missing data: parameter recovery degraded sharply when compliance dropped below approximately \textbf{70\%}, but stabilized reliably above it, establishing \textbf{70\%} as the mathematical breakdown floor for temporal recovery. Consequently, both figures serve distinct roles: \textbf{75\%} represents the trial's pre-registered operational feasibility benchmark, which deliberately incorporates a \textbf{5\%} safety buffer above the \textbf{70\%} algorithmic floor to protect against inferential collapse. This demonstrates that participant compliance is substantially more critical for capturing temporal dependence than static volatility.
+
+% IMPACT
+\section{Impact \& Significance}
+
+This framework replaces heuristic thresholding with an empirical, reproducible approach to participant burden and power calibration. By confirming that the 80th-percentile threshold stabilizes dosage at \textbf{4 decision points per week}, the analysis ensures sufficient longitudinal power to detect time-varying treatment effects in MRTs without inducing participant habituation. 
+
+Furthermore, separating compliance effects on static variance ($\sigma$) versus temporal dependence ($\rho$) provides a generalizable methodological guideline for mobile health systems that pair active self-reports with continuous physiological telemetry (e.g. Heart Rate Variability).
+
+\end{document}

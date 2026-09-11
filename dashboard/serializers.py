@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from dashboard.data.windows import participant_time
 from dashboard.models import Alert, MetricsCohort, MetricsDaily, MetricsParticipant
 
 
@@ -48,7 +49,7 @@ class MetricsCohortSerializer(serializers.ModelSerializer):
         model = MetricsCohort
         fields = [
             'id', 'as_of', 'phase_filter', 'n_participants', 'n_active',
-            'benchmarks', 'series_14d',
+            'benchmarks', 'series_14d', 'integrity', 'funnel',
             'decision_points_n', 'eligible_n', 'sent_n', 'delivered_n',
             'cooldown_violations_n', 'runin_violations_n', 'cap_hit_days',
             'delivery_failures_n',
@@ -59,12 +60,13 @@ class MetricsCohortSerializer(serializers.ModelSerializer):
 class AlertSerializer(serializers.ModelSerializer):
     participant_id = serializers.SerializerMethodField()
     scope = serializers.SerializerMethodField()
+    link_date = serializers.SerializerMethodField()
 
     class Meta:
         model = Alert
         fields = [
             'id', 'user', 'participant_id', 'scope', 'rule_id', 'severity',
-            'fired_at', 'resolved_at', 'payload',
+            'fired_at', 'resolved_at', 'payload', 'link_date',
         ]
         read_only_fields = ('id', 'fired_at')
 
@@ -73,6 +75,25 @@ class AlertSerializer(serializers.ModelSerializer):
 
     def get_scope(self, obj):
         return 'participant' if obj.user_id else 'cohort'
+
+    def get_link_date(self, obj):
+        """The local day the timeline should open on.
+
+        Rules that know which days offended say so in their payload, and that
+        day is what someone wants to look at. Everything else falls back to when
+        the alert fired, which is at least the right neighbourhood. Derived here
+        so every reader gets the same answer.
+        """
+        payload = obj.payload or {}
+        days = payload.get('days')
+        if isinstance(days, dict) and days:
+            return sorted(days)[0]
+        if isinstance(days, list) and days:
+            return sorted(days)[0]
+        for key in ('day', 'local_date'):
+            if payload.get(key):
+                return payload[key]
+        return participant_time(obj.fired_at).date().isoformat()
 
 
 def participant_label(user):

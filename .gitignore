@@ -50,9 +50,11 @@ Eliana Bacal REACT prompts IRB Message_Bank_v1.xlsx
 Papers/
 Eliana Bacal REACT_IRB01_Message_Bank_v1.docx
 REACT general pool - REACT_curated_general_pool.csv (2).pdf
-analysis-resources/
 analytics/output
 analytics/REACT-dashboard
 
 analytics/sensitivity_analysis/data
 CLAUDE.md
+
+# Throwaway SQLite DBs from dress_rehearsal.py / local runs
+*.sqlite3

@@ -22,6 +22,7 @@ from app.views import index, CreateUserView, UserLoginView, UserUpdateView, Chec
 from dashboard.views import (
     MonitorAlertsView,
     MonitorCohortView,
+    MonitorFunnelView,
     MonitorGridView,
     MonitorParticipantView,
     MonitorTimelineView,
@@ -74,6 +75,7 @@ urlpatterns = [
     path('api/monitor/alerts', MonitorAlertsView.as_view(), name='monitor-alerts'),
     path('api/monitor/participant/<int:user_id>', MonitorParticipantView.as_view(), name='monitor-participant'),
     path('api/monitor/participant/<int:user_id>/timeline', MonitorTimelineView.as_view(), name='monitor-timeline'),
+    path('api/monitor/participant/<int:user_id>/funnel', MonitorFunnelView.as_view(), name='monitor-funnel'),
     path('telemetry/hr/<int:user_id>/', HeartRateListView.as_view(), name='telemetry-hr'),
     path('telemetry/stress/<int:user_id>/', StressListView.as_view(), name='telemetry-stress'),
     path('telemetry/phone/', PhoneTelemetryView.as_view(), name='telemetry-phone'),
