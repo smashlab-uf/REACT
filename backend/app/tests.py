@@ -3396,3 +3396,85 @@ class EMAScheduledItemSelectionTests(TestCase):
 
         self.assertIn('B6', [item['item_id'] for item in data['items']])
         self.assertNotIn('B6_plan', self._b6_sub_item_ids(data))
+
+
+class EnrollForNotificationsTests(TestCase):
+    def test_sets_enrollment_and_creates_active_wearable(self):
+        from app.admin import enroll_user_for_notifications
+
+        user = make_user(email='enroll-me@example.com')
+        device, created = enroll_user_for_notifications(user)
+        user.refresh_from_db()
+
+        self.assertTrue(user.is_enrolled)
+        self.assertIsNotNone(user.enrolled_at)
+        self.assertTrue(created)
+        self.assertTrue(device.is_active)
+        self.assertEqual(device.labfront_participant_id, f'TEST-{user.user_id}')
+
+    def test_reactivates_existing_wearable_without_replacing_labfront_id(self):
+        from app.admin import enroll_user_for_notifications
+
+        user = make_user(email='already-wearable@example.com')
+        existing = WearableDevice.objects.create(
+            user=user,
+            labfront_participant_id='LABFRONT-REAL',
+            is_active=False,
+        )
+        enrolled_at = timezone.now() - timedelta(days=3)
+        user.is_enrolled = False
+        user.enrolled_at = enrolled_at
+        user.save(update_fields=['is_enrolled', 'enrolled_at'])
+
+        device, created = enroll_user_for_notifications(user)
+        user.refresh_from_db()
+        existing.refresh_from_db()
+
+        self.assertTrue(user.is_enrolled)
+        self.assertEqual(user.enrolled_at, enrolled_at)
+        self.assertFalse(created)
+        self.assertEqual(device.pk, existing.pk)
+        self.assertTrue(existing.is_active)
+        self.assertEqual(existing.labfront_participant_id, 'LABFRONT-REAL')
+
+
+class UserAdminEnrollActionTests(TestCase):
+    def setUp(self):
+        from django.urls import reverse
+
+        self.staff = AuthUser.objects.create_superuser(
+            'admin',
+            'admin@example.com',
+            'adminpass123',
+        )
+        self.client.force_login(self.staff)
+        self.user = make_user(email='admin-enroll@example.com')
+        self.changelist = reverse('admin:app_user_changelist')
+        self.change_url = reverse('admin:app_user_change', args=[self.user.user_id])
+        self.enroll_url = reverse('admin:app_user_enroll_notifications', args=[self.user.user_id])
+
+    def test_changelist_action_enrolls_selected_user(self):
+        response = self.client.post(self.changelist, {
+            'action': 'enroll_for_notifications',
+            'index': 0,
+            '_selected_action': [str(self.user.pk)],
+        }, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_enrolled)
+        self.assertTrue(WearableDevice.objects.filter(user=self.user, is_active=True).exists())
+
+    def test_user_page_button_enrolls_that_user(self):
+        response = self.client.post(self.enroll_url, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_enrolled)
+        self.assertTrue(WearableDevice.objects.filter(user=self.user, is_active=True).exists())
+
+    def test_change_form_shows_enroll_button(self):
+        response = self.client.get(self.change_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Enroll for notifications')
+        self.assertContains(response, self.enroll_url)

@@ -1,4 +1,7 @@
-from django.contrib import admin
+from django.contrib import admin, messages
+from django.http import HttpResponseNotAllowed, HttpResponseRedirect
+from django.urls import path, reverse
+from django.utils import timezone
 
 from .models import (
     CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog,
@@ -18,8 +21,29 @@ class ReadableAdminMixin:
         }
 
 
+def enroll_user_for_notifications(user):
+    now = timezone.now()
+    user.is_enrolled = True
+    if user.enrolled_at is None:
+        user.enrolled_at = now
+    user.save(update_fields=["is_enrolled", "enrolled_at"])
+    device, created = WearableDevice.objects.get_or_create(
+        user=user,
+        defaults={
+            "labfront_participant_id": f"TEST-{user.user_id}",
+            "is_active": True,
+        },
+    )
+    if not device.is_active:
+        device.is_active = True
+        device.save(update_fields=["is_active"])
+    return device, created
+
+
 @admin.register(User)
 class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    change_form_template = "admin/app/user/change_form.html"
+    actions = ("enroll_for_notifications",)
     list_display = (
         "user_id",
         "email",
@@ -52,6 +76,50 @@ class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
     @admin.display(boolean=True, description="Push token")
     def has_push_token(self, obj):
         return bool(obj.push_token)
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom = [
+            path(
+                "<path:object_id>/enroll-notifications/",
+                self.admin_site.admin_view(self.enroll_for_notifications_view),
+                name="app_user_enroll_notifications",
+            ),
+        ]
+        return custom + urls
+
+    def _enroll_message(self, request, user, device, created):
+        wearable_note = (
+            f"created wearable {device.labfront_participant_id}"
+            if created
+            else f"wearable {device.labfront_participant_id} is active"
+        )
+        token_note = (
+            "push token is present"
+            if user.push_token
+            else "push token is missing — they must open the app and allow notifications"
+        )
+        self.message_user(
+            request,
+            f"Enrolled {user.email}: {wearable_note}; {token_note}.",
+            messages.WARNING if not user.push_token else messages.SUCCESS,
+        )
+
+    @admin.action(description="Enroll for notifications")
+    def enroll_for_notifications(self, request, queryset):
+        for user in queryset:
+            device, created = enroll_user_for_notifications(user)
+            self._enroll_message(request, user, device, created)
+
+    def enroll_for_notifications_view(self, request, object_id):
+        if request.method != "POST":
+            return HttpResponseNotAllowed(["POST"])
+        user = self.get_object(request, object_id)
+        if user is None:
+            return self._get_obj_does_not_exist_redirect(request, self.model._meta, object_id)
+        device, created = enroll_user_for_notifications(user)
+        self._enroll_message(request, user, device, created)
+        return HttpResponseRedirect(reverse("admin:app_user_change", args=[object_id]))
 
 
 @admin.register(WearableDevice)
