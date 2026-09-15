@@ -238,6 +238,13 @@ AFTERNOON_START_HOUR = 12
 SCHEDULED_CHECK_IN_DAILY_CAP = 6
 POST_PROMPT_CHECK_IN_DAILY_CAP = 4
 
+# How long a participant has to answer a prompt before it closes
+# (analytics/analysis-resources/JITAI-analysis-plan.md). Distinct from the two durations
+# it is easily confused with: the 60-minute JITAI refractory between sent
+# prompts (decision_engine.apply_decision_rules) and the 2-hour post-prompt
+# outcome window (views.OUTCOME_WINDOW_HOURS).
+EMA_RESPONSE_WINDOW_MINUTES = 30
+
 
 def ema_items(item_ids):
     return [

@@ -19,6 +19,15 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 from app.views import index, CreateUserView, UserLoginView, UserUpdateView, CheckEmailView, TelemetryIngestView, WearableDeviceView, EMAView, EMANextView, EMAResponseView, JITAILogView, JITAIReceiptView, DashboardParticipantStatusView, DashboardLatencyEventsView, HeartRateListView, StressListView, PhoneTelemetryView, EngagementLogView, MeView
 
+from dashboard.views import (
+    MonitorAlertsView,
+    MonitorCohortView,
+    MonitorFunnelView,
+    MonitorGridView,
+    MonitorParticipantView,
+    MonitorTimelineView,
+)
+
 # Import drf-yasg components
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
@@ -58,6 +67,15 @@ urlpatterns = [
     path('telemetry/ingest/', TelemetryIngestView.as_view(), name='telemetry-ingest'),
     path('dashboard/participants/', DashboardParticipantStatusView.as_view(), name='dashboard-participants'),
     path('dashboard/latency-events/', DashboardLatencyEventsView.as_view(), name='dashboard-latency-events'),
+
+    # Monitoring dashboard. Everything but the timeline reads precomputed
+    # metrics; the timeline reads raw tables for one participant-day.
+    path('api/monitor/cohort', MonitorCohortView.as_view(), name='monitor-cohort'),
+    path('api/monitor/grid', MonitorGridView.as_view(), name='monitor-grid'),
+    path('api/monitor/alerts', MonitorAlertsView.as_view(), name='monitor-alerts'),
+    path('api/monitor/participant/<int:user_id>', MonitorParticipantView.as_view(), name='monitor-participant'),
+    path('api/monitor/participant/<int:user_id>/timeline', MonitorTimelineView.as_view(), name='monitor-timeline'),
+    path('api/monitor/participant/<int:user_id>/funnel', MonitorFunnelView.as_view(), name='monitor-funnel'),
     path('telemetry/hr/<int:user_id>/', HeartRateListView.as_view(), name='telemetry-hr'),
     path('telemetry/stress/<int:user_id>/', StressListView.as_view(), name='telemetry-stress'),
     path('telemetry/phone/', PhoneTelemetryView.as_view(), name='telemetry-phone'),

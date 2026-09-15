@@ -1,0 +1,628 @@
+{
+  "version": "v1",
+  "items": {
+    "B1": {
+      "title": "Current emotions",
+      "sub_items": [
+        {
+          "sub_item_id": "B1_valence",
+          "text": "How would you describe your current emotional state?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "Very negative",
+          "high_label": "Very positive"
+        },
+        {
+          "sub_item_id": "B1_arousal",
+          "text": "How calm or excited do you feel right now?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "Very calm",
+          "high_label": "Very excited"
+        },
+        {
+          "sub_item_id": "B1_fluctuation",
+          "text": "Over the past hour, how much have your emotions fluctuated?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "Not at all",
+          "high_label": "Extremely"
+        },
+        {
+          "sub_item_id": "B1_change",
+          "text": "Compared to about an hour ago, how do you feel?",
+          "response_type": "single_choice",
+          "choices": [
+            "Much worse",
+            "Somewhat worse",
+            "About the same",
+            "Somewhat better",
+            "Much better"
+          ]
+        },
+        {
+          "sub_item_id": "B1_affect_anxious",
+          "text": "Anxious or on edge",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 5,
+          "low_label": "Not at all",
+          "high_label": "Extremely",
+          "group": "B1_affect",
+          "group_text": "Right now, how much do you feel each of the following?"
+        },
+        {
+          "sub_item_id": "B1_affect_angry",
+          "text": "Angry or frustrated",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 5,
+          "low_label": "Not at all",
+          "high_label": "Extremely",
+          "group": "B1_affect"
+        },
+        {
+          "sub_item_id": "B1_affect_sad",
+          "text": "Sad or down",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 5,
+          "low_label": "Not at all",
+          "high_label": "Extremely",
+          "group": "B1_affect"
+        },
+        {
+          "sub_item_id": "B1_affect_excited",
+          "text": "Excited or pumped up",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 5,
+          "low_label": "Not at all",
+          "high_label": "Extremely",
+          "group": "B1_affect"
+        },
+        {
+          "sub_item_id": "B1_affect_happy",
+          "text": "Happy or content",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 5,
+          "low_label": "Not at all",
+          "high_label": "Extremely",
+          "group": "B1_affect"
+        },
+        {
+          "sub_item_id": "B1_affect_bored",
+          "text": "Bored",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 5,
+          "low_label": "Not at all",
+          "high_label": "Extremely",
+          "group": "B1_affect"
+        }
+      ]
+    },
+    "B2": {
+      "title": "Situation",
+      "sub_items": [
+        {
+          "sub_item_id": "B2_stress",
+          "text": "How stressed do you feel right now?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "Not at all",
+          "high_label": "Extremely"
+        },
+        {
+          "sub_item_id": "B2_location",
+          "text": "Where are you right now?",
+          "response_type": "single_choice",
+          "choices": [
+            "Home or dorm",
+            "Class or library",
+            "Dining or restaurant",
+            "Bar or party",
+            "Gym or rec center",
+            "Sporting event or watch party",
+            "Other"
+          ]
+        },
+        {
+          "sub_item_id": "B2_social",
+          "text": "Are you alone or with others right now?",
+          "response_type": "single_choice",
+          "choices": [
+            "Alone",
+            "With one other person",
+            "In a group"
+          ]
+        },
+        {
+          "sub_item_id": "B2_notable_event",
+          "text": "In the past hour, did anything notably good or bad happen?",
+          "response_type": "single_choice",
+          "choices": [
+            "Nothing notable",
+            "Something good",
+            "Something bad",
+            "Both"
+          ]
+        },
+        {
+          "sub_item_id": "B2_event_topic",
+          "text": "If something happened: what was it mostly about?",
+          "response_type": "multi_choice",
+          "choices": [
+            "Sports",
+            "Academics",
+            "Social or relationship",
+            "Something online",
+            "Family",
+            "Work or money",
+            "Other"
+          ],
+          "depends_on": {
+            "sub_item_id": "B2_notable_event",
+            "not_equals": "Nothing notable"
+          }
+        }
+      ]
+    },
+    "B3": {
+      "title": "Game context",
+      "sub_items": [
+        {
+          "sub_item_id": "B3_watching",
+          "text": "Did you watch or attend a UF sporting event today, or are you watching one now?",
+          "response_type": "single_choice",
+          "choices": [
+            "Yes, football",
+            "Yes, basketball",
+            "Yes, another UF sport",
+            "Yes, a non-UF game I care about",
+            "No"
+          ]
+        },
+        {
+          "sub_item_id": "B3_importance",
+          "text": "How important is this game to you personally?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "Not important at all",
+          "high_label": "Extremely important"
+        },
+        {
+          "sub_item_id": "B3_game_status",
+          "text": "Right now, how is the game going for your team?",
+          "response_type": "single_choice",
+          "choices": [
+            "Winning comfortably",
+            "Close game",
+            "Losing",
+            "Finished, we won",
+            "Finished, we lost",
+            "Not sure"
+          ]
+        },
+        {
+          "sub_item_id": "B3_watch_mode",
+          "text": "How are you watching?",
+          "response_type": "single_choice",
+          "choices": [
+            "At the stadium or arena",
+            "At a tailgate, watch party, or bar",
+            "At home with others",
+            "Alone",
+            "Not watching live"
+          ]
+        },
+        {
+          "sub_item_id": "B3_bet",
+          "text": "Do you have any money bet on this game, including apps, pools, or bets with friends?",
+          "response_type": "single_choice",
+          "choices": [
+            "Yes",
+            "No",
+            "Prefer not to say"
+          ]
+        },
+        {
+          "sub_item_id": "B3_sudden_shift",
+          "text": "Did your emotional state change suddenly during the game? If yes, which shift fits best?",
+          "response_type": "single_choice",
+          "choices": [
+            "Calm to anxious",
+            "Excited to disappointed",
+            "Disappointed to hopeful",
+            "Other",
+            "No sudden change"
+          ]
+        }
+      ]
+    },
+    "B4": {
+      "title": "Eating",
+      "sub_items": [
+        {
+          "sub_item_id": "B4_ate",
+          "text": "Since the last check-in, did you eat anything, a meal or a snack?",
+          "response_type": "yes_no",
+          "choices": [
+            "Yes",
+            "No"
+          ]
+        },
+        {
+          "sub_item_id": "B4_hunger",
+          "text": "If yes: how physically hungry were you when you started eating?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "Not at all hungry",
+          "high_label": "Extremely hungry",
+          "depends_on": {
+            "sub_item_id": "B4_ate",
+            "equals": "Yes"
+          }
+        },
+        {
+          "sub_item_id": "B4_loss_of_control",
+          "text": "If yes: while eating, how much did you feel a sense of losing control, finding it hard to stop?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "Not at all",
+          "high_label": "Completely lost control",
+          "depends_on": {
+            "sub_item_id": "B4_ate",
+            "equals": "Yes"
+          }
+        },
+        {
+          "sub_item_id": "B4_motivation",
+          "text": "If yes: what motivated you to eat?",
+          "response_type": "multi_choice",
+          "choices": [
+            "Hunger",
+            "Boredom",
+            "Stress",
+            "Feeling upset",
+            "Celebration or excitement",
+            "Social or peer context",
+            "Habit",
+            "Other"
+          ],
+          "depends_on": {
+            "sub_item_id": "B4_ate",
+            "equals": "Yes"
+          }
+        },
+        {
+          "sub_item_id": "B4_emotion_influence",
+          "text": "If yes: how much did emotions influence your eating?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "Not at all",
+          "high_label": "A great deal",
+          "depends_on": {
+            "sub_item_id": "B4_ate",
+            "equals": "Yes"
+          }
+        },
+        {
+          "sub_item_id": "B4_regret",
+          "text": "If yes: do you regret or feel bad about anything you ate?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "No regret at all",
+          "high_label": "Very much regret",
+          "depends_on": {
+            "sub_item_id": "B4_ate",
+            "equals": "Yes"
+          }
+        },
+        {
+          "sub_item_id": "B4_skipped_meal",
+          "text": "Since the last check-in, did you skip a meal you would normally have eaten?",
+          "response_type": "single_choice",
+          "choices": [
+            "No",
+            "Yes, no appetite",
+            "Yes, too busy",
+            "Yes, feeling upset or stressed",
+            "Yes, other reason"
+          ]
+        },
+        {
+          "sub_item_id": "B4_urge",
+          "text": "Right now, how strong is your urge to eat?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "No urge at all",
+          "high_label": "Extremely strong urge"
+        }
+      ]
+    },
+    "B5": {
+      "title": "Handling emotions",
+      "sub_items": [
+        {
+          "sub_item_id": "B5_regulation",
+          "text": "Since the last check-in, did you try to manage or regulate your emotions in any way? If yes, which did you use?",
+          "response_type": "multi_choice",
+          "choices": [
+            "Distraction",
+            "Delay, waiting it out",
+            "Reframing, positive thinking",
+            "Breathing or mindfulness",
+            "Eating",
+            "Drinking alcohol",
+            "Posting or venting online",
+            "Exercise or movement",
+            "Talking to someone",
+            "Other",
+            "Did not try to regulate"
+          ]
+        },
+        {
+          "sub_item_id": "B5_success",
+          "text": "How successful were you in managing your urges?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "Not at all successful",
+          "high_label": "Very successful"
+        },
+        {
+          "sub_item_id": "B5_control",
+          "text": "Right now, how in control of your behavior do you feel?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "Not at all in control",
+          "high_label": "Completely in control"
+        }
+      ]
+    },
+    "B6": {
+      "title": "Alcohol",
+      "sub_items": [
+        {
+          "sub_item_id": "B6_plan",
+          "text": "At the first afternoon check-in: do you plan to drink alcohol later today or tonight?",
+          "response_type": "single_choice",
+          "choices": [
+            "No",
+            "Maybe",
+            "Yes, a little",
+            "Yes, a lot"
+          ],
+          "schedule_condition": "first_afternoon_check_in"
+        },
+        {
+          "sub_item_id": "B6_consumed",
+          "text": "Have you consumed any alcohol today?",
+          "response_type": "yes_no",
+          "choices": [
+            "Yes",
+            "No"
+          ]
+        },
+        {
+          "sub_item_id": "B6_drink_count",
+          "text": "If yes: about how many standard drinks have you had?",
+          "response_type": "number",
+          "min_value": 0,
+          "depends_on": {
+            "sub_item_id": "B6_consumed",
+            "equals": "Yes"
+          }
+        },
+        {
+          "sub_item_id": "B6_reason",
+          "text": "If yes: what best describes why?",
+          "response_type": "multi_choice",
+          "choices": [
+            "Social reasons",
+            "Celebration",
+            "Coping with stress or emotions",
+            "Boredom",
+            "Habit",
+            "Peer context",
+            "Other"
+          ],
+          "depends_on": {
+            "sub_item_id": "B6_consumed",
+            "equals": "Yes"
+          }
+        },
+        {
+          "sub_item_id": "B6_context",
+          "text": "If yes: where and with whom?",
+          "response_type": "single_choice",
+          "choices": [
+            "Tailgate or watch party",
+            "Bar or party",
+            "Home with others",
+            "Home alone",
+            "Other"
+          ],
+          "depends_on": {
+            "sub_item_id": "B6_consumed",
+            "equals": "Yes"
+          }
+        },
+        {
+          "sub_item_id": "B6_urge",
+          "text": "Right now, how strong is your urge to drink alcohol?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "No urge at all",
+          "high_label": "Extremely strong urge"
+        },
+        {
+          "sub_item_id": "B6_mood_effect",
+          "text": "How much do you feel alcohol affected your mood today?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "Not at all",
+          "high_label": "A great deal"
+        }
+      ]
+    },
+    "B7": {
+      "title": "Online activity",
+      "sub_items": [
+        {
+          "sub_item_id": "B7_posted",
+          "text": "Did you post or comment online in the past few hours?",
+          "response_type": "yes_no",
+          "choices": [
+            "Yes",
+            "No"
+          ]
+        },
+        {
+          "sub_item_id": "B7_saw_upsetting",
+          "text": "Did you see anything online recently that made you feel angry or upset?",
+          "response_type": "yes_no",
+          "choices": [
+            "Yes",
+            "No"
+          ]
+        },
+        {
+          "sub_item_id": "B7_urge",
+          "text": "Right now, how strong is your urge to post or reply about something that upset you?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "No urge at all",
+          "high_label": "Extremely strong urge"
+        },
+        {
+          "sub_item_id": "B7_self_stopped",
+          "text": "In the heat of the moment, did you stop yourself from posting or sending something?",
+          "response_type": "single_choice",
+          "choices": [
+            "Yes",
+            "No",
+            "Did not feel the urge"
+          ]
+        },
+        {
+          "sub_item_id": "B7_charged",
+          "text": "Looking back, how emotionally charged was your own online activity?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "Not at all",
+          "high_label": "Extremely"
+        },
+        {
+          "sub_item_id": "B7_regret",
+          "text": "Do you regret anything about your own online activity in the past few hours?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "No regret",
+          "high_label": "Very much regret"
+        }
+      ]
+    },
+    "B8": {
+      "title": "Morning",
+      "sub_items": [
+        {
+          "sub_item_id": "B8_sleep",
+          "text": "How well did you sleep last night?",
+          "response_type": "likert",
+          "min_value": 1,
+          "max_value": 7,
+          "low_label": "Very poorly",
+          "high_label": "Very well"
+        },
+        {
+          "sub_item_id": "B8_drank_more_than_planned",
+          "text": "Thinking about yesterday evening: did you drink alcohol? If yes, did you end up drinking more than you had planned?",
+          "response_type": "single_choice",
+          "choices": [
+            "Did not drink",
+            "Drank about what I planned",
+            "Somewhat more than planned",
+            "Much more than planned"
+          ]
+        },
+        {
+          "sub_item_id": "B8_regrets",
+          "text": "Looking back at yesterday, do you regret anything you posted, ate, or drank?",
+          "response_type": "multi_choice",
+          "choices": [
+            "Something I posted or sent",
+            "Something I ate",
+            "Something I drank",
+            "No regrets"
+          ]
+        },
+        {
+          "sub_item_id": "B8_academic_pressure",
+          "text": "Are you currently under academic pressure? If yes, what kind?",
+          "response_type": "multi_choice",
+          "choices": [
+            "Exams this week",
+            "Deadlines or projects",
+            "Presentations",
+            "Other",
+            "Not under pressure"
+          ]
+        },
+        {
+          "sub_item_id": "B8_caffeine",
+          "text": "Did you consume caffeine or energy drinks today?",
+          "response_type": "yes_no",
+          "choices": [
+            "Yes",
+            "No"
+          ]
+        }
+      ]
+    },
+    "C0": {
+      "title": "Quick rating",
+      "sub_items": [
+        {
+          "sub_item_id": "C0_helpful",
+          "text": "Was this message helpful right now?",
+          "response_type": "single_choice",
+          "choices": [
+            "Yes",
+            "Somewhat",
+            "No"
+          ]
+        },
+        {
+          "sub_item_id": "C0_behavior_change",
+          "text": "Did it change what you did next?",
+          "response_type": "single_choice",
+          "choices": [
+            "I paused or waited",
+            "I changed what I was going to do",
+            "Nothing different",
+            "It did not fit the moment"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -4,6 +4,7 @@ from unittest.mock import patch, MagicMock
 from zoneinfo import ZoneInfo
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework.test import APIClient
 from rest_framework import status as http_status
 from django.contrib.auth.models import User as AuthUser
@@ -15,6 +16,7 @@ EASTERN = ZoneInfo('America/New_York')
 def eastern_today():
     return timezone.now().astimezone(EASTERN).date()
 
+from app.ema_catalog import EMA_RESPONSE_WINDOW_MINUTES
 from app.models import (
     CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog, PhoneTelemetry,
     StressSample, User, WearableDevice,
@@ -3157,6 +3159,62 @@ class EMARotationEndpointTests(TestCase):
         self.assertTrue(data['outcome_window_active'])
         self.assertEqual(data['jitai_log_id'], jitai_log.id)
         self.assertEqual([item['item_id'] for item in data['items']], ['B1', 'B2', 'B4', 'B5', 'B6', 'B7'])
+
+    def test_scheduled_check_in_advertises_response_window(self):
+        before = timezone.now()
+        data = self.client.get('/ema/next/').json()
+        after = timezone.now()
+
+        expires = parse_datetime(data['expires_at'])
+        self.assertGreaterEqual(expires, before + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
+        self.assertLessEqual(expires, after + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
+
+    def test_post_prompt_response_window_is_independent_of_outcome_window(self):
+        push_sent_at = timezone.now() - timedelta(minutes=10)
+        jitai_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='JITAI-EMA-WINDOW',
+            trigger_reason='test',
+            push_sent_at=push_sent_at,
+            send_prompt=True,
+        )
+        EMA.objects.create(
+            user=self.user, prompt_id='EMA-C0-WINDOW', status='completed',
+            ema_type='prompt_feedback', source_jitai_log=jitai_log,
+        )
+
+        before = timezone.now()
+        data = self.client.get('/ema/next/').json()
+        after = timezone.now()
+
+        # The response window is 30 minutes from now; the outcome window stays
+        # 2 hours from the push. Aliasing the two is the bug this guards.
+        expires = parse_datetime(data['expires_at'])
+        self.assertGreaterEqual(expires, before + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
+        self.assertLessEqual(expires, after + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
+
+        outcome_end = parse_datetime(data['outcome_window_end'])
+        self.assertEqual(outcome_end, push_sent_at + timedelta(hours=2))
+        self.assertLess(expires, outcome_end)
+
+    def test_submitted_ema_persists_response_window(self):
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-WINDOW-PERSIST',
+            'ema_type': 'scheduled_check_in',
+            'responses': [
+                {'sub_item_id': 'B1_valence', 'value': 4},
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        ema = EMA.objects.get(prompt_id='EMA-WINDOW-PERSIST')
+        # Previously NULL for scheduled check-ins: expires_at was read from the
+        # client-supplied outcome_window_end, which these never carry.
+        self.assertIsNotNone(ema.expires_at)
+        # Within a second: sent_at is auto_now_add and so fires marginally after
+        # the `now` that expires_at is derived from.
+        window = (ema.expires_at - ema.sent_at).total_seconds()
+        self.assertAlmostEqual(window, EMA_RESPONSE_WINDOW_MINUTES * 60, delta=1.0)
 
     def test_submit_variable_ema_responses(self):
         response = self.client.post('/ema/responses/', {

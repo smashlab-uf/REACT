@@ -1,6 +1,7 @@
 from datetime import timedelta
-from zoneinfo import ZoneInfo
 
+from dashboard.data.config import OUTCOME_WINDOW_HOURS, PARTICIPANT_TZ
+from dashboard.data.windows import participant_day_bounds
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
@@ -8,6 +9,7 @@ from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Subquery
 from .ema_catalog import (
     AFTERNOON_START_HOUR,
+    EMA_RESPONSE_WINDOW_MINUTES,
     EVENING_CHECK_IN_HOUR,
     POST_PROMPT_CHECK_IN_DAILY_CAP,
     POST_PROMPT_ITEM_IDS,
@@ -27,6 +29,8 @@ from .models import (
     StressSample,
     User,
     WearableDevice,
+    WearableSync,
+    record_sync,
 )
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -76,8 +80,6 @@ class IsAdminUserOrDashboardAPIKey(BasePermission):
         return bool(expected_key) and provided_key == expected_key
 
 
-OUTCOME_WINDOW_HOURS = 2
-PARTICIPANT_TZ = ZoneInfo('America/New_York')
 _ema_items = ema_items
 
 
@@ -92,8 +94,7 @@ def _participant_day_bounds(now):
     level using Django's active timezone (settings.TIME_ZONE, UTC here), which
     would silently ignore this Eastern conversion and truncate in UTC instead.
     """
-    day_start = _participant_time(now).replace(hour=0, minute=0, second=0, microsecond=0)
-    return day_start, day_start + timedelta(days=1)
+    return participant_day_bounds(_participant_time(now).date())
 
 
 def _today_scheduled_check_in_count(user, now=None):
@@ -162,6 +163,30 @@ def _filter_conditional_sub_items(items, satisfied_conditions):
         ]
         filtered.append({**item, 'sub_items': sub_items})
     return filtered
+
+
+def _served_sub_item_ids(items):
+    """Flatten a served item list to the sub-item ids that reached the screen."""
+    return [sub['sub_item_id'] for item in items for sub in item['sub_items']]
+
+
+def _served_items_for(user, now, ema_type):
+    """Rebuild the item set a check-in of this type would be served right now.
+
+    EMANextView decides what to show, but nothing persists that decision and no
+    EMA row exists until submit. Recomputing here reproduces it: the rotation
+    counts are the same, because the new row has not been created yet. A client
+    that echoes back the ids it was actually given takes precedence over this.
+    """
+    if ema_type == 'prompt_feedback':
+        item_ids = PROMPT_FEEDBACK_ITEM_IDS
+    elif ema_type in ('post_prompt', 'extra_check_in'):
+        item_ids = POST_PROMPT_ITEM_IDS
+    else:
+        item_ids = _select_scheduled_items(user, now, _today_scheduled_check_in_count(user, now))
+    return _filter_conditional_sub_items(
+        _ema_items(item_ids), _satisfied_schedule_conditions(user, now)
+    )
 
 
 def _select_scheduled_items(user, now, daily_count):
@@ -465,7 +490,7 @@ class TelemetryIngestView(APIView):
     @swagger_auto_schema(
         operation_summary="Ingest telemetry",
         operation_description=(
-            "Store telemetry from Fitabase polling into the wearable, heart rate, "
+            "Store telemetry from Labfront polling into the wearable, heart rate, "
             "stress, EMA, and JITAI tables."
         ),
         request_body=TelemetryIngestSerializer,
@@ -482,12 +507,13 @@ class TelemetryIngestView(APIView):
             return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
         device_payload = data.get("wearable_device") or {}
+        synced_at = device_payload.get("last_synced_at") if device_payload else None
         if device_payload:
             WearableDevice.objects.update_or_create(
                 user=user,
                 defaults={
                     "labfront_participant_id": device_payload["labfront_participant_id"],
-                    "last_synced_at": device_payload.get("last_synced_at"),
+                    "last_synced_at": synced_at,
                     "is_active": device_payload.get("is_active", True),
                 },
             )
@@ -543,6 +569,16 @@ class TelemetryIngestView(APIView):
             EngagementLog.objects.create(user=user, **event)
             created_counts["engagement_events"] += 1
 
+        # Recorded after the samples land so samples_written reflects what this
+        # sync actually delivered. This is the ingestion-side writer: it is what
+        # lets the timeline tell a data-delivery outage apart from genuine
+        # non-wear, which last_synced_at alone cannot do.
+        record_sync(
+            user, synced_at, 'ingest',
+            samples_written=(created_counts["heart_rate_samples"]
+                             + created_counts["stress_samples"]),
+        )
+
         return Response(
             {
                 "message": "Telemetry ingested.",
@@ -587,6 +623,9 @@ class WearableDeviceView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         serializer.save()
+        # Client-reported, so this says the phone checked in, not that Labfront
+        # delivered anything. The source field keeps the two apart.
+        record_sync(device.user, serializer.instance.last_synced_at, 'client')
         return Response(serializer.data)
 
 
@@ -627,13 +666,15 @@ class EMANextView(APIView):
 
         feedback_jitai = _latest_jitai_awaiting_feedback(app_user)
         if feedback_jitai is not None:
+            feedback_items = _ema_items(PROMPT_FEEDBACK_ITEM_IDS)
             return Response({
                 'should_show': True,
                 'prompt_id': f'EMA-C0-{feedback_jitai.id}',
                 'ema_type': 'prompt_feedback',
                 'jitai_log_id': feedback_jitai.id,
                 'outcome_window_active': False,
-                'items': _ema_items(PROMPT_FEEDBACK_ITEM_IDS),
+                'items': feedback_items,
+                'served_sub_item_ids': _served_sub_item_ids(feedback_items),
             })
 
         active_jitai = _latest_active_jitai(app_user)
@@ -669,6 +710,9 @@ class EMANextView(APIView):
                     'daily_count': post_prompt_count,
                 })
 
+            outcome_items = _filter_conditional_sub_items(
+                _ema_items(POST_PROMPT_ITEM_IDS), _satisfied_schedule_conditions(app_user, now)
+            )
             return Response({
                 'should_show': True,
                 'prompt_id': f'EMA-JITAI-{active_jitai.id}',
@@ -677,12 +721,11 @@ class EMANextView(APIView):
                 'outcome_window_active': True,
                 'outcome_window_start': outcome_start,
                 'outcome_window_end': outcome_end,
-                'expires_at': outcome_end,
+                'expires_at': now + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES),
                 'daily_cap': POST_PROMPT_CHECK_IN_DAILY_CAP,
                 'daily_count': post_prompt_count,
-                'items': _filter_conditional_sub_items(
-                    _ema_items(POST_PROMPT_ITEM_IDS), _satisfied_schedule_conditions(app_user, now)
-                ),
+                'items': outcome_items,
+                'served_sub_item_ids': _served_sub_item_ids(outcome_items),
             })
 
         scheduled_count = _today_scheduled_check_in_count(app_user, now)
@@ -696,18 +739,20 @@ class EMANextView(APIView):
             })
 
         item_ids = _select_scheduled_items(app_user, now, scheduled_count)
+        scheduled_items = _filter_conditional_sub_items(
+            _ema_items(item_ids), _satisfied_schedule_conditions(app_user, now)
+        )
         return Response({
             'should_show': True,
             'prompt_id': f'EMA-{app_user.user_id}-{now.strftime("%Y%m%d%H%M%S")}',
             'ema_type': 'scheduled_check_in',
             'jitai_log_id': None,
             'outcome_window_active': False,
-            'expires_at': now + timedelta(hours=OUTCOME_WINDOW_HOURS),
+            'expires_at': now + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES),
             'daily_cap': SCHEDULED_CHECK_IN_DAILY_CAP,
             'daily_count': scheduled_count,
-            'items': _filter_conditional_sub_items(
-                _ema_items(item_ids), _satisfied_schedule_conditions(app_user, now)
-            ),
+            'items': scheduled_items,
+            'served_sub_item_ids': _served_sub_item_ids(scheduled_items),
         })
 
 
@@ -737,6 +782,9 @@ class EMAResponseView(APIView):
         # A dismissed C0 rating is submitted with no responses — recorded as
         # missing, not as a negative answer, per the measures doc.
         dismissed = ema_type == 'prompt_feedback' and not data['responses']
+        served = data.get('served_sub_item_ids') or _served_sub_item_ids(
+            _served_items_for(app_user, now, ema_type)
+        )
         ema = EMA.objects.create(
             user=app_user,
             prompt_id=data['prompt_id'],
@@ -746,7 +794,12 @@ class EMAResponseView(APIView):
             source_jitai_log=jitai_log,
             outcome_window_start=data.get('outcome_window_start'),
             outcome_window_end=data.get('outcome_window_end'),
-            expires_at=data.get('outcome_window_end'),
+            # Server-derived, never client-supplied, and independent of the
+            # outcome window: aliasing the two is what previously gave scheduled
+            # check-ins a NULL expires_at and post-prompt EMAs a 2-hour one.
+            # sent_at is auto_now_add, so it equals `now` for this row.
+            expires_at=now + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES),
+            served_sub_item_ids=served,
         )
 
         responses = [
