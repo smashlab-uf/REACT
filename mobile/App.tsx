@@ -13,6 +13,7 @@ import { registerForPushNotifications } from './src/notifications/pushToken';
 import { parsePushData, shouldOpenEMA } from './src/notifications/payload';
 import { jitai, user as userApi, telemetry } from './src/api/endpoints';
 import NotificationToast from './src/components/NotificationToast';
+import AppAlert from './src/components/AppAlert';
 import { log } from './src/utils/logger';
 import { colors } from './src/theme';
 
@@ -166,6 +167,7 @@ export default function App() {
   return (
     <View style={{ flex: 1 }}>
       <NotificationToast message={toastMessage} variant={toastVariant} />
+      <AppAlert />
       {isAuthenticated ? (
         <ComposeScreen onOpenEMA={() => setActiveEMA({})} />
       ) : screen === 'register' ? (

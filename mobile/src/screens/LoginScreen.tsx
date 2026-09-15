@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -12,12 +11,14 @@ import {
 } from 'react-native';
 import { auth } from '../api/endpoints';
 import { useAuthStore } from '../store/authStore';
+import { useAlertStore } from '../store/alertStore';
 import { colors, radius, typography } from '../theme';
 
 type Props = { onGoToRegister: () => void };
 
 export default function LoginScreen({ onGoToRegister }: Props) {
   const login = useAuthStore((s) => s.login);
+  const showAlert = useAlertStore((s) => s.show);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -25,7 +26,7 @@ export default function LoginScreen({ onGoToRegister }: Props) {
 
   async function handleLogin() {
     if (!email || !password) {
-      Alert.alert('Error', 'Please enter your email and password.');
+      showAlert('Error', 'Please enter your email and password.');
       return;
     }
 
@@ -35,7 +36,7 @@ export default function LoginScreen({ onGoToRegister }: Props) {
       const { access, refresh, data } = res.data;
       await login(access, refresh, data);
     } catch (err: any) {
-      Alert.alert('Login failed', 'Invalid email or password.');
+      showAlert('Login failed', 'Invalid email or password.');
     } finally {
       setLoading(false);
     }
