@@ -1,13 +1,13 @@
 """Shared data and palette layer for the REACT monitoring notebooks.
 
-Imported by every notebook under dashboard/stages/. Holds the Django bootstrap,
+Imported by every notebook under backend/dashboard/stages/. Holds the Django bootstrap,
 the fixture switch, the fourteen source frames, every Stage 1-3 compute function
 and the validated Plotly palette. The notebooks themselves hold only plots.
 
 Read-only: nothing here writes to the database. With SYNTHETIC_DATA True no
-database is contacted at all - the frames come from dashboard/fixture_cohort.json.
+database is contacted at all - the frames come from the fixture beside the app.
 
-Regenerate the fixture with: python dashboard/make_fixture.py
+Regenerate the fixture with: python backend/dashboard/make_fixture.py
 """
 
 from __future__ import annotations
@@ -25,12 +25,12 @@ import pandas as pd
 os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "true")
 
 # Anchored to this file, not the working directory, so the notebooks run from
-# anywhere - dashboard/stages/, the repo root, or a Jupyter server elsewhere.
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-BACKEND_DIR = REPO_ROOT / "backend"
-for _path in (REPO_ROOT, BACKEND_DIR):
-    if str(_path) not in sys.path:
-        sys.path.insert(0, str(_path))
+# anywhere - backend/dashboard/stages/, the repo root, or a Jupyter server
+# elsewhere. backend/ is the only entry needed: project.settings, app and
+# dashboard all live under it.
+BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "project.settings")
 
@@ -128,7 +128,7 @@ JITAI_FIELDS = (
 # below is used unchanged. Regenerate with: python dashboard/make_fixture.py
 from dashboard.data.config import PARTICIPANT_TZ
 
-FIXTURE_PATH = REPO_ROOT / "dashboard" / "fixture_cohort.json"
+FIXTURE_PATH = Path(__file__).resolve().parent.parent / "fixture_cohort.json"
 HR_DAYS = 14
 
 _FIXTURE = None

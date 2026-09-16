@@ -542,7 +542,7 @@ added the second-stage coping-versus-control randomization and `0043` the routin
 Migration `0044` added `app_ema.served_sub_item_ids`, which records what a check-in actually put
 on screen. Four derived `dashboard_*` tables now hold the precomputed monitoring metrics. All are
 documented in [`production_schema.md`](./production_schema.md), which stays authoritative; study
-constants live in one place, `dashboard/data/config.py`.
+constants live in one place, `backend/dashboard/data/config.py`.
 
 **Known gaps / follow-ups:**
 

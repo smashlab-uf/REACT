@@ -275,8 +275,8 @@ Derived tables owned by the `dashboard` app, written by
 `dashboard.tasks.recompute_monitoring_metrics` every 10 minutes and readable through
 `/api/monitor/*`. They hold no collected data: everything in them is recomputed from the
 `app_*` tables above, so they are safe to drop and rebuild. Column definitions live in
-`dashboard/data/daily.py`, `participant.py` and `cohort.py`; the study constants they use are
-all in `dashboard/data/config.py`.
+`backend/dashboard/data/daily.py`, `participant.py` and `cohort.py`; the study constants they use are
+all in `backend/dashboard/data/config.py`.
 
 **Structural null versus zero.** These tables never collapse the two. A participant-day
 outside the active range — before enrolment, past the last study day, or after withdrawal —

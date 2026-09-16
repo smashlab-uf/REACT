@@ -54,6 +54,11 @@ jobs:
       - name: Run migrations
         run: python manage.py migrate --noinput
 
+      # Fails the build when a model changes without a migration. Covers app and
+      # dashboard alike; nothing else catches that drift.
+      - name: Check for missing migrations
+        run: python manage.py makemigrations --check --dry-run
+
       - name: Run tests
         run: python manage.py test
 

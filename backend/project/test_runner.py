@@ -2,9 +2,10 @@ from django.conf import settings
 from django.test.runner import DiscoverRunner
 
 # Bare `manage.py test` discovers from the working directory, which the Procfile
-# and CI both set to backend/. The dashboard app lives at the repo root, one
-# level above, so it is invisible to that discovery and its tests would silently
-# never run. Naming the apps explicitly is what keeps them in the default suite.
+# and CI both set to backend/. Both apps now live under it, so discovery would
+# find them, but naming them keeps the default suite explicit: a new top-level
+# directory cannot quietly join the run, and a renamed app fails loudly here
+# rather than silently dropping its tests.
 DEFAULT_TEST_LABELS = ('app', 'dashboard')
 
 # settings.py reads these from the environment, and APIKeyMiddleware enforces

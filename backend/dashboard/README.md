@@ -1,17 +1,18 @@
 # `dashboard` app
 
 Read-only feasibility and integrity monitoring for REACT, served at
-`/api/monitor/*`. This app lives at the **repo root**, not under `backend/` —
-`settings.py` puts the repo root on `sys.path` so it is importable from the
-`web`, `worker` and `beat` processes, all of which run with `backend/` as
-their working directory.
+`/api/monitor/*`. This app lives at **`backend/dashboard/`**, beside `app` and
+`project`, so the `web`, `worker` and `beat` processes import it with no
+`sys.path` help — all three run with `backend/` as their working directory.
+Its Django app label is `dashboard`, which is what keeps the `dashboard_*`
+table names stable; do not change the `INSTALLED_APPS` entry to a dotted path.
 
 It is not a general study-data browser (that's still Django Admin); it exists
 to answer one question every day of the field period: *which participants need
 a phone call, and is the pipeline itself healthy.*
 
 ```
-dashboard/
+backend/dashboard/
   data/                # pure compute layer, no views, no Celery
     config.py           # single source of truth for every study constant
     windows.py           # Eastern-time day/slot boundaries shared with app/tasks.py
@@ -93,7 +94,7 @@ implementations in step; run it after changing any metric definition.
 - **A benchmark with no source is marked unmeasurable**, never reported as
   zero (`UNMEASURABLE_BENCHMARKS` in `data/config.py`).
 
-`dashboard/data/config.py` is the single authority for every protocol
+`backend/dashboard/data/config.py` is the single authority for every protocol
 constant — the notification window, the daily caps, the JITAI cooldown, the
 threshold quantile, the randomization probabilities, the benchmarks, the
 timezone. `app/tasks.py`, `app/views.py` and `analytics/scripts.py` all import
@@ -103,7 +104,7 @@ from it. Never reintroduce a literal for any of these values elsewhere.
 
 ## The `dashboard_*` tables
 
-Four tables, all defined in `dashboard/models.py`. They hold no collected
+Four tables, all defined in `backend/dashboard/models.py`. They hold no collected
 data — everything in them is derived from `app`'s tables and can be dropped
 and rebuilt in full with `manage.py recompute_metrics --all`.
 

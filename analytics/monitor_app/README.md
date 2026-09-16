@@ -30,7 +30,7 @@ streamlit run monitor_app/app.py
 from the environment only. Do not put the key in a file in this directory, do
 not pass it on a command line, and do not commit it: a live `DASHBOARD_API_KEY`
 is already sitting in this repo's history at
-`1fdc6f3^:analytics/REACT-dashboard/README.md` and still needs rotating.
+`1fdc6f3^:analytics/REACT-backend/dashboard/README.md` and still needs rotating.
 
 **`DASHBOARD_API_KEY` is the only key this needs. Do not export `API_KEY`.**
 `/api/monitor/*` is reachable with the dashboard key alone, through
@@ -51,7 +51,7 @@ Celery failure hits everyone on the same date, not the same study day.
 Four metrics colour the cells. Slot coverage and wear diverge about their
 preregistered benchmarks, which are fetched from `/api/monitor/cohort` rather
 than typed here. The prompt cap comes from the grid payload. No protocol
-constant lives in this package; `dashboard/data/config.py` remains the authority.
+constant lives in this package; `backend/dashboard/data/config.py` remains the authority.
 
 **Overlays**, drawn on every metric:
 
@@ -89,7 +89,7 @@ sync and EMA freshness, and open alerts.
 
 ## Risk score
 
-Computed in `dashboard/data/participant.py`, not here, so the row order and the
+Computed in `backend/dashboard/data/participant.py`, not here, so the row order and the
 API agree. Six weighted terms over the trailing seven active days, maximum 47,
 with every term's point contribution stored alongside the total so the ordering
 can be argued with. Weights are a starting point and are meant to be tuned after

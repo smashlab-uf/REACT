@@ -11,7 +11,6 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 # For accessing environment variables
 import os
-import sys
 
 import dj_database_url
 import sentry_sdk
@@ -28,13 +27,6 @@ from datetime import timedelta
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-
-# The monitoring app lives at the repo root, one level above BASE_DIR. manage.py
-# only puts backend/ on sys.path, so web, worker and beat all need this insert
-# before 'dashboard' can be imported.
-REPO_ROOT = BASE_DIR.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 # Use the PORT environment variable set by Heroku.
 # Gunicorn (see Procfile) uses the dynamic port assigned by Heroku, or defaults to 8000 if PORT is not set.
