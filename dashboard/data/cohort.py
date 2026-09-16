@@ -53,7 +53,13 @@ def wilson_interval(k, n, z=Z):
     behaves at the small denominators and extreme proportions a feasibility
     study actually produces.
     """
-    if not n:
+    # Undefined with no denominator, and equally undefined when k falls outside
+    # [0, n]: k > n makes p > 1, so p * (1 - p) goes negative and math.sqrt
+    # raises. That is not a hypothetical. _gauge is built to surface exactly this
+    # contradiction, and production carries 25 prompts sent against 1 eligible
+    # decision point, so the gauge that exists to report the problem used to
+    # crash the whole cohort recompute on it.
+    if not n or not 0 <= k <= n:
         return None, None
     p = k / n
     denominator = 1 + z * z / n
