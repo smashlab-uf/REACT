@@ -38,6 +38,7 @@ from dashboard.data import windows as w
 from dashboard.data.alerts import Context, evaluate_alerts, pipeline_stalled
 from dashboard.data.cohort import (
     WEAR_DIVERGENCE,
+    _gauge,
     compute_cohort,
     ks_uniform,
     suppress_rate,
@@ -695,6 +696,24 @@ class CohortTests(TestCase):
         self.assertEqual(wilson_interval(0, 20)[0], 0.0)
         self.assertEqual(wilson_interval(20, 20)[1], 1.0)
         self.assertEqual(wilson_interval(0, 0), (None, None))
+
+    def test_wilson_has_nothing_to_say_when_the_numerator_exceeds_its_denominator(self):
+        # Production carries prompts sent on decision points that were never
+        # marked eligible, so the send_rate gauge really is handed k > n. The
+        # interval is undefined there; it used to raise a math domain error and
+        # take the whole cohort recompute down with it.
+        self.assertEqual(wilson_interval(25, 1), (None, None))
+        self.assertEqual(wilson_interval(2, 1), (None, None))
+        self.assertEqual(wilson_interval(1, 0), (None, None))
+        self.assertEqual(wilson_interval(-1, 10), (None, None))
+
+    def test_gauge_survives_the_contradiction_it_exists_to_report(self):
+        entry = _gauge('send_rate', 25, 1)
+        self.assertTrue(entry['contradiction'])
+        self.assertEqual(entry['numerator'], 25)
+        self.assertEqual(entry['denominator'], 1)
+        self.assertIsNone(entry['wilson_low'])
+        self.assertIsNone(entry['wilson_high'])
 
     def test_suppression_needs_participants_and_units(self):
         self.assertIsNone(suppress_rate(20, 40, 9))
