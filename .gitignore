@@ -58,3 +58,8 @@ CLAUDE.md
 
 # Throwaway SQLite DBs from dress_rehearsal.py / local runs
 *.sqlite3
+
+
+.gitignore
+
+backend/dashboard/fixture_cohort.json

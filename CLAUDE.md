@@ -30,7 +30,7 @@ November/early December, ~12–14 weeks).
 | Database | PostgreSQL |
 | Task Queue | Celery + Redis |
 | Frontend | React Native (Expo) |
-| Deployment | Heroku (`Procfile`) — the only live target; Sentry for errors. `cloudbuild.yaml` exists but is dormant, and its build context is `./backend`, so it would miss the repo-root `dashboard/` app if revived |
+| Deployment | Heroku (`Procfile`) — the only live target; Sentry for errors. `cloudbuild.yaml` exists but is dormant; its build context is `./backend`, which now contains the whole Django project, so the image would build if revived (before `dashboard/` moved under `backend/` it could not) |
 | Push Notifications | Expo Push Notification Service → Firebase/APNs |
 | Wearable Data Layer | Labfront API (intermediary for Garmin Health API) |
 | Wearable Device | Garmin Venu 3 |
@@ -50,8 +50,8 @@ python manage.py createsuperuser
 
 # Tests run against SQLite in-memory via test_settings (do NOT hit the real DB)
 # A custom TEST_RUNNER (project/test_runner.py) does two things, both load-bearing:
-#   1. supplies the default labels ('app', 'dashboard') — bare discovery starts in backend/
-#      and would never find the repo-root dashboard app;
+#   1. supplies the default labels ('app', 'dashboard') — discovery would now find both,
+#      but naming them keeps the default suite explicit;
 #   2. blanks API_KEY and DASHBOARD_API_KEY for the run. All but two test classes assume
 #      APIKeyMiddleware is off, so an exported API_KEY used to fail ~97 tests on a clean
 #      tree. It lives in the runner, not test_settings.py, because CI runs bare
@@ -167,6 +167,10 @@ backend/
                    #   wsgi/asgi, test_settings.py
   app/             # the single Django app: models, serializers, views, tasks, admin,
                    #   middleware.py (API key), notification_service.py (Expo push), ema_catalog.py
+  dashboard/       # monitoring Django app: data/ (config.py constants, windows.py,
+                   #   daily/participant/cohort/alerts), models.py (4 derived metric tables),
+                   #   views.py (/api/monitor/*), tasks.py, stages/ (4 analysis notebooks +
+                   #   monitor_common.py), make_fixture.py (synthetic cohort generator)
   decision_engine/ # standalone MSSD/JITAI logic + golden-CSV scenario tests (pure pandas)
   syntheticData/   # cohort generators: react_cohort.py (current, 1–7 scale), synthetic_generator.py (legacy)
   dress_rehearsal.py, full_circle_test.py  # manual end-to-end QA scripts, see Commands
@@ -176,9 +180,6 @@ analytics/         # offline analysis: scripts.py (ORM-backed loaders + pandas m
                    #   reconcile_monitoring.py (live-vs-offline metric agreement check),
                    #   monitor_app/ (Streamlit over /api/monitor/*: pages/ holds the Stage 2
                    #     participant grid and the Stage 3 participant timeline)
-dashboard/         # monitoring Django app at the repo root, NOT under backend/:
-                   #   data/ (config.py constants, windows.py, daily/participant/cohort/alerts),
-                   #   models.py (4 derived metric tables), views.py (/api/monitor/*), tasks.py
 analytics/analysis-resources/# data-dictionary.md and production_schema.md (authoritative live-schema map)
 docs/superpowers/  # schema design specs/plans from the original REACT model buildout — historical
                    #   context for why the models look the way they do, not a live source of truth
@@ -417,11 +418,13 @@ Three separate surfaces exist:
 
 ### Monitoring data layer
 
-The `dashboard` app lives at the **repo root**, not under `backend/`. `settings.py` puts the
-repo root on `sys.path` so it is importable from web, worker and beat, all of which run with
-`backend/` as their working directory.
+The `dashboard` app lives at **`backend/dashboard/`**, beside `app` and `project`, so it is
+importable from web, worker and beat with no `sys.path` help — all three run with `backend/` as
+their working directory. Its Django app label is `dashboard` (not `backend.dashboard`), which is
+what keeps the `dashboard_*` table names stable; do not change the `INSTALLED_APPS` entry to a
+dotted path.
 
-**`dashboard/data/config.py` is the single authority for study constants.** Anything the
+**`backend/dashboard/data/config.py` is the single authority for study constants.** Anything the
 protocol fixes — the notification window, the caps, the cooldown, the threshold quantile, the
 randomization probabilities, the benchmarks, the timezone — is defined there exactly once, and
 `app/tasks.py`, `app/views.py` and `analytics/scripts.py` all import from it. `_evaluate_user`
@@ -479,7 +482,7 @@ warning only by accident of spelling. `Alert.ACTIONABLE_SEVERITIES` is what the 
 alert term reads.
 
 **`risk_score` orders the participant grid** and is defined once, in
-`dashboard/data/participant.py`. Six weighted terms over the trailing seven *active* days,
+`backend/dashboard/data/participant.py`. Six weighted terms over the trailing seven *active* days,
 maximum 47, with each term's point contribution stored in `risk_components` so the ordering is
 arguable rather than opaque. Weights are a starting point to tune after Phase 1. Two properties
 to preserve: the score is **null, not zero**, for anyone the study is not currently asking
