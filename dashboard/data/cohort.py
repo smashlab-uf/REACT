@@ -58,7 +58,12 @@ def wilson_interval(k, n, z=Z):
     p = k / n
     denominator = 1 + z * z / n
     centre = (p + z * z / (2 * n)) / denominator
-    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denominator
+    # p can land outside [0, 1] when k > n, a contradiction _gauge flags
+    # separately (e.g. sent_n > eligible_n). Clamped rather than guarded
+    # against, so a contradiction still yields a saturated interval instead
+    # of aborting the whole cohort recompute.
+    radicand = max(0.0, p * (1 - p) / n + z * z / (4 * n * n))
+    half = z * math.sqrt(radicand) / denominator
     return max(0.0, centre - half), min(1.0, centre + half)
 
 

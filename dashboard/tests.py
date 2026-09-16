@@ -696,6 +696,14 @@ class CohortTests(TestCase):
         self.assertEqual(wilson_interval(20, 20)[1], 1.0)
         self.assertEqual(wilson_interval(0, 0), (None, None))
 
+    def test_wilson_survives_a_numerator_above_the_denominator(self):
+        """sent_n > eligible_n is a real production contradiction (_gauge
+        flags it separately), not a hypothetical: it must not crash the
+        cohort recompute with a math domain error."""
+        low, high = wilson_interval(2, 1)
+        self.assertAlmostEqual(low, 0.8098239715658562, places=9)
+        self.assertAlmostEqual(high, 0.8098239715658562, places=9)
+
     def test_suppression_needs_participants_and_units(self):
         self.assertIsNone(suppress_rate(20, 40, 9))
         self.assertIsNone(suppress_rate(20, 29, 12))
