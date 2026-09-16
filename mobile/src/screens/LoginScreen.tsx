@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -77,6 +78,14 @@ export default function LoginScreen({ onGoToRegister }: Props) {
         <TouchableOpacity onPress={onGoToRegister} style={styles.link}>
           <Text style={styles.linkText}>Don't have an account? Register</Text>
         </TouchableOpacity>
+
+        <View style={styles.logoArea}>
+          <Image
+            source={require('../../assets/images/smashlab-logo.png')}
+            style={styles.logo}
+            resizeMode="contain"
+          />
+        </View>
       </View>
     </KeyboardAvoidingView>
   );
@@ -85,8 +94,25 @@ export default function LoginScreen({ onGoToRegister }: Props) {
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.surface },
   container: { flex: 1, padding: 24, paddingTop: 100 },
-  title: { ...typography.screenTitle, color: colors.primary, marginBottom: 8 },
-  titleAccent: { width: 36, height: 4, borderRadius: radius.pill, backgroundColor: colors.accent, marginBottom: 32 },
+  logoArea: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 24,
+  },
+  logo: {
+    width: 160,
+    aspectRatio: 896 / 820,
+  },
+  title: { ...typography.screenTitle, color: colors.primary, marginBottom: 8, textAlign: 'center' },
+  titleAccent: {
+    width: 36,
+    height: 4,
+    borderRadius: radius.pill,
+    backgroundColor: colors.accent,
+    alignSelf: 'center',
+    marginBottom: 32,
+  },
   input: {
     borderWidth: 1,
     borderColor: colors.border,
