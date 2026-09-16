@@ -4,6 +4,7 @@ from unittest.mock import patch, MagicMock
 from zoneinfo import ZoneInfo
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework.test import APIClient
 from rest_framework import status as http_status
 from django.contrib.auth.models import User as AuthUser
@@ -15,6 +16,7 @@ EASTERN = ZoneInfo('America/New_York')
 def eastern_today():
     return timezone.now().astimezone(EASTERN).date()
 
+from app.ema_catalog import EMA_RESPONSE_WINDOW_MINUTES
 from app.models import (
     CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog, PhoneTelemetry,
     StressSample, User, WearableDevice,
@@ -1537,9 +1539,75 @@ class JITAIReceiptEndpointTests(TestCase):
         self.assertEqual(self.log.receipt_app_state, 'foreground')
         self.assertIsNotNone(self.log.receipt_reported_at)
         self.assertEqual(response.data['jitai_log_id'], self.log.id)
+        self.assertIsNone(response.data['receipt_event_id'])
+        self.assertFalse(response.data['idempotent'])
         self.assertIsNotNone(response.data['delivery_latency_ms'])
         self.assertIsNotNone(response.data['server_observed_latency_ms'])
         self.assertIsNotNone(response.data['total_latency_ms'])
+
+    def test_post_records_receipt_event_id(self):
+        response = self.client.post('/jitai/receipt/', {
+            'jitai_log_id': self.log.id,
+            'receipt_event_id': 'receipt-abc-123',
+            'device_received_at': self.device_received_at.isoformat(),
+            'platform': 'ios',
+            'app_state': 'foreground',
+        }, format='json')
+
+        self.assertEqual(response.status_code, http_status.HTTP_200_OK)
+        self.log.refresh_from_db()
+        self.assertEqual(self.log.receipt_event_id, 'receipt-abc-123')
+        self.assertEqual(response.data['receipt_event_id'], 'receipt-abc-123')
+
+    def test_duplicate_receipt_does_not_overwrite_original_timestamps(self):
+        first = self.client.post('/jitai/receipt/', {
+            'jitai_log_id': self.log.id,
+            'receipt_event_id': 'receipt-abc-123',
+            'device_received_at': self.device_received_at.isoformat(),
+            'platform': 'ios',
+            'app_state': 'foreground',
+        }, format='json')
+        self.assertEqual(first.status_code, http_status.HTTP_200_OK)
+        self.log.refresh_from_db()
+        original_device_received_at = self.log.device_received_at
+        original_receipt_reported_at = self.log.receipt_reported_at
+
+        later_device_received_at = timezone.now().isoformat()
+        second = self.client.post('/jitai/receipt/', {
+            'jitai_log_id': self.log.id,
+            'receipt_event_id': 'receipt-abc-123',
+            'device_received_at': later_device_received_at,
+            'platform': 'android',
+            'app_state': 'background',
+        }, format='json')
+
+        self.assertEqual(second.status_code, http_status.HTTP_200_OK)
+        self.assertTrue(second.data['idempotent'])
+        self.log.refresh_from_db()
+        self.assertEqual(self.log.device_received_at, original_device_received_at)
+        self.assertEqual(self.log.receipt_reported_at, original_receipt_reported_at)
+        self.assertEqual(self.log.receipt_platform, 'ios')
+        self.assertEqual(self.log.receipt_app_state, 'foreground')
+
+    def test_receipt_event_id_cannot_be_reused_for_different_log(self):
+        other_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='other',
+            trigger_reason='manual test',
+        )
+        self.client.post('/jitai/receipt/', {
+            'jitai_log_id': self.log.id,
+            'receipt_event_id': 'receipt-abc-123',
+            'device_received_at': self.device_received_at.isoformat(),
+        }, format='json')
+
+        response = self.client.post('/jitai/receipt/', {
+            'jitai_log_id': other_log.id,
+            'receipt_event_id': 'receipt-abc-123',
+            'device_received_at': self.device_received_at.isoformat(),
+        }, format='json')
+
+        self.assertEqual(response.status_code, http_status.HTTP_409_CONFLICT)
 
     def test_post_without_auth_returns_401(self):
         response = APIClient().post('/jitai/receipt/', {
@@ -1974,20 +2042,18 @@ class EvaluateJITAITriggersTests(TestCase):
 
 class NotificationCatalogTests(TestCase):
 
-    def test_load_catalog_skips_retired_and_blank_id_rows(self):
+    def test_load_catalog_skips_blank_id_rows(self):
         import csv
         import tempfile
         from pathlib import Path
         from app.notification_service import _load_catalog
 
-        fieldnames = ['ID', 'Category', 'Trigger Condition', 'Notification Message', 'Tone', 'Goal Type', 'Flag']
+        fieldnames = ['ID', 'Trigger (emotional state)', 'Technique', 'Message shown to participant', 'Length', 'Context']
         rows = [
-            {'ID': 'X001', 'Category': 'Test', 'Trigger Condition': 'Survey',
-             'Notification Message': 'Real prompt', 'Tone': 'Calm', 'Goal Type': 'Test', 'Flag': ''},
-            {'ID': 'X002', 'Category': 'retired', 'Trigger Condition': 'retired',
-             'Notification Message': 'retired', 'Tone': 'retired', 'Goal Type': 'retired', 'Flag': ''},
-            {'ID': '', 'Category': 'Test', 'Trigger Condition': 'Survey',
-             'Notification Message': 'Blank id row', 'Tone': 'Calm', 'Goal Type': 'Test', 'Flag': ''},
+            {'ID': 'X001', 'Trigger (emotional state)': 'General stress', 'Technique': 'Test',
+             'Message shown to participant': 'Real prompt', 'Length': 'Short', 'Context': 'General'},
+            {'ID': '', 'Trigger (emotional state)': 'General stress', 'Technique': 'Test',
+             'Message shown to participant': 'Blank id row', 'Length': 'Short', 'Context': 'General'},
         ]
         with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -1999,24 +2065,240 @@ class NotificationCatalogTests(TestCase):
 
         self.assertEqual([p['id'] for p in catalog], ['X001'])
 
-    def test_select_prompt_returns_empty_when_ema_pool_empty(self):
+    def test_select_prompt_falls_back_to_general_pool_when_ema_is_none(self):
+        from app.notification_service import select_prompt, _GENERAL_FALLBACK_IDS
+
+        result = select_prompt(None)
+
+        self.assertEqual(result['matched_categories'], [])
+        self.assertEqual(result['category_drawn'], None)
+        self.assertEqual(result['fallback_reason'], 'no_category_matched')
+        self.assertIn(result['prompt_id'], _GENERAL_FALLBACK_IDS)
+
+    def test_live_catalog_loads_finalized_bank(self):
+        from app.notification_service import _CATALOG, _CONTROL_CATALOG, _EMA_CATALOG
+
+        self.assertEqual(len(_CATALOG), 30)
+        # P019 is real content in the finalized bank (real IRB numbering) —
+        # the old CSV's "P019 = retired" was an artifact of the old, mismatched
+        # ID scheme and no longer applies.
+        self.assertIn('P019', [p['id'] for p in _CATALOG])
+        self.assertEqual(len(_CONTROL_CATALOG), 4)
+        # Cyber-specific messages stay out of the reachable pool.
+        self.assertNotIn('P006', [p['id'] for p in _EMA_CATALOG])
+        self.assertNotIn('P008', [p['id'] for p in _EMA_CATALOG])
+        self.assertIn('P019', [p['id'] for p in _EMA_CATALOG])
+
+    def test_general_fallback_pool_matches_elianas_delivered_list(self):
+        from app.notification_service import _GENERAL_FALLBACK_IDS
+
+        # Eliana Bacal's curated general pool, delivered 2026-09-09 — locks
+        # in the exact set so an accidental catalog change doesn't silently
+        # alter the fallback pool without review.
+        self.assertEqual(set(_GENERAL_FALLBACK_IDS), {'P014', 'P016', 'P019', 'P021', 'P024'})
+        self.assertNotIn('P017', _GENERAL_FALLBACK_IDS)
+
+    def test_select_control_prompt_returns_empty_when_catalog_unpopulated(self):
         import app.notification_service as ns
 
-        saved = ns._EMA_CATALOG
-        ns._EMA_CATALOG = []
+        saved = ns._CONTROL_CATALOG
+        ns._CONTROL_CATALOG = []
         try:
-            chosen, pool = ns.select_prompt(None)
+            chosen, pool = ns.select_control_prompt()
         finally:
-            ns._EMA_CATALOG = saved
+            ns._CONTROL_CATALOG = saved
 
         self.assertEqual(chosen, '')
         self.assertEqual(pool, [])
 
-    def test_live_catalog_never_offers_retired_prompt_p019(self):
-        from app.notification_service import _CATALOG, _EMA_CATALOG
+    def test_select_control_prompt_draws_from_control_catalog(self):
+        import app.notification_service as ns
 
-        self.assertNotIn('P019', [p['id'] for p in _CATALOG])
-        self.assertNotIn('P019', [p['id'] for p in _EMA_CATALOG])
+        saved = ns._CONTROL_CATALOG
+        ns._CONTROL_CATALOG = [{'id': 'C001'}, {'id': 'C002'}]
+        try:
+            chosen, pool = ns.select_control_prompt()
+        finally:
+            ns._CONTROL_CATALOG = saved
+
+        self.assertIn(chosen, ['C001', 'C002'])
+        self.assertEqual(pool, ['C001', 'C002'])
+
+    def test_select_control_prompt_draws_from_real_catalog(self):
+        from app.notification_service import select_control_prompt
+
+        chosen, pool = select_control_prompt()
+
+        self.assertIn(chosen, ['C001', 'C002', 'C003', 'C004'])
+        self.assertEqual(set(pool), {'C001', 'C002', 'C003', 'C004'})
+
+
+class SelectPromptRoutingTests(TestCase):
+    """select_prompt() trigger-category routing, per Dr. Chang 2026-09-07."""
+
+    def setUp(self):
+        self.user = make_user(email='routing@test.com')
+
+    def _make_ema(self, responses):
+        ema = EMA.objects.create(user=self.user, prompt_id='test', status='completed')
+        for sub_item_id, value in responses.items():
+            kwargs = {'value_numeric': value} if isinstance(value, (int, float)) else (
+                {'value_choices': value} if isinstance(value, list) else {'value_choice': value}
+            )
+            EMAItemResponse.objects.create(
+                ema=ema, item_id=sub_item_id[:2], sub_item_id=sub_item_id,
+                response_type='likert', **kwargs,
+            )
+        return ema
+
+    def test_elevated_single_item_matches_its_category(self):
+        from app.notification_service import select_prompt
+
+        ema = self._make_ema({'B1_affect_angry': 4})
+        result = select_prompt(ema)
+
+        self.assertEqual(result['matched_categories'], ['High arousal / anger'])
+        self.assertEqual(result['category_drawn'], 'High arousal / anger')
+        self.assertIn(result['prompt_id'], ['P001', 'P009', 'P010', 'P013', 'P021', 'P023'])
+        self.assertEqual(result['evaluated_items']['B1_affect_angry'], 4)
+        self.assertIsNone(result['evaluated_items']['B2_stress'])
+
+    def test_below_cutoff_falls_back_to_general_pool(self):
+        from app.notification_service import select_prompt, _GENERAL_FALLBACK_IDS
+
+        ema = self._make_ema({'B1_affect_angry': 3})
+        result = select_prompt(ema)
+
+        self.assertEqual(result['matched_categories'], [])
+        self.assertEqual(result['category_drawn'], None)
+        self.assertEqual(result['fallback_reason'], 'no_category_matched')
+        self.assertIn(result['prompt_id'], _GENERAL_FALLBACK_IDS)
+
+    def test_interpersonal_conflict_requires_both_conditions(self):
+        from app.notification_service import select_prompt
+
+        bad_event_only = self._make_ema({'B2_notable_event': 'Something bad'})
+        result = select_prompt(bad_event_only)
+        self.assertEqual(result['matched_categories'], [])
+
+        both_conditions = self._make_ema({
+            'B2_notable_event': 'Something bad',
+            'B2_event_topic': ['Social or relationship'],
+        })
+        result = select_prompt(both_conditions)
+        self.assertEqual(result['matched_categories'], ['Interpersonal conflict'])
+        self.assertIn(result['prompt_id'], ['P003', 'P007', 'P015', 'P019'])
+
+    def test_bipolar_valence_matches_low_mood_at_low_end(self):
+        from app.notification_service import select_prompt
+
+        ema = self._make_ema({'B1_valence': 3})
+        result = select_prompt(ema)
+
+        self.assertEqual(result['matched_categories'], ['Low mood / withdrawal'])
+        # Only one reachable message in this category — deterministic.
+        self.assertEqual(result['prompt_id'], 'P017')
+
+    def test_never_routes_to_cyber_specific_messages(self):
+        from app.notification_service import select_prompt
+
+        ema = self._make_ema({'B7_urge': 7})
+        result = select_prompt(ema)
+
+        self.assertEqual(result['matched_categories'], ['Urge / craving'])
+        self.assertIn(result['prompt_id'], ['P020', 'P022'])
+        self.assertNotIn(result['prompt_id'], ['P006', 'P008'])
+
+    def test_excludes_recently_delivered_prompts(self):
+        from app.notification_service import select_prompt, _GENERAL_FALLBACK_IDS
+
+        ema = self._make_ema({'B1_valence': 2})
+        first = select_prompt(ema)
+        self.assertEqual(first['prompt_id'], 'P017')
+
+        second = select_prompt(ema, exclude_prompt_ids=['P017'])
+        # Low mood/withdrawal has only one reachable message — excluding it
+        # exhausts the (only) matched category, per Dr. Chang 2026-09-08:
+        # never skip the exclusion, fall through to the general pool instead.
+        self.assertEqual(second['matched_categories'], ['Low mood / withdrawal'])
+        self.assertIsNone(second['category_drawn'])
+        self.assertEqual(second['fallback_reason'], 'category_exhausted')
+        self.assertIn(second['prompt_id'], _GENERAL_FALLBACK_IDS)
+
+    def test_redraws_a_different_matched_category_when_one_is_exhausted(self):
+        from app.notification_service import select_prompt
+
+        # Both anger and low mood match; low mood's only message (P017) is
+        # excluded, but anger still has content — routing should redraw into
+        # anger rather than falling all the way through to the general pool.
+        ema = self._make_ema({'B1_affect_angry': 4, 'B1_valence': 2})
+        result = select_prompt(ema, exclude_prompt_ids=['P017'])
+
+        self.assertEqual(set(result['matched_categories']), {'High arousal / anger', 'Low mood / withdrawal'})
+        self.assertEqual(result['category_drawn'], 'High arousal / anger')
+        self.assertIn(result['prompt_id'], ['P001', 'P009', 'P010', 'P013', 'P021', 'P023'])
+        self.assertEqual(result['fallback_reason'], '')
+
+    def test_ema_none_evaluates_all_items_as_unavailable(self):
+        from app.notification_service import select_prompt
+
+        result = select_prompt(None)
+
+        self.assertTrue(all(v is None for v in result['evaluated_items'].values()))
+        self.assertEqual(result['matched_categories'], [])
+
+    def test_alcohol_severity_override_routes_to_p020(self):
+        from app.notification_service import select_prompt
+
+        male_user = make_user(email='male-drinker@test.com', gender='male')
+        ema = EMA.objects.create(user=male_user, prompt_id='test', status='completed')
+        EMAItemResponse.objects.create(
+            ema=ema, item_id='B6', sub_item_id='B6_drink_count',
+            response_type='number', value_numeric=5,
+        )
+
+        result = select_prompt(ema)
+
+        self.assertEqual(result['prompt_id'], 'P020')
+        self.assertEqual(result['category_drawn'], 'Urge / craving')
+        self.assertEqual(result['fallback_reason'], 'closest_fit')
+
+    def test_alcohol_severity_override_uses_gender_specific_threshold(self):
+        from app.notification_service import select_prompt
+
+        female_user = make_user(email='female-drinker@test.com', gender='female')
+        ema = EMA.objects.create(user=female_user, prompt_id='test', status='completed')
+        EMAItemResponse.objects.create(
+            ema=ema, item_id='B6', sub_item_id='B6_drink_count',
+            response_type='number', value_numeric=4,
+        )
+        # 4 drinks is over the women's threshold (>3) but not the men's (>4).
+        result = select_prompt(ema)
+        self.assertEqual(result['prompt_id'], 'P020')
+        self.assertEqual(result['fallback_reason'], 'closest_fit')
+
+        male_user = make_user(email='male-drinker-2@test.com', gender='male')
+        ema2 = EMA.objects.create(user=male_user, prompt_id='test', status='completed')
+        EMAItemResponse.objects.create(
+            ema=ema2, item_id='B6', sub_item_id='B6_drink_count',
+            response_type='number', value_numeric=4,
+        )
+        result2 = select_prompt(ema2)
+        self.assertNotEqual(result2['fallback_reason'], 'closest_fit')
+
+    def test_alcohol_severity_override_skipped_when_p020_recently_delivered(self):
+        from app.notification_service import select_prompt
+
+        user = make_user(email='drinker-excluded@test.com', gender='male')
+        ema = EMA.objects.create(user=user, prompt_id='test', status='completed')
+        EMAItemResponse.objects.create(
+            ema=ema, item_id='B6', sub_item_id='B6_drink_count',
+            response_type='number', value_numeric=6,
+        )
+
+        result = select_prompt(ema, exclude_prompt_ids=['P020'])
+
+        self.assertNotEqual(result['fallback_reason'], 'closest_fit')
 
 
 # ---------------------------------------------------------------------------
@@ -2151,6 +2433,11 @@ class SendJITAIPromptTests(TestCase):
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
 class SendCheckinRemindersTests(TestCase):
+    """6 fixed slots across the 9am-9pm Eastern notification window, 2 hours
+    apart: slot 0 = [9,11), 1 = [11,13), 2 = [13,15), 3 = [15,17), 4 = [17,19),
+    5 = [19,21). Each slot's reminder fires once, 30 min after it opens, and
+    lapses (no catch-up) once the slot's window closes. Confirmed by
+    Dr. Chang 2026-08-21."""
 
     def _make_enrolled_user(self, email='reminder@ufl.edu', push_token='ExponentPushToken[test123]'):
         user = make_user(email=email, push_token=push_token)
@@ -2159,32 +2446,30 @@ class SendCheckinRemindersTests(TestCase):
         WearableDevice.objects.create(user=user, labfront_participant_id=f'LF_{email}')
         return user
 
-    def _in_window_now(self):
-        return datetime(2026, 8, 20, 14, 0, 0, tzinfo=EASTERN)
-
-    def _out_of_window_now(self):
-        return datetime(2026, 8, 20, 3, 0, 0, tzinfo=EASTERN)
+    def _at(self, hour, minute=0):
+        return datetime(2026, 8, 20, hour, minute, 0, tzinfo=EASTERN)
 
     @patch('app.tasks.django_timezone.now')
     @patch('app.notification_service.PushClient')
-    def test_sends_reminder_and_logs_it(self, MockPushClient, mock_now):
+    def test_sends_reminder_for_due_slot_and_logs_it(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        mock_now.return_value = self._in_window_now()
+        mock_now.return_value = self._at(9, 35)  # 30 min after slot 0 opens
         MockPushClient.return_value.publish.return_value = MagicMock()
         user = self._make_enrolled_user()
 
         send_checkin_reminders()
 
-        self.assertEqual(CheckinReminder.objects.filter(user=user).count(), 1)
+        reminder = CheckinReminder.objects.get(user=user)
+        self.assertEqual(reminder.daily_count_at_send, 0)
         message = MockPushClient.return_value.publish.call_args[0][0]
         self.assertEqual(message.data['type'], 'checkin_reminder')
         self.assertEqual(message.title, 'REACT')
 
     @patch('app.tasks.django_timezone.now')
     @patch('app.notification_service.PushClient')
-    def test_skips_outside_waking_hours(self, MockPushClient, mock_now):
+    def test_skips_outside_notification_window(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        mock_now.return_value = self._out_of_window_now()
+        mock_now.return_value = self._at(3)
         user = self._make_enrolled_user()
 
         send_checkin_reminders()
@@ -2194,13 +2479,38 @@ class SendCheckinRemindersTests(TestCase):
 
     @patch('app.tasks.django_timezone.now')
     @patch('app.notification_service.PushClient')
-    def test_respects_cooldown(self, MockPushClient, mock_now):
+    def test_skips_slot_not_yet_due(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        now = self._in_window_now()
+        mock_now.return_value = self._at(9, 15)  # slot 0 open, but < 30 min in
+        user = self._make_enrolled_user()
+
+        send_checkin_reminders()
+
+        MockPushClient.return_value.publish.assert_not_called()
+        self.assertEqual(CheckinReminder.objects.filter(user=user).count(), 0)
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_skips_slot_already_completed(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        mock_now.return_value = self._at(9, 35)
+        user = self._make_enrolled_user()
+        ema = EMA.objects.create(user=user, prompt_id='p', ema_type='scheduled_check_in', status='completed')
+        EMA.objects.filter(pk=ema.pk).update(sent_at=self._at(9, 10))  # inside slot 0's window
+
+        send_checkin_reminders()
+
+        MockPushClient.return_value.publish.assert_not_called()
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_one_reminder_per_slot_no_repeat(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        now = self._at(9, 45)
         mock_now.return_value = now
         user = self._make_enrolled_user()
         reminder = CheckinReminder.objects.create(user=user, daily_count_at_send=0)
-        CheckinReminder.objects.filter(pk=reminder.pk).update(sent_at=now - timedelta(minutes=30))
+        CheckinReminder.objects.filter(pk=reminder.pk).update(sent_at=self._at(9, 35))
 
         send_checkin_reminders()
 
@@ -2209,29 +2519,12 @@ class SendCheckinRemindersTests(TestCase):
 
     @patch('app.tasks.django_timezone.now')
     @patch('app.notification_service.PushClient')
-    def test_sends_again_after_cooldown_elapses(self, MockPushClient, mock_now):
+    def test_reminder_lapses_after_slot_closes_no_catch_up(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        now = self._in_window_now()
-        mock_now.return_value = now
-        MockPushClient.return_value.publish.return_value = MagicMock()
+        # slot 0 closed at 11:00 with no reminder ever sent; slot 1's own
+        # window doesn't open until 11:30 — neither should fire at 11:05.
+        mock_now.return_value = self._at(11, 5)
         user = self._make_enrolled_user()
-        reminder = CheckinReminder.objects.create(user=user, daily_count_at_send=0)
-        CheckinReminder.objects.filter(pk=reminder.pk).update(sent_at=now - timedelta(minutes=121))
-
-        send_checkin_reminders()
-
-        self.assertEqual(CheckinReminder.objects.filter(user=user).count(), 2)
-
-    @patch('app.tasks.django_timezone.now')
-    @patch('app.notification_service.PushClient')
-    def test_skips_when_daily_cap_reached(self, MockPushClient, mock_now):
-        from app.tasks import send_checkin_reminders
-        now = self._in_window_now()
-        mock_now.return_value = now
-        user = self._make_enrolled_user()
-        for i in range(4):
-            ema = EMA.objects.create(user=user, prompt_id=f'p{i}', status='completed')
-            EMA.objects.filter(pk=ema.pk).update(sent_at=now)
 
         send_checkin_reminders()
 
@@ -2239,9 +2532,22 @@ class SendCheckinRemindersTests(TestCase):
 
     @patch('app.tasks.django_timezone.now')
     @patch('app.notification_service.PushClient')
+    def test_later_slot_reminds_independently_of_a_missed_earlier_one(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        mock_now.return_value = self._at(11, 35)  # slot 0 lapsed, slot 1 now due
+        MockPushClient.return_value.publish.return_value = MagicMock()
+        user = self._make_enrolled_user()
+
+        send_checkin_reminders()
+
+        reminder = CheckinReminder.objects.get(user=user)
+        self.assertEqual(reminder.daily_count_at_send, 1)
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
     def test_skips_during_active_jitai_outcome_window(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        now = self._in_window_now()
+        now = self._at(9, 35)
         mock_now.return_value = now
         user = self._make_enrolled_user()
         JITAILog.objects.create(
@@ -2257,7 +2563,7 @@ class SendCheckinRemindersTests(TestCase):
     @patch('app.notification_service.PushClient')
     def test_skips_without_push_token(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        mock_now.return_value = self._in_window_now()
+        mock_now.return_value = self._at(9, 35)
         self._make_enrolled_user(push_token='')
 
         send_checkin_reminders()
@@ -2268,7 +2574,7 @@ class SendCheckinRemindersTests(TestCase):
     @patch('app.notification_service.PushClient')
     def test_failed_send_does_not_log_reminder(self, MockPushClient, mock_now):
         from app.tasks import send_checkin_reminders
-        mock_now.return_value = self._in_window_now()
+        mock_now.return_value = self._at(9, 35)
         MockPushClient.return_value.publish.side_effect = Exception('network error')
         user = self._make_enrolled_user()
 
@@ -2434,6 +2740,26 @@ class EvaluateUserMRTTests(TestCase):
     @patch('app.tasks.send_jitai_prompt')
     @patch('app.tasks.apply_decision_rules')
     @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.8)
+    def test_eligible_prompt_ids_recorded_even_when_not_sent(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        # eligible_prompt_ids is an MRT analysis field — it must be recorded
+        # at every eligible decision point, not only ones that actually send.
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertFalse(log.send_prompt)
+        self.assertTrue(log.eligible_prompt_ids)
+        self.assertIsNone(log.message_arm)
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
     def test_ineligible_draw_is_none_and_status_not_sent(self, mock_mssd, mock_rules, mock_send):
         ema = self._latest_ema()
         mock_mssd.return_value = self._ineligible_df(ema)
@@ -2491,6 +2817,101 @@ class EvaluateUserMRTTests(TestCase):
 
         log = JITAILog.objects.get(user=self.user)
         self.assertEqual(log.randomization_probability, 0.4)
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', side_effect=[0.3, 0.2])
+    def test_coping_arm_drawn_and_logged(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        os.environ['JITAI_ARM_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.message_arm, 'coping')
+        self.assertEqual(log.arm_randomization_draw, 0.2)
+        self.assertEqual(log.arm_randomization_probability, 0.5)
+        self.assertNotEqual(log.prompt_id, '')
+        mock_send.assert_called_once()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', side_effect=[0.3, 0.8])
+    def test_control_arm_drawn_and_sent(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        os.environ['JITAI_ARM_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(user=self.user)
+        # Both draws are logged regardless of whether a message was actually
+        # sent — confirmed by Dr. Chang 2026-08-25, needed for the analysis.
+        self.assertEqual(log.message_arm, 'control')
+        self.assertEqual(log.arm_randomization_draw, 0.8)
+        self.assertEqual(log.arm_randomization_probability, 0.5)
+        # Control catalog is now populated (C001-C004, finalized bank) — the
+        # control arm actually sends.
+        self.assertTrue(log.send_prompt)
+        self.assertIn(log.prompt_id, ['C001', 'C002', 'C003', 'C004'])
+        self.assertIsNone(log.category_drawn)
+        mock_send.assert_called_once()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', side_effect=[0.3, 0.8])
+    def test_control_arm_not_sent_when_control_catalog_empty(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        import app.notification_service as ns
+
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        os.environ['JITAI_ARM_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        saved = ns._CONTROL_CATALOG
+        ns._CONTROL_CATALOG = []
+        try:
+            from app.tasks import _evaluate_user
+            _evaluate_user(self.user, 0.5)
+        finally:
+            ns._CONTROL_CATALOG = saved
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertEqual(log.message_arm, 'control')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.prompt_id, '')
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.8)
+    def test_arm_not_drawn_when_send_decision_is_no(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        os.environ['JITAI_RANDOMIZATION_PROBABILITY'] = '0.5'
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(user=self.user)
+        self.assertFalse(log.send_prompt)
+        self.assertIsNone(log.message_arm)
+        self.assertIsNone(log.arm_randomization_draw)
+        self.assertIsNone(log.arm_randomization_probability)
 
 
 class DecisionEngineEligibilityTests(TestCase):
@@ -2699,7 +3120,7 @@ class EMARotationEndpointTests(TestCase):
         self.assertFalse(data['outcome_window_active'])
         self.assertGreaterEqual(len(data['items']), 4)
 
-    def test_next_returns_post_prompt_items_during_outcome_window(self):
+    def test_next_returns_prompt_feedback_before_post_prompt_items(self):
         jitai_log = JITAILog.objects.create(
             user=self.user,
             prompt_id='JITAI-EMA-1',
@@ -2713,9 +3134,87 @@ class EMARotationEndpointTests(TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data['should_show'])
+        self.assertEqual(data['ema_type'], 'prompt_feedback')
+        self.assertEqual(data['jitai_log_id'], jitai_log.id)
+        self.assertEqual([item['item_id'] for item in data['items']], ['C0'])
+
+    def test_next_returns_post_prompt_items_during_outcome_window(self):
+        jitai_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='JITAI-EMA-1',
+            trigger_reason='test',
+            push_sent_at=timezone.now() - timedelta(minutes=10),
+            send_prompt=True,
+        )
+        EMA.objects.create(
+            user=self.user, prompt_id='EMA-C0-1', status='completed',
+            ema_type='prompt_feedback', source_jitai_log=jitai_log,
+        )
+
+        response = self.client.get('/ema/next/')
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data['should_show'])
         self.assertTrue(data['outcome_window_active'])
         self.assertEqual(data['jitai_log_id'], jitai_log.id)
         self.assertEqual([item['item_id'] for item in data['items']], ['B1', 'B2', 'B4', 'B5', 'B6', 'B7'])
+
+    def test_scheduled_check_in_advertises_response_window(self):
+        before = timezone.now()
+        data = self.client.get('/ema/next/').json()
+        after = timezone.now()
+
+        expires = parse_datetime(data['expires_at'])
+        self.assertGreaterEqual(expires, before + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
+        self.assertLessEqual(expires, after + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
+
+    def test_post_prompt_response_window_is_independent_of_outcome_window(self):
+        push_sent_at = timezone.now() - timedelta(minutes=10)
+        jitai_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='JITAI-EMA-WINDOW',
+            trigger_reason='test',
+            push_sent_at=push_sent_at,
+            send_prompt=True,
+        )
+        EMA.objects.create(
+            user=self.user, prompt_id='EMA-C0-WINDOW', status='completed',
+            ema_type='prompt_feedback', source_jitai_log=jitai_log,
+        )
+
+        before = timezone.now()
+        data = self.client.get('/ema/next/').json()
+        after = timezone.now()
+
+        # The response window is 30 minutes from now; the outcome window stays
+        # 2 hours from the push. Aliasing the two is the bug this guards.
+        expires = parse_datetime(data['expires_at'])
+        self.assertGreaterEqual(expires, before + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
+        self.assertLessEqual(expires, after + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
+
+        outcome_end = parse_datetime(data['outcome_window_end'])
+        self.assertEqual(outcome_end, push_sent_at + timedelta(hours=2))
+        self.assertLess(expires, outcome_end)
+
+    def test_submitted_ema_persists_response_window(self):
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-WINDOW-PERSIST',
+            'ema_type': 'scheduled_check_in',
+            'responses': [
+                {'sub_item_id': 'B1_valence', 'value': 4},
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        ema = EMA.objects.get(prompt_id='EMA-WINDOW-PERSIST')
+        # Previously NULL for scheduled check-ins: expires_at was read from the
+        # client-supplied outcome_window_end, which these never carry.
+        self.assertIsNotNone(ema.expires_at)
+        # Within a second: sent_at is auto_now_add and so fires marginally after
+        # the `now` that expires_at is derived from.
+        window = (ema.expires_at - ema.sent_at).total_seconds()
+        self.assertAlmostEqual(window, EMA_RESPONSE_WINDOW_MINUTES * 60, delta=1.0)
 
     def test_submit_variable_ema_responses(self):
         response = self.client.post('/ema/responses/', {
@@ -2746,6 +3245,47 @@ class EMARotationEndpointTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn('responses', response.json())
+
+    def test_submit_prompt_feedback_answered(self):
+        jitai_log = JITAILog.objects.create(
+            user=self.user, prompt_id='JITAI-EMA-C0', trigger_reason='test',
+            push_sent_at=timezone.now(), send_prompt=True,
+        )
+
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-C0-1',
+            'ema_type': 'prompt_feedback',
+            'jitai_log_id': jitai_log.id,
+            'responses': [
+                {'sub_item_id': 'C0_helpful', 'value': 'Somewhat'},
+                {'sub_item_id': 'C0_behavior_change', 'value': 'I paused or waited'},
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+        self.assertEqual(data['status'], 'completed')
+        self.assertIsNotNone(data['responded_at'])
+        self.assertEqual(len(data['item_responses']), 2)
+
+    def test_submit_prompt_feedback_dismissed_is_recorded_as_missing(self):
+        jitai_log = JITAILog.objects.create(
+            user=self.user, prompt_id='JITAI-EMA-C0', trigger_reason='test',
+            push_sent_at=timezone.now(), send_prompt=True,
+        )
+
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-C0-1',
+            'ema_type': 'prompt_feedback',
+            'jitai_log_id': jitai_log.id,
+            'responses': [],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+        self.assertEqual(data['status'], 'dismissed')
+        self.assertIsNone(data['responded_at'])
+        self.assertEqual(len(data['item_responses']), 0)
 
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
@@ -2914,3 +3454,85 @@ class EMAScheduledItemSelectionTests(TestCase):
 
         self.assertIn('B6', [item['item_id'] for item in data['items']])
         self.assertNotIn('B6_plan', self._b6_sub_item_ids(data))
+
+
+class EnrollForNotificationsTests(TestCase):
+    def test_sets_enrollment_and_creates_active_wearable(self):
+        from app.admin import enroll_user_for_notifications
+
+        user = make_user(email='enroll-me@example.com')
+        device, created = enroll_user_for_notifications(user)
+        user.refresh_from_db()
+
+        self.assertTrue(user.is_enrolled)
+        self.assertIsNotNone(user.enrolled_at)
+        self.assertTrue(created)
+        self.assertTrue(device.is_active)
+        self.assertEqual(device.labfront_participant_id, f'TEST-{user.user_id}')
+
+    def test_reactivates_existing_wearable_without_replacing_labfront_id(self):
+        from app.admin import enroll_user_for_notifications
+
+        user = make_user(email='already-wearable@example.com')
+        existing = WearableDevice.objects.create(
+            user=user,
+            labfront_participant_id='LABFRONT-REAL',
+            is_active=False,
+        )
+        enrolled_at = timezone.now() - timedelta(days=3)
+        user.is_enrolled = False
+        user.enrolled_at = enrolled_at
+        user.save(update_fields=['is_enrolled', 'enrolled_at'])
+
+        device, created = enroll_user_for_notifications(user)
+        user.refresh_from_db()
+        existing.refresh_from_db()
+
+        self.assertTrue(user.is_enrolled)
+        self.assertEqual(user.enrolled_at, enrolled_at)
+        self.assertFalse(created)
+        self.assertEqual(device.pk, existing.pk)
+        self.assertTrue(existing.is_active)
+        self.assertEqual(existing.labfront_participant_id, 'LABFRONT-REAL')
+
+
+class UserAdminEnrollActionTests(TestCase):
+    def setUp(self):
+        from django.urls import reverse
+
+        self.staff = AuthUser.objects.create_superuser(
+            'admin',
+            'admin@example.com',
+            'adminpass123',
+        )
+        self.client.force_login(self.staff)
+        self.user = make_user(email='admin-enroll@example.com')
+        self.changelist = reverse('admin:app_user_changelist')
+        self.change_url = reverse('admin:app_user_change', args=[self.user.user_id])
+        self.enroll_url = reverse('admin:app_user_enroll_notifications', args=[self.user.user_id])
+
+    def test_changelist_action_enrolls_selected_user(self):
+        response = self.client.post(self.changelist, {
+            'action': 'enroll_for_notifications',
+            'index': 0,
+            '_selected_action': [str(self.user.pk)],
+        }, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_enrolled)
+        self.assertTrue(WearableDevice.objects.filter(user=self.user, is_active=True).exists())
+
+    def test_user_page_button_enrolls_that_user(self):
+        response = self.client.post(self.enroll_url, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_enrolled)
+        self.assertTrue(WearableDevice.objects.filter(user=self.user, is_active=True).exists())
+
+    def test_change_form_shows_enroll_button(self):
+        response = self.client.get(self.change_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Enroll for notifications')
+        self.assertContains(response, self.enroll_url)

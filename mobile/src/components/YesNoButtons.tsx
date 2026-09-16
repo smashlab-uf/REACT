@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { colors, radius, typography } from '../theme';
 
 type Props = {
   label: string;
@@ -39,18 +40,18 @@ export default function YesNoButtons({
 
 const styles = StyleSheet.create({
   container: { marginBottom: 28 },
-  label: { fontSize: 16, fontWeight: '600', color: '#111', marginBottom: 12 },
+  label: { ...typography.label, marginBottom: 12 },
   row: { flexDirection: 'row', gap: 10 },
   button: {
     flex: 1,
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 10,
+    borderColor: colors.border,
+    borderRadius: radius.md,
     paddingVertical: 14,
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: colors.surface,
   },
-  buttonSelected: { backgroundColor: '#007AFF', borderColor: '#007AFF' },
-  buttonText: { fontSize: 16, color: '#444', fontWeight: '600' },
+  buttonSelected: { backgroundColor: colors.accent, borderColor: colors.accent },
+  buttonText: { fontSize: 16, color: colors.textSecondary, fontWeight: '600' },
   buttonTextSelected: { color: '#fff' },
 });

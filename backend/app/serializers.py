@@ -91,10 +91,13 @@ class EMASerializer(serializers.ModelSerializer):
         fields = [
             'id', 'user', 'prompt_id', 'sent_at', 'responded_at', 'status',
             'ema_type', 'source_jitai_log', 'outcome_window_start',
-            'outcome_window_end', 'expires_at', 'mood', 'stress', 'energy',
-            'item_responses',
+            'outcome_window_end', 'expires_at', 'served_sub_item_ids',
+            'mood', 'stress', 'energy', 'item_responses',
         ]
-        read_only_fields = ('id', 'sent_at', 'user', 'responded_at', 'status')
+        read_only_fields = (
+            'id', 'sent_at', 'user', 'responded_at', 'status', 'expires_at',
+            'served_sub_item_ids',
+        )
         extra_kwargs = {
             'mood':   {'min_value': 1, 'max_value': 7},
             'stress': {'min_value': 1, 'max_value': 7},
@@ -109,18 +112,21 @@ class JITAILogSerializer(serializers.ModelSerializer):
             'id', 'user', 'prompt_id', 'triggered_at', 'trigger_reason',
             'hr_at_trigger', 'stress_at_trigger', 'ema', 'observed_mssd',
             'decision_point_id', 'randomization_probability', 'randomization_draw',
+            'message_arm', 'arm_randomization_probability', 'arm_randomization_draw',
             'send_prompt', 'status', 'decision_made_at', 'push_sent_at',
-            'device_received_at', 'receipt_reported_at', 'delivery_status',
-            'delivery_error', 'receipt_platform', 'receipt_app_state',
+            'device_received_at', 'receipt_reported_at', 'receipt_event_id',
+            'delivery_status', 'delivery_error', 'receipt_platform', 'receipt_app_state',
             'send_prompt', 'status',
             'trigger_signal', 'ema_mood', 'ema_stress', 'ema_energy',
-            'eligible_prompt_ids',
+            'eligible_prompt_ids', 'evaluated_items', 'matched_categories',
+            'category_drawn', 'fallback_reason',
         ]
         read_only_fields = ('id', 'triggered_at')
 
 
 class JITAIReceiptSerializer(serializers.Serializer):
     jitai_log_id = serializers.IntegerField()
+    receipt_event_id = serializers.CharField(max_length=64, required=False, allow_blank=True)
     device_received_at = serializers.DateTimeField()
     platform = serializers.CharField(max_length=16, required=False, allow_blank=True)
     app_state = serializers.CharField(max_length=32, required=False, allow_blank=True)
@@ -290,6 +296,19 @@ class EMAResponseSubmitSerializer(serializers.Serializer):
     jitai_log_id = serializers.IntegerField(required=False, allow_null=True)
     outcome_window_start = serializers.DateTimeField(required=False, allow_null=True)
     outcome_window_end = serializers.DateTimeField(required=False, allow_null=True)
+    # What the client was actually shown, echoed back from /ema/next/. Optional:
+    # the server recomputes the same set when a client does not send it.
+    served_sub_item_ids = serializers.ListField(
+        child=serializers.CharField(max_length=32), required=False, allow_null=True,
+    )
+
+    def validate_served_sub_item_ids(self, value):
+        if value is None:
+            return value
+        unknown = [sub_id for sub_id in value if sub_id not in EMA_SUB_ITEM_INDEX]
+        if unknown:
+            raise serializers.ValidationError(f'unknown sub_item_id values: {unknown}')
+        return list(dict.fromkeys(value))
 
     def validate_responses(self, value):
         sub_item_ids = [item['sub_item_id'] for item in value]

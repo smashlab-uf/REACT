@@ -1,0 +1,13 @@
+{% extends "admin/change_form.html" %}
+
+{% block object-tools-items %}
+{% if original and original.pk %}
+<li>
+  <form method="post" action="{% url 'admin:app_user_enroll_notifications' original.pk %}">
+    {% csrf_token %}
+    <button type="submit">Enroll for notifications</button>
+  </form>
+</li>
+{% endif %}
+{{ block.super }}
+{% endblock %}

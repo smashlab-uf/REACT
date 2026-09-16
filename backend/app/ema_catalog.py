@@ -147,6 +147,18 @@ EMA_ITEM_BANK = {
             _yes_no('B8_caffeine', 'Did you consume caffeine or energy drinks today?'),
         ],
     },
+    # Per REACT_IRB01_StudyTeam_Measures_v2.docx Part 2 — shown right after
+    # any delivered prompt, coping or active-control. Dismissing without
+    # answering is recorded as missing, not as a negative answer (see the
+    # 'dismissed' EMA status).
+    'C0': {
+        'title': 'Quick rating',
+        'sub_items': [
+            _single('C0_helpful', 'Was this message helpful right now?', ['Yes', 'Somewhat', 'No']),
+            _single('C0_behavior_change', 'Did it change what you did next?',
+                    ['I paused or waited', 'I changed what I was going to do', 'Nothing different', 'It did not fit the moment']),
+        ],
+    },
 }
 
 EMA_SUB_ITEM_INDEX = {
@@ -157,9 +169,81 @@ EMA_SUB_ITEM_INDEX = {
 
 POST_PROMPT_ITEM_IDS = ['B1', 'B2', 'B4', 'B5', 'B6', 'B7']
 ROTATING_ITEM_IDS = ['B4', 'B5', 'B6', 'B7']
+PROMPT_FEEDBACK_ITEM_IDS = ['C0']
+
+# Routing-trigger cutoffs, confirmed by Dr. Chang 2026-09-07: scale midpoint + 1.
+# 7-point items route at >=5, 5-point items route at >=4, B1_valence (bipolar,
+# 1=very negative..7=very positive) routes low mood at <=3. A category matches
+# if ANY one of its inner condition-groups is fully satisfied; each inner group
+# is itself an AND of its conditions (only Interpersonal conflict has more than
+# one condition per group, since it's inherently categorical, not a policy of
+# requiring multiple signals — see Papers/REACT_Routing_Rules_v1_2026-09-07.docx).
+# A sub_item with no value in the triggering check-in (rotation) never
+# satisfies a condition — "not available" is not "below threshold".
+def _gte(value, threshold):
+    return value is not None and value >= threshold
+
+
+def _lte(value, threshold):
+    return value is not None and value <= threshold
+
+
+def _eq(value, threshold):
+    return value == threshold
+
+
+def _contains(value, threshold):
+    return isinstance(value, list) and threshold in value
+
+
+ROUTING_TRIGGER_RULES = {
+    'High arousal / anger': [
+        [('B1_affect_angry', _gte, 4)],
+    ],
+    'High arousal / anxiety': [
+        [('B1_affect_anxious', _gte, 4)],
+    ],
+    'Interpersonal conflict': [
+        [('B2_notable_event', _eq, 'Something bad'), ('B2_event_topic', _contains, 'Social or relationship')],
+    ],
+    'General stress': [
+        [('B2_stress', _gte, 5)],
+    ],
+    'Urge / craving': [
+        [('B7_urge', _gte, 5)],
+        [('B6_urge', _gte, 5)],
+        [('B4_urge', _gte, 5)],
+    ],
+    'Low mood / withdrawal': [
+        [('B1_valence', _lte, 3)],
+        [('B1_affect_sad', _gte, 4)],
+    ],
+}
+
+# All sub-items any routing rule reads — used to build the 'evaluated_items'
+# snapshot (value if present in the triggering check-in, null if not).
+ROUTING_SUB_ITEM_IDS = sorted({
+    sub_item_id
+    for groups in ROUTING_TRIGGER_RULES.values()
+    for group in groups
+    for sub_item_id, _, _ in group
+})
 EVENING_CHECK_IN_HOUR = 20
 AFTERNOON_START_HOUR = 12
-EMA_DAILY_CHECK_IN_CAP = 4
+
+# Two distinct caps, confirmed by Dr. Chang 2026-08-21 — do not merge them.
+# SCHEDULED governs the B1-B8 rotation check-ins spread through the day.
+# POST_PROMPT governs the JITAI-triggered outcome-window check-ins (both the
+# 'post_prompt' type and the inserted 'extra_check_in' type share this cap).
+SCHEDULED_CHECK_IN_DAILY_CAP = 6
+POST_PROMPT_CHECK_IN_DAILY_CAP = 4
+
+# How long a participant has to answer a prompt before it closes
+# (analytics/analysis-resources/JITAI-analysis-plan.md). Distinct from the two durations
+# it is easily confused with: the 60-minute JITAI refractory between sent
+# prompts (decision_engine.apply_decision_rules) and the 2-hour post-prompt
+# outcome window (views.OUTCOME_WINDOW_HOURS).
+EMA_RESPONSE_WINDOW_MINUTES = 30
 
 
 def ema_items(item_ids):

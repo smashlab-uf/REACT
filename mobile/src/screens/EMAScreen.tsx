@@ -1,27 +1,40 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
+  LayoutAnimation,
   Modal,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
+  UIManager,
   View,
 } from 'react-native';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+const HEADER_TITLE_SWAP = LayoutAnimation.create(180, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity);
+const STICK_THRESHOLD = 12;
 import EMASubItemField from '../components/EMASubItemField';
 import { ema as emaApi, telemetry } from '../api/endpoints';
 import { EMAAnswerValue, EMAItem, EMANextShowResponse, EMASubItem } from '../api/types';
 import { isAnswered, isSubItemVisible, pruneHiddenAnswers, visibleSubItems } from '../ema/visibility';
 import { useAuthStore } from '../store/authStore';
+import { useAlertStore } from '../store/alertStore';
 import { log } from '../utils/logger';
+import { colors, radius, typography } from '../theme';
 
 const NO_SHOW_COPY: Record<string, string> = {
-  daily_cap_reached: 'You have completed all of your check-ins for today.',
-  outcome_window_already_completed: 'You have already completed this check-in.',
+  daily_cap_reached: "You're all caught up on check-ins for today. Thanks for taking part!",
+  outcome_window_already_completed: "You've already completed this check-in. Thank you!",
 };
 
-const NO_SHOW_FALLBACK = 'There is no check-in for you right now.';
+const NO_SHOW_FALLBACK = "You're all caught up! There's no check-in for you right now.";
 
 const MAX_TIMEOUT_MS = 2147483647;
 
@@ -45,12 +58,15 @@ function isSupported(sub: EMASubItem) {
 
 export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
   const userId = useAuthStore((s) => s.userId);
+  const showAlert = useAlertStore((s) => s.show);
 
   const [phase, setPhase] = useState<Phase>('loading');
   const [survey, setSurvey] = useState<EMANextShowResponse | null>(null);
   const [noShowReason, setNoShowReason] = useState<string | null>(null);
   const [answers, setAnswers] = useState<Record<string, EMAAnswerValue>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [activeSectionTitle, setActiveSectionTitle] = useState<string | null>(null);
+  const sectionOffsets = useRef<Record<string, number>>({});
 
   const items = survey?.items ?? [];
   const visibleItems = visibleSubItems(items, answers).filter(isSupported);
@@ -80,6 +96,8 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     setNoShowReason(null);
     setAnswers({});
     setSubmitting(false);
+    setActiveSectionTitle(null);
+    sectionOffsets.current = {};
 
     try {
       const { data } = await emaApi.next();
@@ -123,6 +141,24 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     return () => clearTimeout(timer);
   }, [phase, survey]);
 
+  function handleScroll(e: NativeSyntheticEvent<NativeScrollEvent>) {
+    const scrollY = e.nativeEvent.contentOffset.y;
+    let next: string | null = null;
+    for (const item of items) {
+      const y = sectionOffsets.current[item.item_id];
+      if (y === undefined) continue;
+      if (scrollY + STICK_THRESHOLD >= y) {
+        next = item.title;
+      } else {
+        break;
+      }
+    }
+    if (next !== activeSectionTitle) {
+      LayoutAnimation.configureNext(HEADER_TITLE_SWAP);
+      setActiveSectionTitle(next);
+    }
+  }
+
   function setAnswer(subItemId: string, value: EMAAnswerValue) {
     setAnswers((prev) => pruneHiddenAnswers(items, { ...prev, [subItemId]: value }));
   }
@@ -154,7 +190,7 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     } catch (e: any) {
       const status = e?.response?.status;
       log('[EMA] submit failed:', status, e?.response?.data);
-      Alert.alert(
+      showAlert(
         'Could not submit',
         status === 400 || status === 404
           ? 'This check-in is no longer valid. Close and try again later.'
@@ -209,7 +245,12 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     }
 
     return (
-      <View key={item.item_id} style={styles.section}>
+      <View
+        key={item.item_id}
+        style={styles.section}
+        onLayout={(e) => {
+          sectionOffsets.current[item.item_id] = e.nativeEvent.layout.y;
+        }}>
         <Text style={styles.sectionTitle}>{item.title}</Text>
         {blocks}
       </View>
@@ -220,7 +261,7 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     if (phase === 'loading') {
       return (
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color="#007AFF" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       );
     }
@@ -240,7 +281,7 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     if (phase === 'noshow') {
       return (
         <View style={styles.centered}>
-          <Text style={styles.messageTitle}>Nothing to do right now</Text>
+          <Text style={styles.messageTitle}>You're all caught up!</Text>
           <Text style={styles.messageBody}>
             {(noShowReason && NO_SHOW_COPY[noShowReason]) ?? NO_SHOW_FALLBACK}
           </Text>
@@ -253,20 +294,18 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
         <View style={styles.centered}>
           <Text style={styles.messageTitle}>This check-in has closed</Text>
           <Text style={styles.messageBody}>
-            The response window has passed. You will be prompted again later.
+            The response window has passed. We'll check in with you again soon.
           </Text>
         </View>
       );
     }
 
     return (
-      <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-        {typeof survey?.daily_cap === 'number' && (
-          <Text style={styles.progress}>
-            Check-in {survey.daily_count + 1} of {survey.daily_cap}
-          </Text>
-        )}
-
+      <ScrollView
+        contentContainerStyle={styles.body}
+        keyboardShouldPersistTaps="handled"
+        onScroll={handleScroll}
+        scrollEventThrottle={16}>
         {survey?.outcome_window_active && (
           <Text style={styles.windowNote}>Follow-up check-in</Text>
         )}
@@ -280,9 +319,27 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={handleDismiss}>
       <View style={styles.container}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={handleDismiss} style={styles.close} accessibilityLabel="Dismiss survey">
-            <Text style={styles.closeText}>✕</Text>
-          </TouchableOpacity>
+          <View style={styles.headerSide} />
+
+          <View style={styles.headerCenter}>
+            <Text
+              key={activeSectionTitle ?? 'default'}
+              style={activeSectionTitle ? styles.headerActiveTitle : styles.headerTitle}
+              numberOfLines={1}>
+              {activeSectionTitle ?? 'Check-in'}
+            </Text>
+            {!activeSectionTitle && phase === 'form' && typeof survey?.daily_cap === 'number' && (
+              <Text style={styles.progressPillText}>
+                {survey.daily_count + 1} of {survey.daily_cap}
+              </Text>
+            )}
+          </View>
+
+          <View style={[styles.headerSide, styles.headerSideRight]}>
+            <TouchableOpacity onPress={handleDismiss} style={styles.close} accessibilityLabel="Dismiss survey">
+              <Text style={styles.closeText}>✕</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {renderBody()}
@@ -317,29 +374,57 @@ function msUntil(iso: string | null | undefined) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff', paddingTop: 60 },
-  header: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 16 },
+  container: { flex: 1, backgroundColor: colors.surface },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    paddingTop: 60,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    borderBottomWidth: 3,
+    borderBottomColor: colors.accent,
+  },
+  headerSide: { flex: 1 },
+  headerSideRight: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 10 },
+  headerCenter: { flex: 2, alignItems: 'center' },
+  headerTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.75)',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  headerActiveTitle: { fontSize: 17, fontWeight: '700', color: colors.onPrimary },
+  progressPill: {
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: radius.pill,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  progressPillText: { fontSize: 13, fontWeight: '700', color: colors.onPrimary },
   close: { padding: 8 },
-  closeText: { fontSize: 20, color: '#888' },
-  body: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: 24 },
+  closeText: { fontSize: 20, color: colors.onPrimary },
+  body: { paddingHorizontal: 24, paddingTop: 20, paddingBottom: 24 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 },
-  progress: { fontSize: 13, color: '#888', fontWeight: '600', marginBottom: 8 },
-  windowNote: { fontSize: 13, color: '#007AFF', fontWeight: '600', marginBottom: 20 },
+  windowNote: { fontSize: 13, color: colors.primary, fontWeight: '600', marginBottom: 20 },
   section: { marginBottom: 12 },
-  sectionTitle: { fontSize: 20, fontWeight: '700', color: '#111', marginBottom: 16 },
+  sectionTitle: { ...typography.heading, marginBottom: 20 },
   group: { marginBottom: 8 },
-  groupText: { fontSize: 16, fontWeight: '600', color: '#111', marginBottom: 12 },
-  messageTitle: { fontSize: 18, fontWeight: '700', color: '#111', marginBottom: 8, textAlign: 'center' },
-  messageBody: { fontSize: 15, color: '#666', textAlign: 'center', lineHeight: 21 },
+  groupText: { ...typography.label, marginBottom: 12 },
+  messageTitle: { fontSize: 20, fontWeight: '700', color: colors.textPrimary, marginBottom: 8, textAlign: 'center' },
+  messageBody: { ...typography.body, textAlign: 'center', lineHeight: 21 },
   retry: { marginTop: 20, paddingVertical: 10, paddingHorizontal: 24 },
-  retryText: { fontSize: 16, color: '#007AFF', fontWeight: '600' },
+  retryText: { fontSize: 16, color: colors.primary, fontWeight: '600' },
   footer: { paddingHorizontal: 24, paddingBottom: 40, paddingTop: 8 },
   submit: {
-    backgroundColor: '#007AFF',
-    borderRadius: 10,
+    backgroundColor: colors.primary,
+    borderRadius: radius.md,
     padding: 16,
     alignItems: 'center',
   },
-  submitDisabled: { backgroundColor: '#b8b8b8' },
+  submitDisabled: { backgroundColor: colors.disabled },
   submitText: { color: '#fff', fontSize: 16, fontWeight: '600' },
 });

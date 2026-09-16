@@ -21,6 +21,9 @@ venv/
 # Ignore environment variables
 .env
 
+# Synthetic DAta
+*.csv
+
 # Ignore staticfiles directory
 /staticfiles
 

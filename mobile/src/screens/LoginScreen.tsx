@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -12,11 +11,14 @@ import {
 } from 'react-native';
 import { auth } from '../api/endpoints';
 import { useAuthStore } from '../store/authStore';
+import { useAlertStore } from '../store/alertStore';
+import { colors, radius, typography } from '../theme';
 
 type Props = { onGoToRegister: () => void };
 
 export default function LoginScreen({ onGoToRegister }: Props) {
   const login = useAuthStore((s) => s.login);
+  const showAlert = useAlertStore((s) => s.show);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -24,7 +26,7 @@ export default function LoginScreen({ onGoToRegister }: Props) {
 
   async function handleLogin() {
     if (!email || !password) {
-      Alert.alert('Error', 'Please enter your email and password.');
+      showAlert('Error', 'Please enter your email and password.');
       return;
     }
 
@@ -34,7 +36,7 @@ export default function LoginScreen({ onGoToRegister }: Props) {
       const { access, refresh, data } = res.data;
       await login(access, refresh, data);
     } catch (err: any) {
-      Alert.alert('Login failed', 'Invalid email or password.');
+      showAlert('Login failed', 'Invalid email or password.');
     } finally {
       setLoading(false);
     }
@@ -45,7 +47,8 @@ export default function LoginScreen({ onGoToRegister }: Props) {
       style={styles.flex}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.container}>
-        <Text style={styles.title}>Welcome Back</Text>
+        <Text style={styles.title}>Welcome</Text>
+        <View style={styles.titleAccent} />
 
         <TextInput
           style={styles.input}
@@ -80,26 +83,27 @@ export default function LoginScreen({ onGoToRegister }: Props) {
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: '#fff' },
+  flex: { flex: 1, backgroundColor: colors.surface },
   container: { flex: 1, padding: 24, paddingTop: 100 },
-  title: { fontSize: 28, fontWeight: '700', marginBottom: 32, color: '#111' },
+  title: { ...typography.screenTitle, color: colors.primary, marginBottom: 8 },
+  titleAccent: { width: 36, height: 4, borderRadius: radius.pill, backgroundColor: colors.accent, marginBottom: 32 },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 10,
+    borderColor: colors.border,
+    borderRadius: radius.md,
     padding: 14,
     fontSize: 16,
     marginBottom: 14,
-    color: '#111',
+    color: colors.textPrimary,
   },
   btn: {
-    backgroundColor: '#007AFF',
-    borderRadius: 10,
+    backgroundColor: colors.primary,
+    borderRadius: radius.md,
     padding: 16,
     alignItems: 'center',
     marginTop: 8,
   },
   btnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   link: { marginTop: 24, alignItems: 'center' },
-  linkText: { color: '#007AFF', fontSize: 15 },
+  linkText: { color: colors.primary, fontSize: 15 },
 });

@@ -14,7 +14,32 @@ def numbered(prefix: str, count: int) -> tuple[str, ...]:
     )
 
 
+PARTICIPANT_ID = "participant_id"
+
+
 # A1. Demographics
+# Not scored, only preserved. GENDER is the exception: the AUDIT-C staff-alert
+# threshold is 4 for Man and 3 for everyone else, so scoring reads this column.
+AGE = "age"
+GENDER = "gender"
+RACE_ETHNICITY = "race_ethnicity"
+YEAR_IN_SCHOOL = "year_in_school"
+MAJOR = "major"
+LIVING_SITUATION = "living_situation"
+HEIGHT = "height"
+WEIGHT = "weight"
+
+DEMOGRAPHICS = (
+    AGE,
+    GENDER,
+    RACE_ETHNICITY,
+    YEAR_IN_SCHOOL,
+    MAJOR,
+    LIVING_SITUATION,
+    HEIGHT,
+    WEIGHT,
+)
+
 MACARTHUR = (
     "macarthur_community",
     "macarthur_us",
@@ -65,7 +90,7 @@ SUPPS = (
 )
 
 # Negative urgency, sensation seeking, and positive urgency
-# are reverse-coded; to be reverse coded later in scoring.py
+# are reverse-coded; reverse-coded in scoring.py's score_supps.
 SUPPS_REVERSE = (
     SUPPS_NEGATIVE_URGENCY
     + SUPPS_SENSATION_SEEKING
@@ -180,6 +205,15 @@ PROMIS_SLEEP = numbered(
     4,
 )
 
+# "My sleep quality was" and "My sleep was refreshing" are worded toward good
+# sleep, so they are reversed to make high mean more disturbance. Store the raw
+# 1-5 the participant saw and reverse once here; the codebook prints these two
+# items with their values already flipped, and reversing those would flip twice.
+PROMIS_SLEEP_REVERSE = (
+    "promis_sleep_1",
+    "promis_sleep_2",
+)
+
 
 # A10. TFEQ-R18
 TFEQ_COGNITIVE_RESTRAINT = numbered(
@@ -203,10 +237,10 @@ TFEQ = (
     + TFEQ_EMOTIONAL_EATING
 )
 
-# This is the one item originally answered from 1 to 8.
-TFEQ_RESTRAINT_1_TO_8 = (
-    "tfeq_cognitive_restraint_6"
-)
+# This is the one item originally answered from 1 to 8. A single column name,
+# not a tuple: the parentheses it used to carry had no trailing comma, so it was
+# a plain string that iterated character by character.
+TFEQ_RESTRAINT_1_TO_8 = "tfeq_cognitive_restraint_6"
 
 
 # A11. MAIA-2
@@ -281,7 +315,6 @@ HUNGER_VITAL_SIGN = numbered(
     2,
 )
 
-# !!! NO CALCULATED SCORE FOR ASRS YET in scoring.py !!!
 ASRS = numbered(
     "asrs",
     6,
@@ -347,4 +380,9 @@ ALL_SCORING_COLUMNS = (
     + ACE
 )
 
-# test commit 2
+
+# Carried through to the output untouched. The codebook scores neither.
+ALL_PRESERVED_COLUMNS = (
+    DEMOGRAPHICS
+    + DIGITAL_HABITS
+)

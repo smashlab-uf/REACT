@@ -1,5 +1,4 @@
 import logging
-import os
 import random
 from datetime import timedelta
 
@@ -9,18 +8,37 @@ from django.db import IntegrityError
 from django.db.models import Exists, OuterRef
 from django.utils import timezone as django_timezone
 
-from app.ema_catalog import EMA_DAILY_CHECK_IN_CAP
 from app.models import CheckinReminder, EMA, HeartRateSample, JITAILog, StressSample, User
-from app.notification_service import mark_delivery_failed, select_prompt, send_checkin_reminder, send_jitai_prompt
-from app.views import PARTICIPANT_TZ, _latest_active_jitai, _today_ema_count
+from app.notification_service import (
+    mark_delivery_failed,
+    select_control_prompt,
+    select_prompt,
+    send_checkin_reminder,
+    send_jitai_prompt,
+)
+from app.views import _latest_active_jitai, _today_scheduled_check_in_count
+from dashboard.data.config import (
+    CHECKIN_REMINDER_DELAY_MINUTES,
+    DAILY_PROMPT_CAP,
+    JITAI_COOLDOWN_MINUTES,
+    MSSD_WINDOW,
+    NOTIFICATION_WINDOW_END_HOUR,
+    NOTIFICATION_WINDOW_START_HOUR,
+    PARTICIPANT_TZ,
+    THRESHOLD_QUANTILE,
+    arm_randomization_p,
+    randomization_p,
+)
+from dashboard.data.windows import participant_day_bounds, scheduled_slot_bounds
 from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
 
 logger = logging.getLogger(__name__)
 
-# Placeholders pending Dr. Chang's confirmation — see Resources/TODO.docx.
-CHECKIN_REMINDER_COOLDOWN_MINUTES = 120
-CHECKIN_REMINDER_WINDOW_START_HOUR = 9
-CHECKIN_REMINDER_WINDOW_END_HOUR = 21
+# Volatility mapping confirmed by Dr. Chang 2026-08-17 (copied to Celia/Tien):
+# mood -> B1 valence rating, stress -> B2 stress rating, energy -> B1
+# calm-to-excited rating. Averaged the same way the old mood/stress/energy
+# fields were, so Tien's calibration stays comparable.
+SIGNAL_SUB_ITEMS = {'mood': 'B1_valence', 'stress': 'B2_stress', 'energy': 'B1_arousal'}
 
 
 @shared_task
@@ -35,7 +53,7 @@ def evaluate_jitai_triggers():
         wearabledevice__is_active=True,
     )
 
-    p = float(os.environ.get('JITAI_RANDOMIZATION_PROBABILITY', '0.5'))
+    p = randomization_p()
 
     for user in enrolled_users:
         try:
@@ -46,26 +64,17 @@ def evaluate_jitai_triggers():
             )
 
 
-def _evaluate_user(user, p):
+def build_decision_frame(user):
+    """Every decision this participant's EMA history implies, scored by the engine.
 
-    latest_new_ema = (
-        EMA.objects.filter(user=user, status='completed')
-        .exclude(Exists(JITAILog.objects.filter(ema=OuterRef('pk'))))
-        .order_by('-sent_at')
-        .first()
-    )
+    Extracted from _evaluate_user so the threshold backfill replays the exact
+    code path that produced the live decisions. A reconstruction that drifts
+    from the engine would make threshold_source worthless: the whole reason for
+    recording engine-versus-reconstructed is so the timeline can accuse the
+    engine of a defect without the accusation resting on a reimplementation.
 
-    if latest_new_ema is None:
-        return
-
-    decision_point_id = f"ema_{latest_new_ema.pk}"
-
-    # Volatility mapping confirmed by Dr. Chang 2026-08-17 (copied to Celia/Tien):
-    # mood -> B1 valence rating, stress -> B2 stress rating, energy -> B1
-    # calm-to-excited rating. Averaged the same way the old mood/stress/energy
-    # fields were, so Tien's calibration stays comparable.
-    SIGNAL_SUB_ITEMS = {'mood': 'B1_valence', 'stress': 'B2_stress', 'energy': 'B1_arousal'}
-
+    Returns the scored frame, or None when there is nothing to score.
+    """
     ema_qs = (
         EMA.objects.filter(user=user, status='completed')
         .prefetch_related('item_responses')
@@ -110,8 +119,32 @@ def _evaluate_user(user, p):
             tolerance=pd.Timedelta('30min'),
         )
 
-    df = calculate_mssd(df, window=3)
-    result_df = apply_decision_rules(df)
+    df = calculate_mssd(df, window=MSSD_WINDOW)
+    return apply_decision_rules(
+        df,
+        threshold_quantile=THRESHOLD_QUANTILE,
+        cooldown_minutes=JITAI_COOLDOWN_MINUTES,
+        max_prompts_per_day=DAILY_PROMPT_CAP,
+    )
+
+
+def _evaluate_user(user, p):
+
+    latest_new_ema = (
+        EMA.objects.filter(user=user, status='completed')
+        .exclude(Exists(JITAILog.objects.filter(ema=OuterRef('pk'))))
+        .order_by('-sent_at')
+        .first()
+    )
+
+    if latest_new_ema is None:
+        return
+
+    decision_point_id = f"ema_{latest_new_ema.pk}"
+
+    result_df = build_decision_frame(user)
+    if result_df is None:
+        return
 
     match = result_df[result_df['timestamp'] == pd.Timestamp(latest_new_ema.sent_at)]
     if match.empty:
@@ -121,20 +154,63 @@ def _evaluate_user(user, p):
     eligible = bool(row['send_prompt'])
     raw_mssd = row['observed_mssd']
     observed_mssd = None if pd.isna(raw_mssd) else float(raw_mssd)
+    # What observed_mssd was compared against on this decision. The engine has
+    # always produced it as user_threshold and then dropped it on the floor,
+    # which left no way to tell a correct "below threshold" from an engine bug.
+    raw_threshold = row['user_threshold']
+    threshold_at_decision = None if pd.isna(raw_threshold) else float(raw_threshold)
     trigger_reason = str(row['decision_reason'])
     trigger_signal = None
+
+    arm_p = None
+    arm_draw = None
+    message_arm = None
+    routing = {
+        'eligible_prompt_ids': None,
+        'evaluated_items': None,
+        'matched_categories': None,
+        'category_drawn': None,
+        'fallback_reason': '',
+    }
 
     if eligible:
         draw = random.uniform(0, 1)
         send_prompt = draw < p
-        selected_prompt_id, eligible_ids = select_prompt(latest_new_ema)
-        if send_prompt and not selected_prompt_id:
-            send_prompt = False
+
+        # Last-5 exclusion, confirmed by Dr. Chang 2026-09-07: don't repeat a
+        # message a participant has already gotten in their last 5 delivered
+        # prompts. Computed regardless of send outcome, like the rest of the
+        # routing snapshot below — it's an MRT analysis field, not just
+        # delivery bookkeeping.
+        recent_prompt_ids = list(
+            JITAILog.objects
+            .filter(user=user, send_prompt=True)
+            .exclude(prompt_id='')
+            .order_by('-decision_made_at')
+            .values_list('prompt_id', flat=True)[:5]
+        )
+        routing_result = select_prompt(latest_new_ema, exclude_prompt_ids=recent_prompt_ids)
+        routing.update(routing_result)
+        selected_prompt_id = routing_result['prompt_id']
+
+        if send_prompt:
+            # Second-stage draw, confirmed by Dr. Chang 2026-08-25: 0.5/0.5
+            # coping vs. active control, logged separately from the send
+            # draw above so the two effects can be analyzed independently.
+            arm_p = arm_randomization_p()
+            arm_draw = random.uniform(0, 1)
+            message_arm = 'coping' if arm_draw < arm_p else 'control'
+            if message_arm == 'control':
+                control_prompt_id, control_pool = select_control_prompt()
+                selected_prompt_id = control_prompt_id
+                routing['eligible_prompt_ids'] = control_pool
+                routing['category_drawn'] = None
+            if not selected_prompt_id:
+                send_prompt = False
     else:
         draw = None
         send_prompt = False
         selected_prompt_id = ''
-        eligible_ids = None
 
     recent_hr = HeartRateSample.objects.filter(user=user).order_by('-timestamp').first()
     recent_stress = StressSample.objects.filter(user=user).order_by('-timestamp').first()
@@ -155,8 +231,13 @@ def _evaluate_user(user, p):
                 'stress_at_trigger': recent_stress.stress_score if recent_stress else None,
                 'ema': latest_new_ema,
                 'observed_mssd': observed_mssd,
+                'threshold_at_decision': threshold_at_decision,
+                'threshold_source': 'engine',
                 'randomization_probability': p,
                 'randomization_draw': draw,
+                'message_arm': message_arm,
+                'arm_randomization_probability': arm_p,
+                'arm_randomization_draw': arm_draw,
                 'send_prompt': send_prompt,
                 'status': 'pending' if send_prompt else 'not_sent',
                 'delivery_status': 'pending' if send_prompt else 'not_sent',
@@ -164,7 +245,11 @@ def _evaluate_user(user, p):
                 'ema_mood': _snap.get(SIGNAL_SUB_ITEMS['mood']),
                 'ema_stress': _snap.get(SIGNAL_SUB_ITEMS['stress']),
                 'ema_energy': _snap.get(SIGNAL_SUB_ITEMS['energy']),
-                'eligible_prompt_ids': eligible_ids,
+                'eligible_prompt_ids': routing['eligible_prompt_ids'],
+                'evaluated_items': routing['evaluated_items'],
+                'matched_categories': routing['matched_categories'],
+                'category_drawn': routing['category_drawn'],
+                'fallback_reason': routing['fallback_reason'],
             },
         )
     except IntegrityError:
@@ -192,7 +277,7 @@ def _evaluate_user(user, p):
 def send_checkin_reminders():
     now = django_timezone.now()
     participant_hour = now.astimezone(PARTICIPANT_TZ).hour
-    if not (CHECKIN_REMINDER_WINDOW_START_HOUR <= participant_hour < CHECKIN_REMINDER_WINDOW_END_HOUR):
+    if not (NOTIFICATION_WINDOW_START_HOUR <= participant_hour < NOTIFICATION_WINDOW_END_HOUR):
         return
 
     enrolled_users = User.objects.filter(
@@ -213,16 +298,36 @@ def _maybe_send_reminder(user, now):
     if not user.push_token:
         return
 
+    # No reminder within 30 min of an intervention prompt ("one buzz at a
+    # time") — the 2-hour active-outcome-window check below is a superset
+    # of that 30-minute guard.
     if _latest_active_jitai(user) is not None:
         return
 
-    daily_count = _today_ema_count(user)
-    if daily_count >= EMA_DAILY_CHECK_IN_CAP:
-        return
+    participant_now = now.astimezone(PARTICIPANT_TZ)
+    slots = scheduled_slot_bounds(participant_now.date())
+    day_start, day_end = participant_day_bounds(participant_now.date())
+    completed_at = list(
+        EMA.objects.filter(
+            user=user, ema_type='scheduled_check_in', status='completed',
+            sent_at__gte=day_start, sent_at__lt=day_end,
+        ).values_list('sent_at', flat=True)
+    )
 
-    last_reminder = CheckinReminder.objects.filter(user=user).order_by('-sent_at').first()
-    if last_reminder and (now - last_reminder.sent_at) < timedelta(minutes=CHECKIN_REMINDER_COOLDOWN_MINUTES):
-        return
+    for slot_index, (slot_start, slot_end) in enumerate(slots):
+        reminder_ready_at = slot_start + timedelta(minutes=CHECKIN_REMINDER_DELAY_MINUTES)
+        if not (reminder_ready_at <= now < slot_end):
+            continue  # not yet due for this slot, or the slot has already lapsed
 
-    if send_checkin_reminder(user):
-        CheckinReminder.objects.create(user=user, daily_count_at_send=daily_count)
+        if any(slot_start <= t.astimezone(PARTICIPANT_TZ) < slot_end for t in completed_at):
+            continue  # this slot was already completed — no reminder needed
+
+        already_reminded = CheckinReminder.objects.filter(
+            user=user, sent_at__gte=day_start, daily_count_at_send=slot_index,
+        ).exists()
+        if already_reminded:
+            continue  # one reminder per check-in, then let it lapse
+
+        if send_checkin_reminder(user):
+            CheckinReminder.objects.create(user=user, daily_count_at_send=slot_index)
+        return  # one buzz at a time per tick

@@ -5,7 +5,13 @@ import unittest
 import pandas as pd
 from pandas.testing import assert_series_equal
 
-from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
+from decision_engine.decision_engine import (
+    apply_decision_rules,
+    attach_rmssd_to_decisions,
+    calculate_mssd,
+    compute_rmssd_5min_series,
+    compute_rmssd_from_bbi,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -99,6 +105,44 @@ class PromptFiringTests(unittest.TestCase):
         expected = result['decision_reason'] == 'prompt sent'
         self.assertTrue((result['send_prompt'] == expected).all())
 
+
+class HrvLoggingTests(unittest.TestCase):
+
+    def test_rmssd_matches_known_intervals(self):
+        values = pd.Series([800, 810, 790])
+        self.assertAlmostEqual(compute_rmssd_from_bbi(values), 15.8113883)
+
+    def test_decision_hrv_annotation_does_not_change_decision_columns(self):
+        timestamp = pd.Timestamp('2026-06-01 09:05:00')
+        decisions = pd.DataFrame([{
+            'user_id': 'user-1',
+            'timestamp': timestamp,
+            'ema': 4,
+            'send_prompt': True,
+            'decision_reason': 'prompt sent',
+        }])
+        bbi = pd.DataFrame({
+            'user_id': ['user-1'] * 5,
+            'timestamp': pd.date_range('2026-06-01 09:00:00', periods=5, freq='s'),
+            'bbi_ms': [800, 810, 790, 805, 795],
+        })
+
+        result = attach_rmssd_to_decisions(decisions, bbi, min_beats=5)
+
+        self.assertTrue(result.loc[0, 'send_prompt'])
+        self.assertEqual(result.loc[0, 'decision_reason'], 'prompt sent')
+        self.assertEqual(result.loc[0, 'rmssd_count'], 5)
+        self.assertFalse(pd.isna(result.loc[0, 'rmssd_bbi']))
+
+    def test_fixed_window_series_is_per_user(self):
+        bbi = pd.DataFrame({
+            'user_id': ['a'] * 5 + ['b'] * 5,
+            'timestamp': list(pd.date_range('2026-06-01 09:00:00', periods=5, freq='s')) * 2,
+            'bbi_ms': [800, 810, 790, 805, 795] * 2,
+        })
+        result = compute_rmssd_5min_series(bbi, min_beats=5)
+        self.assertEqual(set(result['user_id']), {'a', 'b'})
+        self.assertEqual(result['count'].max(), 5)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
