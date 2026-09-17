@@ -52,4 +52,5 @@ argon2-cffi==23.1.0
 django-redis==5.4.0
 djangorestframework_simplejwt==5.5.1
 sentry-sdk==2.63.0
+numpy==2.4.6
 pandas==2.2.3

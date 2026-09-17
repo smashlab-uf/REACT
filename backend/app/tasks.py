@@ -8,7 +8,9 @@ from django.db import IntegrityError
 from django.db.models import Exists, OuterRef
 from django.utils import timezone as django_timezone
 
-from app.models import CheckinReminder, EMA, HeartRateSample, JITAILog, StressSample, User
+from app.models import (
+    CheckinReminder, EMA, HeartRateSample, HRVSample, JITAILog, StressSample, User,
+)
 from app.notification_service import (
     mark_delivery_failed,
     select_control_prompt,
@@ -20,6 +22,9 @@ from app.views import _latest_active_jitai, _today_scheduled_check_in_count
 from dashboard.data.config import (
     CHECKIN_REMINDER_DELAY_MINUTES,
     DAILY_PROMPT_CAP,
+    HRV_BASELINE_WINDOW,
+    HRV_HIGH_CUTOFF,
+    HRV_LOW_CUTOFF,
     JITAI_COOLDOWN_MINUTES,
     MSSD_WINDOW,
     NOTIFICATION_WINDOW_END_HOUR,
@@ -30,7 +35,12 @@ from dashboard.data.config import (
     randomization_p,
 )
 from dashboard.data.windows import participant_day_bounds, scheduled_slot_bounds
-from decision_engine.decision_engine import apply_decision_rules, calculate_mssd
+from decision_engine.decision_engine import (
+    apply_decision_rules,
+    attach_rmssd_series_to_decisions,
+    calculate_mssd,
+    merge_hr_to_prompts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,22 +119,34 @@ def build_decision_frame(user):
     if hr_rows:
         hr_df = pd.DataFrame(hr_rows)
         hr_df['user_id'] = user.user_id
-        hr_df = hr_df.rename(columns={'bpm': 'hr'})
-        df = pd.merge_asof(
-            df.sort_values('timestamp'),
-            hr_df[['user_id', 'timestamp', 'hr']].sort_values('timestamp'),
-            on='timestamp',
-            by='user_id',
-            direction='backward',
-            tolerance=pd.Timedelta('30min'),
-        )
+        df = merge_hr_to_prompts(df, hr_df)
 
     df = calculate_mssd(df, window=MSSD_WINDOW)
-    return apply_decision_rules(
+    scored = apply_decision_rules(
         df,
         threshold_quantile=THRESHOLD_QUANTILE,
         cooldown_minutes=JITAI_COOLDOWN_MINUTES,
         max_prompts_per_day=DAILY_PROMPT_CAP,
+    )
+
+    hrv_rows = list(
+        HRVSample.objects
+        .filter(user=user)
+        .order_by('timestamp')
+        .values('timestamp', 'rmssd_ms')
+    )
+    if not hrv_rows:
+        return scored
+
+    hrv_df = pd.DataFrame(hrv_rows)
+    hrv_df['user_id'] = user.user_id
+
+    return attach_rmssd_series_to_decisions(
+        scored,
+        hrv_df,
+        baseline_window=HRV_BASELINE_WINDOW,
+        low_cutoff=HRV_LOW_CUTOFF,
+        high_cutoff=HRV_HIGH_CUTOFF,
     )
 
 
@@ -154,13 +176,20 @@ def _evaluate_user(user, p):
     eligible = bool(row['send_prompt'])
     raw_mssd = row['observed_mssd']
     observed_mssd = None if pd.isna(raw_mssd) else float(raw_mssd)
-    # What observed_mssd was compared against on this decision. The engine has
-    # always produced it as user_threshold and then dropped it on the floor,
-    # which left no way to tell a correct "below threshold" from an engine bug.
+    
     raw_threshold = row['user_threshold']
     threshold_at_decision = None if pd.isna(raw_threshold) else float(raw_threshold)
     trigger_reason = str(row['decision_reason'])
     trigger_signal = None
+
+    raw_rmssd = row.get('rmssd_ms')
+    rmssd_at_trigger = None if pd.isna(raw_rmssd) else float(raw_rmssd)
+    raw_rmssd_baseline = row.get('rmssd_baseline')
+    rmssd_baseline_at_trigger = (
+        None if pd.isna(raw_rmssd_baseline) else float(raw_rmssd_baseline)
+    )
+    raw_hrv_class = row.get('hrv_class')
+    hrv_class_at_trigger = '' if pd.isna(raw_hrv_class) else str(raw_hrv_class)
 
     arm_p = None
     arm_draw = None
@@ -233,6 +262,9 @@ def _evaluate_user(user, p):
                 'observed_mssd': observed_mssd,
                 'threshold_at_decision': threshold_at_decision,
                 'threshold_source': 'engine',
+                'rmssd_at_trigger': rmssd_at_trigger,
+                'rmssd_baseline_at_trigger': rmssd_baseline_at_trigger,
+                'hrv_class_at_trigger': hrv_class_at_trigger,
                 'randomization_probability': p,
                 'randomization_draw': draw,
                 'message_arm': message_arm,

@@ -24,6 +24,7 @@ from .models import (
     EngagementLog,
     EventDay,
     HeartRateSample,
+    HRVSample,
     JITAILog,
     PhoneTelemetry,
     StressSample,
@@ -521,6 +522,7 @@ class TelemetryIngestView(APIView):
         created_counts = {
             "heart_rate_samples": 0,
             "stress_samples": 0,
+            "hrv_samples": 0,
             "emas": 0,
             "jitai_logs": 0,
             "phone_events": 0,
@@ -534,6 +536,10 @@ class TelemetryIngestView(APIView):
         for sample in data.get("stress_samples", []):
             StressSample.objects.create(user=user, **sample)
             created_counts["stress_samples"] += 1
+
+        for sample in data.get("hrv_samples", []):
+            HRVSample.objects.create(user=user, **sample)
+            created_counts["hrv_samples"] += 1
 
         for ema in data.get("emas", []):
             EMA.objects.create(user=user, **ema)

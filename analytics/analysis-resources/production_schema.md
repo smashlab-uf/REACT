@@ -18,6 +18,7 @@ The **Data dictionary** column maps each production table to its logical name in
 | public | app_engagementlog | `engagement_log` (§2.9) | table | ufa8u8gt63l2t2 |
 | public | app_eventday | `event_day` (§2.4) | table | ufa8u8gt63l2t2 |
 | public | app_heartratesample | `heart_rate_sample` (§2.5) | table | ufa8u8gt63l2t2 |
+| public | app_hrvsample | — (new; 5-minute RMSSD) | table | ufa8u8gt63l2t2 |
 | public | app_jitailog | `jitai_log` (§2.8) | table | ufa8u8gt63l2t2 |
 | public | app_phonetelemetry | `phone_telemetry` (§2.10) | table | ufa8u8gt63l2t2 |
 | public | app_stresssample | `stress_sample` (§2.6) | table | ufa8u8gt63l2t2 |
@@ -157,6 +158,12 @@ rows written before the field existed. The mobile client may echo the list back 
 | matched_categories | jsonb | | |
 | category_drawn | varchar(64) | | |
 | fallback_reason | varchar(128) | not null | |
+| receipt_event_id | varchar(64) | | |
+| threshold_at_decision | double precision | | |
+| threshold_source | varchar(16) | not null | |
+| rmssd_at_trigger | double precision | | |
+| rmssd_baseline_at_trigger | double precision | | |
+| hrv_class_at_trigger | varchar(16) | not null | |
 
 **PK:** id &nbsp;·&nbsp; **Unique:** decision_point_id &nbsp;·&nbsp;
 **Indexes:** decision_made_at, delivery_status, device_received_at, ema_id, push_sent_at, receipt_reported_at, user_id
@@ -164,14 +171,24 @@ rows written before the field existed. The mobile client may echo the list back 
 **FKs:** user_id → app_user(user_id); ema_id → app_ema(id)
 **Referenced by:** app_ema(source_jitai_log_id), app_engagementlog(jitai_log_id)
 
-The last seven columns are newer than the "~27 columns" figure quoted elsewhere; the table now
-has 34. Migration `0042` added the **second-stage randomization** (`message_arm`,
+The last columns are newer than the "~27 columns" figure quoted elsewhere; the table now
+has 40. Migration `0042` added the **second-stage randomization** (`message_arm`,
 `arm_randomization_probability`, `arm_randomization_draw`) — a 0.5/0.5 coping-versus-active-control
 draw taken only when the first-stage send decision succeeded, logged separately so the two
 effects can be analysed independently. Migration `0043` added the **routing audit**
 (`evaluated_items`, `matched_categories`, `category_drawn`, `fallback_reason`), recorded at every
 decision point regardless of arm. In `evaluated_items`, a null value means the sub-item was not
-part of that check-in's rotation, **not** that it was checked and found below threshold.
+part of that check-in's rotation, **not** that it was checked and found below threshold. Migration
+`0044` added `receipt_event_id`, `0046` the **threshold audit** (`threshold_at_decision`,
+`threshold_source`), and `0047` the **HRV annotation** (`rmssd_at_trigger`,
+`rmssd_baseline_at_trigger`, `hrv_class_at_trigger`).
+
+The HRV columns are **recorded, never consulted**: `_evaluate_user` writes what
+`attach_rmssd_series_to_decisions` found at the decision point, and `send_prompt` stays a pure
+MSSD decision because the ratio cutoffs behind `hrv_class_at_trigger` have no PI sign-off. A
+blank `hrv_class_at_trigger` with a null `rmssd_at_trigger` means no HRV sample existed within
+30 minutes before the decision — which is every row today, since nothing writes `app_hrvsample`
+yet.
 
 ### app_engagementlog — data dictionary: `engagement_log` (§2.9)
 
@@ -212,6 +229,33 @@ part of that check-in's rotation, **not** that it was checked and found below th
 
 **PK:** id &nbsp;·&nbsp; **Indexes:** (user_id, timestamp), timestamp, user_id &nbsp;·&nbsp;
 **Checks:** stress_score >= 0 &nbsp;·&nbsp; **FKs:** user_id → app_user(user_id)
+
+### app_hrvsample — data dictionary: no logical name yet (5-minute RMSSD)
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| id | bigint | not null | identity |
+| timestamp | timestamptz | not null | |
+| rmssd_ms | double precision | not null | |
+| beat_count | smallint | not null | 0 |
+| source | varchar(32) | not null | |
+| user_id | integer | not null | |
+
+**PK:** id &nbsp;·&nbsp; **Indexes:** (user_id, timestamp), timestamp, user_id &nbsp;·&nbsp;
+**Checks:** beat_count >= 0 &nbsp;·&nbsp; **FKs:** user_id → app_user(user_id)
+
+The **derived** 5-minute RMSSD series, not raw beat-to-beat intervals. BBI arrives at roughly one
+row per beat — ~100k rows per participant per day, tens of millions a day at n=300 — so ingestion
+reduces it with `decision_engine.compute_rmssd_5min_series` and stores 288 rows per participant
+per day instead. `timestamp` is the **interval start**, which is why the decision annotation reads
+only samples stamped strictly before a decision point: a row stamped at the decision moment
+summarizes the five minutes after it.
+
+**Nothing writes this table today.** The intended writer is `/telemetry/ingest/` (`hrv_samples`),
+fed by a Labfront BBI poll that does not exist — `ingest_wearable_data` is still a stub, and
+beat-to-beat collection is an open IRB and Labfront-contract question. The monitoring layer
+reports that as unmeasurable through one cohort alert (`no_hrv_data`), never as a per-participant
+failure and never as zero.
 
 ### app_phonetelemetry — data dictionary: `phone_telemetry` (§2.10)
 

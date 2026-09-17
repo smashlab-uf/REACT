@@ -14,7 +14,7 @@ is alive would be circular.
 from collections import defaultdict, namedtuple
 from datetime import timedelta
 
-from app.models import HeartRateSample, JITAILog, User
+from app.models import HeartRateSample, HRVSample, JITAILog, User
 from django.db.models import Q, Sum
 from django.utils import timezone as django_timezone
 
@@ -348,6 +348,28 @@ def no_wearable_data(context):
     return [Finding(None, CRITICAL, {
         'detail': 'No heart-rate samples exist for any participant. '
                   'ingest_wearable_data is not implemented.',
+    })]
+
+
+@rule('no_hrv_data')
+def no_hrv_data(context):
+    """Also reads raw, for the same reason as no_wearable_data.
+
+    HRVSample has no writer yet: nothing polls Labfront for beat-to-beat
+    intervals, and beat-to-beat collection is still an open IRB and contract
+    question. Warning, not critical -- no benchmark or risk term reads HRV, so
+    this is a note about a signal that has not arrived, not a call to make
+    today. One cohort alert, never one per participant.
+    """
+    if not User.objects.filter(is_enrolled=True).exists():
+        return []
+    if HRVSample.objects.exists():
+        return []
+    return [Finding(None, WARNING, {
+        'detail': 'No HRV samples exist for any participant. Nothing writes '
+                  'HRVSample: Labfront BBI ingestion is not implemented and '
+                  'beat-to-beat collection is unconfirmed. HRV is unmeasurable '
+                  'until one lands.',
     })]
 
 

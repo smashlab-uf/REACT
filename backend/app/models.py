@@ -128,6 +128,26 @@ class StressSample(models.Model):
         return f"Stress {self.stress_score} at {self.timestamp}"
 
 
+class HRVSample(models.Model):
+    """
+    Derived 5-minute RMSSD series, not beat-to-beat intervals as LabFront limits data ingestion rate. 
+    BBI arrives one row per beat, ~100k rows per participant. Hence, we need to compute 5min window series before landing in database. 
+    """
+
+    user        = models.ForeignKey(User, on_delete = models.CASCADE)
+    timestamp   = models.DateTimeField(db_index = True)
+    rmssd_ms    = models.FloatField()
+    beat_count  = models.PositiveSmallIntegerField(default = 0)
+    source      = models.CharField(max_length = 32, default = 'garmin_labfront')
+
+    class Meta:
+        ordering = ['-timestamp']
+        indexes = [models.Index(fields=['user', 'timestamp'])]
+
+    def __str__(self):
+        return f"RMSSD {self.rmssd_ms} ms at {self.timestamp}"
+
+
 
 class EMA(models.Model):
     STATUS_CHOICES = [
@@ -310,6 +330,17 @@ class JITAILog(models.Model):
     # able to do so on a number a reimplementation produced.
     threshold_at_decision = models.FloatField(null=True, blank=True)
     threshold_source = models.CharField(max_length=16, blank=True, default='')
+    HRV_CLASS_CHOICES = [('Low', 'Low'), ('Balanced', 'Balanced'), ('High', 'High')]
+    # HRV as it stood at the decision point. Recorded, never consulted: the
+    # ratio cutoffs behind hrv_class_at_trigger have no PI sign-off, so
+    # send_prompt stays a pure MSSD decision (see _evaluate_user). Kept here
+    # for the same reason as threshold_at_decision — a covariate nobody wrote
+    # down cannot be argued with afterwards.
+    rmssd_at_trigger = models.FloatField(null=True, blank=True)
+    rmssd_baseline_at_trigger = models.FloatField(null=True, blank=True)
+    hrv_class_at_trigger = models.CharField(
+        max_length=16, choices=HRV_CLASS_CHOICES, blank=True, default=''
+    )
     decision_point_id = models.CharField(max_length=64, unique=True, null=True, blank=True)
     randomization_probability = models.FloatField(null=True, blank=True)
     randomization_draw = models.FloatField(null=True, blank=True)
