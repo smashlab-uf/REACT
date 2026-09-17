@@ -1,5 +1,5 @@
 const BASE_URLS = {
-  prod: 'https://healthygatorsportfan-ab9271b02569.herokuapp.com',
+  prod: 'https://react-backend-prod-8db300645555.herokuapp.com',
   dev: 'http://127.0.0.1:8000',
 };
 

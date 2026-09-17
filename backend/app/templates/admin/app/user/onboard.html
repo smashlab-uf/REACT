@@ -1,0 +1,31 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'admin/css/forms.css' %}">{{ media }}{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">Home</a> &rsaquo;
+  <a href="{% url 'admin:app_user_changelist' %}">Users</a> &rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<p>Finish Garmin and Labfront setup first, then enter the participant's Labfront ID below.</p>
+{% if participant %}<p>The existing account's password and original enrollment date will be kept.</p>{% endif %}
+<form method="post">
+  {% csrf_token %}
+  {{ form.non_field_errors }}
+  <fieldset class="module aligned">
+    {% for field in form %}
+    <div class="form-row{% if field.errors %} errors{% endif %}">
+      {{ field.errors }}
+      <div>{{ field.label_tag }} {{ field }}</div>
+      {% if field.help_text %}<div class="help">{{ field.help_text }}</div>{% endif %}
+    </div>
+    {% endfor %}
+  </fieldset>
+  <p>After saving, have the participant sign in to REACT, allow notifications, and complete a check-in. Verify Garmin syncing in Labfront.</p>
+  <div class="submit-row"><input type="submit" class="default" value="{{ title }}"></div>
+</form>
+{% endblock %}
