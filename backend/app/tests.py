@@ -18,8 +18,8 @@ def eastern_today():
 
 from app.ema_catalog import EMA_RESPONSE_WINDOW_MINUTES
 from app.models import (
-    CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog, PhoneTelemetry,
-    StressSample, User, WearableDevice,
+    CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, HRVSample,
+    JITAILog, PhoneTelemetry, StressSample, User, WearableDevice,
 )
 from app.serializers import (
     UserSerializer,
@@ -820,6 +820,13 @@ class TelemetryIngestViewTests(TestCase):
                     'stress_score': 45,
                 }
             ],
+            'hrv_samples': [
+                {
+                    'timestamp': '2026-06-12T14:05:00Z',
+                    'rmssd_ms': 42.5,
+                    'beat_count': 288,
+                }
+            ],
             'emas': [
                 {
                     'prompt_id': 'EMA_TEMPLATE_01',
@@ -870,6 +877,10 @@ class TelemetryIngestViewTests(TestCase):
         self.assertEqual(EngagementLog.objects.count(), 1)
         self.assertEqual(response.data['counts']['heart_rate_samples'], 1)
         self.assertEqual(response.data['counts']['stress_samples'], 1)
+        self.assertEqual(HRVSample.objects.count(), 1)
+        self.assertEqual(response.data['counts']['hrv_samples'], 1)
+        self.assertAlmostEqual(HRVSample.objects.get().rmssd_ms, 42.5)
+        self.assertEqual(HRVSample.objects.get().beat_count, 288)
         self.assertEqual(response.data['counts']['phone_events'], 1)
         self.assertEqual(response.data['counts']['engagement_events'], 1)
         self.assertAlmostEqual(JITAILog.objects.get().observed_mssd, 0.72)
@@ -1936,6 +1947,90 @@ class EvaluateJITAITriggersTests(TestCase):
         self.assertTrue(log.send_prompt)
         self.assertEqual(log.status, 'pending')
         mock_send.assert_called_once()
+
+    def _volatile_cohort(self, user):
+        for i in range(5):
+            self._make_ema(user, 4, 4, 4, offset_seconds=i * 60)
+        return self._make_ema(user, 1, 1, 1, offset_seconds=300)
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_hrv_is_recorded_on_the_decision(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        volatile = self._volatile_cohort(user)
+        for minutes, rmssd in zip((25, 20, 15, 10, 5), (100.0, 100.0, 100.0, 50.0, 70.0)):
+            HRVSample.objects.create(
+                user=user,
+                timestamp=volatile.sent_at - timedelta(minutes=minutes),
+                rmssd_ms=rmssd,
+                beat_count=288,
+            )
+
+        evaluate_jitai_triggers()
+
+        log = JITAILog.objects.get(user=user)
+        self.assertAlmostEqual(log.rmssd_at_trigger, 70.0)
+        self.assertAlmostEqual(log.rmssd_baseline_at_trigger, 100.0)
+        self.assertEqual(log.hrv_class_at_trigger, 'Low')
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_hrv_does_not_gate_the_send(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        with_hrv = self._make_enrolled_user(email='with_hrv@ufl.edu')
+        volatile = self._volatile_cohort(with_hrv)
+        for minutes, rmssd in zip((25, 20, 15, 10, 5), (100.0, 100.0, 100.0, 50.0, 70.0)):
+            HRVSample.objects.create(
+                user=with_hrv,
+                timestamp=volatile.sent_at - timedelta(minutes=minutes),
+                rmssd_ms=rmssd,
+                beat_count=288,
+            )
+        without_hrv = self._make_enrolled_user(email='without_hrv@ufl.edu')
+        self._volatile_cohort(without_hrv)
+
+        evaluate_jitai_triggers()
+
+        annotated = JITAILog.objects.get(user=with_hrv)
+        bare = JITAILog.objects.get(user=without_hrv)
+        self.assertEqual(annotated.hrv_class_at_trigger, 'Low')
+        self.assertEqual(annotated.send_prompt, bare.send_prompt)
+        self.assertEqual(annotated.trigger_reason, bare.trigger_reason)
+        self.assertTrue(annotated.send_prompt)
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_missing_hrv_leaves_the_columns_empty(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._volatile_cohort(user)
+
+        evaluate_jitai_triggers()
+
+        log = JITAILog.objects.get(user=user)
+        self.assertIsNone(log.rmssd_at_trigger)
+        self.assertIsNone(log.rmssd_baseline_at_trigger)
+        self.assertEqual(log.hrv_class_at_trigger, '')
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_stale_hrv_is_not_recorded(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        volatile = self._volatile_cohort(user)
+        HRVSample.objects.create(
+            user=user,
+            timestamp=volatile.sent_at - timedelta(hours=4),
+            rmssd_ms=70.0,
+            beat_count=288,
+        )
+
+        evaluate_jitai_triggers()
+
+        log = JITAILog.objects.get(user=user)
+        self.assertIsNone(log.rmssd_at_trigger)
+        self.assertEqual(log.hrv_class_at_trigger, '')
 
     @patch('app.tasks.random.uniform', return_value=0.1)
     @patch('app.tasks.send_jitai_prompt')

@@ -24,6 +24,14 @@ __all__ = [
     'CHECKIN_REMINDER_DELAY_MINUTES',
     'DAILY_PROMPT_CAP',
     'EMA_RESPONSE_WINDOW_MINUTES',
+    'HRV_BASELINE_WINDOW',
+    'HRV_BBI_MAX_MS',
+    'HRV_BBI_MIN_CONFIDENCE',
+    'HRV_BBI_MIN_MS',
+    'HRV_HIGH_CUTOFF',
+    'HRV_LOW_CUTOFF',
+    'HRV_MIN_BEATS',
+    'HRV_WINDOW_SECONDS',
     'ITEM_BANK_VERSION',
     'JITAI_COOLDOWN_MINUTES',
     'METRICS_RECOMPUTE_TRAILING_DAYS',
@@ -78,6 +86,20 @@ THRESHOLD_QUANTILE = 0.80
 MSSD_WINDOW = 3
 JITAI_COOLDOWN_MINUTES = 60
 DAILY_PROMPT_CAP = 4
+
+# HRV (RMSSD over Garmin beat-to-beat intervals). PROVISIONAL: every value below
+# is a numeric decision threshold and none has PI sign-off yet, so HRV is only
+# recorded on JITAILog — it does not gate send_prompt. See the HRV section of
+# analytics/analysis-resources/data-dictionary.md for how this 5-minute ratio
+# classifier differs from the nightly Garmin hrv_status convention.
+HRV_WINDOW_SECONDS = 300
+HRV_MIN_BEATS = 5
+HRV_LOW_CUTOFF = 0.8
+HRV_HIGH_CUTOFF = 1.2
+HRV_BASELINE_WINDOW = 288
+HRV_BBI_MIN_MS = 300
+HRV_BBI_MAX_MS = 2000
+HRV_BBI_MIN_CONFIDENCE = 1
 
 RANDOMIZATION_P_ENV = 'JITAI_RANDOMIZATION_PROBABILITY'
 ARM_RANDOMIZATION_P_ENV = 'JITAI_ARM_RANDOMIZATION_PROBABILITY'

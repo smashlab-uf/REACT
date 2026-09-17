@@ -503,6 +503,30 @@ summarized here.
 | `baseline_7d` | float | Derived | Trailing 7-night mean RMSSD (shifted to exclude the night itself). |
 | `hrv_status` | str | Derived | `Balanced` / `Low` / `Unbalanced` / `No Status` (band = `max(0.5·rolling_std, 5.0)`; `No Status` until ≥ 3 nights). |
 
+**Two HRV classifications exist and they are not the same definition.** The frame
+above is the *nightly* Garmin-style one: one row per night, a trailing 7-night mean
+baseline, and a band scaled to the participant's own rolling standard deviation.
+
+The *5-minute* one is what `backend/decision_engine/decision_engine.py` computes
+from Garmin beat-to-beat intervals and what reaches `JITAILog`
+(`compute_rmssd_5min_series`, `attach_rmssd_to_decisions`,
+`attach_rmssd_series_to_decisions`). It is a **ratio** classifier, not a band one:
+
+| Name | Type | Source stream | Meaning |
+|------|------|---------------|---------|
+| `rmssd` / `rmssd_ms` | float | Derived | RMSSD (ms) over the beat-to-beat intervals in one 5-minute window (`HRV_WINDOW_SECONDS`); null below `HRV_MIN_BEATS` beats. |
+| `count` / `beat_count` | int | Derived | Beats in the window. Zero is a real zero; null is a window that was never computed. |
+| `baseline` | float | Derived | Median RMSSD over the participant's prior windows, bounded to the trailing `HRV_BASELINE_WINDOW` (288 windows ≈ 24 h) and shifted to exclude the current window. Null until there is one prior window. |
+| `ratio` | float | Derived | `rmssd / baseline`. Null whenever either side is null or the baseline is ≤ 0. |
+| `hrv_class` | str | Derived | `Low` below `HRV_LOW_CUTOFF` (0.8), `High` above `HRV_HIGH_CUTOFF` (1.2), `Balanced` in between — cutoffs exclusive, so exactly 0.8 and exactly 1.2 are `Balanced`. Null, never a class, when `ratio` is null. |
+
+Use the nightly definition for overnight recovery analyses and the 5-minute one for
+anything anchored to a decision point. Neither is a bug; they answer different
+questions on different cadences. The 5-minute cutoffs live in
+`dashboard/data/config.py` and are **provisional pending PI sign-off** — which is
+why `hrv_class_at_trigger` is recorded on `JITAILog` and never consulted by the
+send decision.
+
 **Decision log** (`decision/decision_engine.py`) and **validation** (`decision/mssd_validation.py`)
 
 | Name | Type | Source stream | Meaning |

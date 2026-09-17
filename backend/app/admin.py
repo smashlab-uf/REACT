@@ -10,8 +10,8 @@ from django.views.decorators.debug import sensitive_post_parameters
 from .forms import ParticipantEnrollmentForm
 
 from .models import (
-    CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog,
-    PhoneTelemetry, StressSample, User, WearableDevice,
+    CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, HRVSample,
+    JITAILog, PhoneTelemetry, StressSample, User, WearableDevice,
 )
 
 
@@ -207,6 +207,16 @@ class HeartRateSampleAdmin(ReadableAdminMixin, admin.ModelAdmin):
 @admin.register(StressSample)
 class StressSampleAdmin(ReadableAdminMixin, admin.ModelAdmin):
     list_display = ("id", "user", "timestamp", "stress_score", "source")
+    list_filter = ("source", "timestamp")
+    search_fields = ("user__email",)
+    date_hierarchy = "timestamp"
+    ordering = ("-timestamp",)
+    autocomplete_fields = ("user",)
+
+
+@admin.register(HRVSample)
+class HRVSampleAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    list_display = ("id", "user", "timestamp", "rmssd_ms", "beat_count", "source")
     list_filter = ("source", "timestamp")
     search_fields = ("user__email",)
     date_hierarchy = "timestamp"
