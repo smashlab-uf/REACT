@@ -1,0 +1,23 @@
+{% extends "admin/index.html" %}
+{% load static %}
+
+{% block extrastyle %}
+{{ block.super }}
+<link rel="stylesheet" href="{% static 'app/admin_home.css' %}">
+{% endblock %}
+
+{% block content %}
+{% if perms.app.add_user and perms.app.add_wearabledevice and perms.app.change_wearabledevice %}
+<section class="module enrollment-shortcut" aria-labelledby="enrollment-heading">
+  <h2 id="enrollment-heading">Participant onboarding</h2>
+  <div class="enrollment-shortcut-body">
+    <p>After Garmin and Labfront setup, create a REACT account and enroll the participant in one step.</p>
+    <a class="button" href="{% url 'admin:app_user_create_and_enroll' %}">Create account and enroll</a>
+    {% if perms.app.view_user or perms.app.change_user %}
+    <p class="enrollment-existing">Already has an account? <a href="{% url 'admin:app_user_changelist' %}">Find the participant under Users</a> and choose Enroll with Labfront.</p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+{{ block.super }}
+{% endblock %}

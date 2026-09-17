@@ -1,0 +1,8 @@
+{% extends "admin/change_list.html" %}
+
+{% block object-tools-items %}
+{% if has_add_permission and perms.app.add_wearabledevice and perms.app.change_wearabledevice %}
+<li><a href="{% url 'admin:app_user_create_and_enroll' %}" class="addlink">Create account and enroll</a></li>
+{% endif %}
+{{ block.super }}
+{% endblock %}

@@ -1,0 +1,26 @@
+.enrollment-shortcut {
+    border: 1px solid var(--hairline-color);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.enrollment-shortcut-body {
+    padding: 4px 16px 16px;
+}
+
+.enrollment-shortcut a.button {
+    display: inline-block;
+    background: var(--button-bg);
+    color: var(--button-fg);
+    padding: 12px 16px;
+    font-weight: 600;
+}
+
+.enrollment-shortcut a.button:hover,
+.enrollment-shortcut a.button:focus {
+    background: var(--button-hover-bg);
+}
+
+.enrollment-shortcut .enrollment-existing {
+    margin: 16px 0 0;
+}
