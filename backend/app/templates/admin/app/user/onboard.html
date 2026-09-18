@@ -12,6 +12,7 @@
 
 {% block content %}
 <p>Finish Garmin and Labfront setup first, then enter the participant's Labfront ID below.</p>
+{% if not participant %}<p>A unique account ID and random password will be generated when you submit. You can copy them on the next screen. Names are optional; leave them blank if they are not needed.</p>{% endif %}
 {% if participant %}<p>The existing account's password and original enrollment date will be kept.</p>{% endif %}
 <form method="post">
   {% csrf_token %}
