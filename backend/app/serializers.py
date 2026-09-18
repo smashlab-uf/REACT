@@ -1,8 +1,8 @@
 from rest_framework import serializers
 from .ema_catalog import EMA_SUB_ITEM_INDEX
 from .models import (
-    EMA, EMAItemResponse, EngagementLog, HeartRateSample, JITAILog, PhoneTelemetry,
-    StressSample, User, WearableDevice,
+    EMA, EMAItemResponse, EngagementLog, HeartRateSample, HRVSample, JITAILog,
+    PhoneTelemetry, StressSample, User, WearableDevice,
 )
 from django.contrib.auth.hashers import make_password
 
@@ -63,6 +63,13 @@ class StressSampleSerializer(serializers.ModelSerializer):
     class Meta:
         model = StressSample
         fields = ['id', 'user', 'timestamp', 'stress_score', 'source']
+        read_only_fields = ('id',)
+
+
+class HRVSampleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HRVSample
+        fields = ['id', 'user', 'timestamp', 'rmssd_ms', 'beat_count', 'source']
         read_only_fields = ('id',)
 
 
@@ -150,6 +157,13 @@ class TelemetryStressSampleSerializer(serializers.Serializer):
     source = serializers.CharField(max_length=32, required=False, default='garmin_labfront')
 
 
+class TelemetryHRVSampleSerializer(serializers.Serializer):
+    timestamp = serializers.DateTimeField()
+    rmssd_ms = serializers.FloatField(min_value=0)
+    beat_count = serializers.IntegerField(min_value=0, required=False, default=0)
+    source = serializers.CharField(max_length=32, required=False, default='garmin_labfront')
+
+
 class TelemetryEMASerializer(serializers.Serializer):
     prompt_id = serializers.CharField(max_length=64)
     responded_at = serializers.DateTimeField(required=False, allow_null=True)
@@ -211,6 +225,7 @@ class TelemetryIngestSerializer(serializers.Serializer):
     wearable_device = TelemetryWearableDeviceSerializer(required=False)
     heart_rate_samples = TelemetryHeartRateSampleSerializer(many=True, required=False, default=list)
     stress_samples = TelemetryStressSampleSerializer(many=True, required=False, default=list)
+    hrv_samples = TelemetryHRVSampleSerializer(many=True, required=False, default=list)
     emas = TelemetryEMASerializer(many=True, required=False, default=list)
     jitai_logs = TelemetryJITAILogSerializer(many=True, required=False, default=list)
     phone_events = TelemetryPhoneEventSerializer(many=True, required=False, default=list)

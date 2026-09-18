@@ -133,5 +133,5 @@ $$MSSD = \frac{1}{N-1} \sum_{t=1}^{N-1} (z_{t+1} - z_t)^2$$
 **Known limitations / not implemented:**
 
 * `react_cohort.py` does **not** generate `phone_telemetry`, `checkin_reminder`, or `event_day` (not consumed by the current analysis pipeline).
-* No **HRV / RMSSD** generation — there is no HRV column in the production schema (`StressSample` carries only a 0–100 `stress_score`; `HeartRateSample` only `bpm`).
+* No **HRV / RMSSD** generation — `HRVSample` (derived 5-minute RMSSD, migration `0047`) now exists in the production schema, but the generators do not produce it; `StressSample` still carries only a 0–100 `stress_score` and `HeartRateSample` only `bpm`.
 * There is **no automated DB seeder** — the generators return in-memory DataFrames for offline analysis, not a database-push routine.

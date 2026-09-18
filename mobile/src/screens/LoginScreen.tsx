@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
+  Image,
+  Keyboard,
   StyleSheet,
   Text,
   TextInput,
@@ -23,6 +23,20 @@ export default function LoginScreen({ onGoToRegister }: Props) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const layoutHeight = useRef(0);
+  const [contentHeight, setContentHeight] = useState<number | null>(null);
+
+  useEffect(() => {
+    const subscription = Keyboard.addListener('keyboardDidHide', () => {
+      setContentHeight(null);
+    });
+    return () => subscription.remove();
+  }, []);
+
+  function keepLayoutBehindKeyboard() {
+    // Preserve the full layout before Android's adjustResize reduces the window.
+    setContentHeight((height) => height ?? (layoutHeight.current || null));
+  }
 
   async function handleLogin() {
     if (!email || !password) {
@@ -43,10 +57,13 @@ export default function LoginScreen({ onGoToRegister }: Props) {
   }
 
   return (
-    <KeyboardAvoidingView
+    <View
       style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <View style={styles.container}>
+      onLayout={(event) => { layoutHeight.current = event.nativeEvent.layout.height; }}>
+      <View style={[
+        styles.container,
+        contentHeight !== null && { flex: 0, height: contentHeight },
+      ]}>
         <Text style={styles.title}>Welcome</Text>
         <View style={styles.titleAccent} />
 
@@ -55,6 +72,8 @@ export default function LoginScreen({ onGoToRegister }: Props) {
           placeholder="Email"
           value={email}
           onChangeText={setEmail}
+          onFocus={keepLayoutBehindKeyboard}
+          onPressIn={keepLayoutBehindKeyboard}
           keyboardType="email-address"
           autoCapitalize="none"
         />
@@ -63,6 +82,8 @@ export default function LoginScreen({ onGoToRegister }: Props) {
           placeholder="Password"
           value={password}
           onChangeText={setPassword}
+          onFocus={keepLayoutBehindKeyboard}
+          onPressIn={keepLayoutBehindKeyboard}
           secureTextEntry
         />
 
@@ -77,16 +98,45 @@ export default function LoginScreen({ onGoToRegister }: Props) {
         <TouchableOpacity onPress={onGoToRegister} style={styles.link}>
           <Text style={styles.linkText}>Don't have an account? Register</Text>
         </TouchableOpacity>
+
+        <View style={styles.logoArea}>
+          <Image
+            source={require('../../assets/images/smashlab-logo.png')}
+            style={styles.logo}
+            resizeMode="contain"
+          />
+        </View>
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.surface },
   container: { flex: 1, padding: 24, paddingTop: 100 },
-  title: { ...typography.screenTitle, color: colors.primary, marginBottom: 8 },
-  titleAccent: { width: 36, height: 4, borderRadius: radius.pill, backgroundColor: colors.accent, marginBottom: 32 },
+  logoArea: {
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 24,
+  },
+  logo: {
+    width: 200,
+    height: 200 * (820 / 896),
+    maxWidth: '60%',
+    maxHeight: '100%',
+  },
+  title: { ...typography.screenTitle, color: colors.primary, marginBottom: 8, textAlign: 'center' },
+  titleAccent: {
+    width: 36,
+    height: 4,
+    borderRadius: radius.pill,
+    backgroundColor: colors.accent,
+    alignSelf: 'center',
+    marginBottom: 32,
+  },
   input: {
     borderWidth: 1,
     borderColor: colors.border,

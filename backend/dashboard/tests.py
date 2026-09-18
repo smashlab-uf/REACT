@@ -988,6 +988,7 @@ class AlertTests(TestCase):
             (faults['nowear'].pk, 'wear_low'),
             (faults['quiet'].pk, 'dosage_collapse'),
             (None, 'no_wearable_data'),
+            (None, 'no_hrv_data'),
         })
         self.assertEqual(
             Alert.objects.get(user=faults['stale'], rule_id='sync_stale').severity, 'warning')

@@ -1,11 +1,37 @@
-"""Run the synthetic decision engine and optional BBI HRV audit."""
+"""Run the synthetic decision engine and optional BBI HRV audit.
+
+Run as a module from backend/, so that decision_engine and syntheticData are
+importable:  python -m decision_engine.run_decision_engine
+"""
 
 import argparse
+import sys
 from pathlib import Path
 
 import pandas as pd
 
-from decision_engine.decision_engine import (
+# dashboard/ lives at the repo root, two levels above this file, and holds the
+# study constants. Nothing here bootstraps Django, so the insert settings.py
+# does for web/worker/beat has to happen again.
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from dashboard.data.config import (  # noqa: E402
+    DAILY_PROMPT_CAP,
+    HRV_BASELINE_WINDOW,
+    HRV_BBI_MAX_MS,
+    HRV_BBI_MIN_CONFIDENCE,
+    HRV_BBI_MIN_MS,
+    HRV_HIGH_CUTOFF,
+    HRV_LOW_CUTOFF,
+    HRV_MIN_BEATS,
+    HRV_WINDOW_SECONDS,
+    JITAI_COOLDOWN_MINUTES,
+    MSSD_WINDOW,
+    THRESHOLD_QUANTILE,
+)
+from decision_engine.decision_engine import (  # noqa: E402
     apply_decision_rules,
     attach_rmssd_to_decisions,
     calculate_mssd,
@@ -15,7 +41,7 @@ from decision_engine.decision_engine import (
     summarize_decisions,
     validate_prompt_counts_vary,
 )
-from syntheticData.synthetic_generator import (
+from syntheticData.synthetic_generator import (  # noqa: E402
     generate_HR,
     generate_cohort,
     generate_user_ids,
@@ -60,10 +86,10 @@ def build_decisions(users=100, days=7, ema_per_day=5, seed=42):
         user_ids=user_ids,
     )
     decisions = apply_decision_rules(
-        calculate_mssd(merge_hr_to_prompts(ema, heart_rate)),
-        threshold_quantile=0.80,
-        cooldown_minutes=60,
-        max_prompts_per_day=4,
+        calculate_mssd(merge_hr_to_prompts(ema, heart_rate), window=MSSD_WINDOW),
+        threshold_quantile=THRESHOLD_QUANTILE,
+        cooldown_minutes=JITAI_COOLDOWN_MINUTES,
+        max_prompts_per_day=DAILY_PROMPT_CAP,
     )
     return decisions
 
@@ -79,8 +105,21 @@ def write_outputs(decisions, output_dir, bbi_path=None):
     validate_prompt_counts_vary(summary)
 
     if bbi_path:
-        bbi = load_bbi_csv(bbi_path)
-        hrv_per_decision = attach_rmssd_to_decisions(decisions, bbi)
+        bbi = load_bbi_csv(
+            bbi_path,
+            min_confidence=HRV_BBI_MIN_CONFIDENCE,
+            min_bbi_ms=HRV_BBI_MIN_MS,
+            max_bbi_ms=HRV_BBI_MAX_MS,
+        )
+        hrv_per_decision = attach_rmssd_to_decisions(
+            decisions,
+            bbi,
+            window_seconds=HRV_WINDOW_SECONDS,
+            min_beats=HRV_MIN_BEATS,
+            low_cutoff=HRV_LOW_CUTOFF,
+            high_cutoff=HRV_HIGH_CUTOFF,
+            baseline_window=HRV_BASELINE_WINDOW,
+        )
         hrv_per_decision_output = hrv_per_decision[
             [
                 "user_id", "timestamp", "rmssd_bbi", "rmssd_count",
@@ -97,7 +136,14 @@ def write_outputs(decisions, output_dir, bbi_path=None):
             indent=2,
         )
 
-        hrv_series = compute_rmssd_5min_series(bbi)
+        hrv_series = compute_rmssd_5min_series(
+            bbi,
+            interval_seconds=HRV_WINDOW_SECONDS,
+            min_beats=HRV_MIN_BEATS,
+            low_cutoff=HRV_LOW_CUTOFF,
+            high_cutoff=HRV_HIGH_CUTOFF,
+            baseline_window=HRV_BASELINE_WINDOW,
+        )
         hrv_series.to_csv(output_dir / "hrv_5min_series.csv", index=False)
         hrv_series.to_json(
             output_dir / "hrv_5min_series.json",

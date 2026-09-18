@@ -1,17 +1,24 @@
 from django.contrib import admin, messages
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.db import IntegrityError, transaction
 from django.http import HttpResponseNotAllowed, HttpResponseRedirect
+from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils import timezone
+from django.views.decorators.debug import sensitive_post_parameters
+
+from .forms import ParticipantEnrollmentForm
 
 from .models import (
-    CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, JITAILog,
-    PhoneTelemetry, StressSample, User, WearableDevice,
+    CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, HRVSample,
+    JITAILog, PhoneTelemetry, StressSample, User, WearableDevice,
 )
 
 
 admin.site.site_header = "REACT Admin"
 admin.site.site_title = "REACT"
 admin.site.index_title = "Backend Data Management"
+admin.site.index_template = "admin/react_index.html"
 
 
 class ReadableAdminMixin:
@@ -43,6 +50,7 @@ def enroll_user_for_notifications(user):
 @admin.register(User)
 class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
     change_form_template = "admin/app/user/change_form.html"
+    change_list_template = "admin/app/user/change_list.html"
     actions = ("enroll_for_notifications",)
     list_display = (
         "user_id",
@@ -81,12 +89,62 @@ class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
         urls = super().get_urls()
         custom = [
             path(
+                "create-and-enroll/",
+                self.admin_site.admin_view(sensitive_post_parameters('password1', 'password2')(self.onboard_view)),
+                name="app_user_create_and_enroll",
+            ),
+            path(
+                "<path:object_id>/enroll-labfront/",
+                self.admin_site.admin_view(self.onboard_view),
+                name="app_user_enroll_labfront",
+            ),
+            path(
                 "<path:object_id>/enroll-notifications/",
                 self.admin_site.admin_view(self.enroll_for_notifications_view),
                 name="app_user_enroll_notifications",
             ),
         ]
         return custom + urls
+
+    def onboard_view(self, request, object_id=None):
+        if request.method not in ('GET', 'POST'):
+            return HttpResponseNotAllowed(['GET', 'POST'])
+        participant = None
+        if object_id is not None:
+            participant = self.get_object(request, object_id)
+            if participant is None:
+                return self._get_obj_does_not_exist_redirect(request, self.model._meta, object_id)
+        allowed = (self.has_add_permission(request) if participant is None
+                   else self.has_change_permission(request, participant))
+        if not allowed or not request.user.has_perms(('app.add_wearabledevice', 'app.change_wearabledevice')):
+            raise PermissionDenied
+        form = ParticipantEnrollmentForm(
+            request.POST if request.method == 'POST' else None, participant=participant,
+        )
+        if request.method == 'POST' and form.is_valid():
+            try:
+                with transaction.atomic():
+                    user, device, created = form.save()
+                    if participant is None:
+                        self.log_addition(request, user, 'Created account and enrolled with Labfront.')
+                    else:
+                        self.log_change(request, user, 'Enrolled with Labfront.')
+            except IntegrityError:
+                form.add_error(None, 'The email or Labfront ID is already in use. Check the existing account and try again.')
+            except ValidationError as error:
+                form.add_error(None, error)
+            else:
+                self._enroll_message(request, user, device, created)
+                return HttpResponseRedirect(reverse('admin:app_user_change', args=[user.pk]))
+        context = {
+            **self.admin_site.each_context(request),
+            'opts': self.model._meta,
+            'title': 'Create account and enroll' if participant is None else 'Enroll with Labfront',
+            'form': form,
+            'participant': participant,
+            'media': self.media + form.media,
+        }
+        return TemplateResponse(request, 'admin/app/user/onboard.html', context)
 
     def _enroll_message(self, request, user, device, created):
         wearable_note = (
@@ -149,6 +207,16 @@ class HeartRateSampleAdmin(ReadableAdminMixin, admin.ModelAdmin):
 @admin.register(StressSample)
 class StressSampleAdmin(ReadableAdminMixin, admin.ModelAdmin):
     list_display = ("id", "user", "timestamp", "stress_score", "source")
+    list_filter = ("source", "timestamp")
+    search_fields = ("user__email",)
+    date_hierarchy = "timestamp"
+    ordering = ("-timestamp",)
+    autocomplete_fields = ("user",)
+
+
+@admin.register(HRVSample)
+class HRVSampleAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    list_display = ("id", "user", "timestamp", "rmssd_ms", "beat_count", "source")
     list_filter = ("source", "timestamp")
     search_fields = ("user__email",)
     date_hierarchy = "timestamp"
