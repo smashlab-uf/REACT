@@ -61,7 +61,7 @@ from dashboard.models import Alert, MetricsCohort, MetricsDaily, MetricsParticip
 _db = settings.DATABASES["default"]
 
 # CHANGE THIS  <------------ 
-SYNTHETIC_DATA = True
+SYNTHETIC_DATA = False
 
 EMA_FIELDS = (
     "id", "user_id", "prompt_id", "ema_type", "status",

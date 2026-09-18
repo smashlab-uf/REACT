@@ -63,3 +63,4 @@ CLAUDE.md
 .gitignore
 
 backend/dashboard/fixture_cohort.json
+analytics/papers
