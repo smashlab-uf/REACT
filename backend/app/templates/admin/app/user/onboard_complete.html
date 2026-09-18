@@ -1,0 +1,20 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block content %}
+<p>The participant is enrolled. Copy and share these credentials so they can sign in to REACT. Enter the account ID in the app's Email field.</p>
+<p>This password is shown only on this response; save it before leaving. Only its hash is stored.</p>
+<div class="module aligned">
+  <p><label for="account-id">Account ID</label>
+    <input id="account-id" type="text" readonly value="{{ credentials.email }}" autocomplete="off" size="48">
+    <button type="button" data-copy="account-id">Copy account ID</button></p>
+  <p><label for="account-password">Password</label>
+    <input id="account-password" type="text" readonly value="{{ credentials.password }}" autocomplete="off" size="40">
+    <button type="button" data-copy="account-password">Copy password</button></p>
+  <button type="button" id="copy-credentials">Copy both</button>
+  <p id="copy-status" role="status" aria-live="polite"></p>
+</div>
+<p>Have the participant sign in, allow notifications, and complete a check-in. Verify Garmin syncing in Labfront.</p>
+<p><a href="{{ user_url }}">View participant</a> · <a href="{% url 'admin:app_user_create_and_enroll' %}">Create another account</a></p>
+<script src="{% static 'app/enrollment_credentials.js' %}" defer></script>
+{% endblock %}

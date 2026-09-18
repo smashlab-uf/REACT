@@ -1,4 +1,5 @@
 from unittest.mock import patch
+from uuid import UUID
 
 from django.contrib.admin.models import LogEntry
 from django.contrib.auth.models import Permission, User as AuthUser
@@ -33,18 +34,26 @@ class ParticipantEnrollmentAdminTests(TestCase):
     def test_create_enroll_and_login(self):
         response = self.client.post(self.url, self.data, follow=True)
         self.assertEqual(response.status_code, 200)
-        user = User.objects.get(email=self.data['email'])
-        self.assertTrue(user.check_password(self.data['password1']))
-        self.assertNotEqual(user.password, self.data['password1'])
+        credentials = response.context['credentials']
+        user = User.objects.get(email=credentials['email'])
+        self.assertTrue(user.email.endswith('@react.user'))
+        self.assertTrue(user.check_password(credentials['password']))
+        self.assertNotEqual(user.password, credentials['password'])
+        self.assertEqual(str(user.birthdate), '2000-01-01')
+        self.assertContains(response, 'Copy account ID')
+        self.assertContains(response, 'Copy password')
+        self.assertContains(response, 'Copy both')
+        self.assertIn('no-store', response.headers['Cache-Control'])
         self.assertTrue(user.is_enrolled)
         self.assertIsNotNone(user.enrolled_at)
         self.assertEqual(user.wearabledevice.labfront_participant_id, self.data['labfront_participant_id'])
         self.assertTrue(user.wearabledevice.is_active)
         self.assertContains(response, 'push token is missing')
-        login = self.client.post('/user/login/', {'email': user.email, 'password': self.data['password1']})
+        login = self.client.post('/user/login/', {'email': user.email, 'password': credentials['password']})
         self.assertEqual(login.status_code, 200)
         self.assertIn('access', login.json())
-        self.assertNotIn(self.data['password1'], LogEntry.objects.latest('id').change_message)
+        self.assertNotIn(credentials['password'], LogEntry.objects.latest('id').change_message)
+        self.assertNotIn(credentials['password'], str(dict(self.client.session)))
 
     def test_existing_account_replaces_placeholder_without_changing_credentials_or_date(self):
         user = self.make_participant()
@@ -82,14 +91,23 @@ class ParticipantEnrollmentAdminTests(TestCase):
         self.assertIsNotNone(user.enrolled_at)
         self.assertEqual(user.wearabledevice.labfront_participant_id, 'real-labfront-id')
 
-    def test_duplicate_email_is_rejected_without_modifying_existing_account(self):
+    def test_generated_email_collisions_are_retried(self):
         user = self.make_participant()
-        response = self.client.post(self.url, {**self.data, 'email': user.email.upper()})
-        self.assertContains(response, 'This account already exists')
+        user.email = '00000000000000000000000000000001@react.user'
+        user.save()
+        with patch('app.forms.uuid.uuid4', side_effect=[UUID(int=1), UUID(int=2)]), patch(
+            'app.forms.secrets.token_urlsafe', return_value='original-password',
+        ):
+            response = self.client.post(self.url, self.data)
+        self.assertEqual(response.status_code, 200)
+        credentials = response.context['credentials']
+        self.assertEqual(credentials['email'], '00000000000000000000000000000002@react.user')
+        # Password generation no longer rejects matches against existing hashes.
+        self.assertEqual(credentials['password'], 'original-password')
         user.refresh_from_db()
         self.assertFalse(user.is_enrolled)
         self.assertTrue(user.check_password('original-password'))
-        self.assertFalse(WearableDevice.objects.exists())
+        self.assertTrue(User.objects.get(email=credentials['email']).check_password(credentials['password']))
 
     def test_duplicate_labfront_id_does_not_create_account(self):
         user = self.make_participant()
@@ -109,8 +127,6 @@ class ParticipantEnrollmentAdminTests(TestCase):
 
     def test_invalid_input_creates_nothing_and_never_redisplays_password(self):
         for fields, message in [
-            ({'password2': 'mismatch'}, 'The passwords do not match'),
-            ({'password1': '12345678', 'password2': '12345678'}, 'too common'),
             ({'labfront_participant_id': 'TEST-999'}, 'real Labfront participant ID'),
             ({'labfront_participant_id': ''}, 'This field is required'),
         ]:
@@ -155,8 +171,8 @@ class ParticipantEnrollmentAdminTests(TestCase):
         self.client.force_login(staff)
         self.assertContains(self.client.get(reverse('admin:index')), self.url)
         response = self.client.post(self.url, self.data)
-        self.assertEqual(response.status_code, 302)
-        self.assertTrue(User.objects.get(email=self.data['email']).is_enrolled)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(User.objects.get(email=response.context['credentials']['email']).is_enrolled)
 
     def test_anonymous_and_csrf_protection(self):
         self.client.logout()
@@ -172,7 +188,10 @@ class ParticipantEnrollmentAdminTests(TestCase):
         self.assertContains(homepage, 'Participant onboarding')
         self.assertContains(homepage, reverse('admin:app_user_changelist'))
         self.assertContains(self.client.get(reverse('admin:app_user_changelist')), self.url)
-        self.assertContains(self.client.get(self.url), 'Create account and enroll')
+        response = self.client.get(self.url)
+        self.assertContains(response, 'Create account and enroll')
+        for field in ('birthdate', 'age', 'password1', 'password2', 'email'):
+            self.assertNotContains(response, f'name="{field}"')
         self.assertFalse(User.objects.exists())
         user = self.make_participant()
         url = reverse('admin:app_user_enroll_labfront', args=[user.pk])
@@ -181,3 +200,15 @@ class ParticipantEnrollmentAdminTests(TestCase):
         self.assertNotContains(response, 'name="password1"')
         user.refresh_from_db()
         self.assertFalse(user.is_enrolled)
+
+    def test_create_without_dob_or_manual_credentials_and_repost_creates_no_duplicate(self):
+        data = {'gender': 'other', 'labfront_participant_id': 'fresh-labfront-id'}
+        response = self.client.post(self.url, data)
+        self.assertEqual(response.status_code, 200)
+        credentials = response.context['credentials']
+        self.assertEqual(User.objects.count(), 1)
+        self.assertEqual(User.objects.get().first_name, '')
+        response = self.client.post(self.url, data)
+        self.assertContains(response, 'already linked to another account')
+        self.assertNotContains(response, credentials['password'])
+        self.assertEqual(User.objects.count(), 1)
