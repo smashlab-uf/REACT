@@ -15,6 +15,7 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
+from app.views import PushUnregisterView
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 from app.views import index, CreateUserView, UserLoginView, UserUpdateView, CheckEmailView, TelemetryIngestView, WearableDeviceView, EMAView, EMANextView, EMAResponseView, JITAILogView, JITAIReceiptView, DashboardParticipantStatusView, DashboardLatencyEventsView, HeartRateListView, StressListView, PhoneTelemetryView, EngagementLogView, MeView
@@ -55,6 +56,7 @@ urlpatterns = [
     path('user/login/', UserLoginView.as_view(), name='user-login'),
     path('auth/token/refresh/', TokenRefreshView.as_view(), name='token-refresh'),
     path('auth/me/', MeView.as_view(), name='auth-me'),
+    path('notifications/unregister/', PushUnregisterView.as_view(), name='push-unregister'),
     path('user/checkemail/', CheckEmailView.as_view(), name='check-user-email'),
     path('wearable/', WearableDeviceView.as_view(), name='wearable-create'),
     path('wearable/<int:user_id>/', WearableDeviceView.as_view(), name='wearable-detail'),

@@ -291,6 +291,24 @@ class UserUpdateView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+class PushUnregisterView(APIView):
+    # Possession of the exact push token permits revocation only. This must
+    # work after JWT expiry; the API-key middleware still applies.
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        user_id = request.data.get('user_id')
+        token = request.data.get('push_token')
+        if (not isinstance(user_id, int) or isinstance(user_id, bool)
+                or not 0 < user_id <= 2147483647 or not isinstance(token, str)
+                or not token.strip() or len(token) > 128):
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+        # Conditional update protects a newer registration on another device.
+        User.objects.filter(user_id=user_id, push_token=token).update(push_token=None)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class CheckEmailView(APIView):
     permission_classes = [AllowAny]
 

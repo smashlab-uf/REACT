@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Platform, View } from 'react-native';
 import * as Notifications from 'expo-notifications';
+import NetInfo from '@react-native-community/netinfo';
 import { useFonts } from 'expo-font';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from './src/store/authStore';
@@ -11,7 +12,8 @@ import EMAScreen from './src/screens/EMAScreen';
 import { flushQueue, startNetworkListener } from './src/telemetry/offlineQueue';
 import { registerForPushNotifications } from './src/notifications/pushToken';
 import { parsePushData, shouldOpenEMA } from './src/notifications/payload';
-import { jitai, user as userApi, telemetry } from './src/api/endpoints';
+import { jitai, telemetry } from './src/api/endpoints';
+import { pushRegistration } from './src/notifications/session';
 import NotificationToast from './src/components/NotificationToast';
 import AppAlert from './src/components/AppAlert';
 import { log } from './src/utils/logger';
@@ -19,11 +21,11 @@ import { colors } from './src/theme';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
+    shouldShowAlert: useAuthStore.getState().isAuthenticated,
+    shouldPlaySound: useAuthStore.getState().isAuthenticated,
     shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
+    shouldShowBanner: useAuthStore.getState().isAuthenticated,
+    shouldShowList: useAuthStore.getState().isAuthenticated,
   }),
 });
 
@@ -63,14 +65,55 @@ export default function App() {
   }, [isAuthenticated]);
 
   useEffect(() => {
-    if (!isAuthenticated || !userId) return;
+    if (isLoading) return;
+    if (!isAuthenticated) {
+      setActiveEMA(null);
+      setToastMessage(null);
+    }
+    const retry = () => {
+      const action = useAuthStore.getState().isAuthenticated
+        ? pushRegistration.retry() : pushRegistration.unregister();
+      action.catch(() => log('[PushToken] Cleanup still pending'));
+    };
+    retry();
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      if (state.isConnected) retry();
+    });
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') retry();
+    });
+    return () => { unsubscribe(); subscription.remove(); };
+  }, [isAuthenticated, isLoading]);
 
-    registerForPushNotifications().then((token) => {
-      if (token) {
-        userApi.update(userId, { push_token: token }).catch((e) => {
-          log('[PushToken] Failed to register with backend:', e?.response?.status);
-        });
+  useEffect(() => {
+    if (!isAuthenticated || !userId) return;
+    let cancelled = false;
+    const isCurrent = () => !cancelled && useAuthStore.getState().isAuthenticated
+      && useAuthStore.getState().userId === userId;
+
+    let registering = false;
+    let registered = false;
+    const ensureRegistered = async () => {
+      if (!isCurrent() || registering || registered) return;
+      registering = true;
+      try {
+        const token = await registerForPushNotifications();
+        if (token) {
+          await pushRegistration.register(userId, token, isCurrent);
+          registered = isCurrent();
+        }
+      } catch {
+        log('[PushToken] Failed to register with backend; will retry');
+      } finally {
+        registering = false;
       }
+    };
+    void ensureRegistered();
+    const registrationNetworkSub = NetInfo.addEventListener((state) => {
+      if (state.isConnected) void ensureRegistered();
+    });
+    const registrationAppSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void ensureRegistered();
     });
 
     const reportedReceipts = new Set<number>();
@@ -90,11 +133,13 @@ export default function App() {
     }
 
     function openFromPush(parsed: ReturnType<typeof parsePushData>) {
+      if (!isCurrent()) return;
       if (!shouldOpenEMA(parsed.type)) return;
       setActiveEMA({ jitaiLogId: parsed.jitaiLogId });
     }
 
     function onTapped(response: Notifications.NotificationResponse, appState: ReceiptAppState) {
+      if (!isCurrent()) return;
       const identifier = response.notification.request.identifier;
       if (handledTaps.has(identifier)) return;
       handledTaps.add(identifier);
@@ -120,6 +165,7 @@ export default function App() {
     }
 
     const foregroundSub = Notifications.addNotificationReceivedListener((notification) => {
+      if (!isCurrent()) return;
       const content = notification.request.content;
       const data = content.data as Record<string, unknown>;
       const parsed = parsePushData(data);
@@ -151,6 +197,9 @@ export default function App() {
     });
 
     return () => {
+      cancelled = true;
+      registrationNetworkSub();
+      registrationAppSub.remove();
       foregroundSub.remove();
       tapSub.remove();
     };
@@ -177,7 +226,7 @@ export default function App() {
       )}
 
       <EMAScreen
-        visible={activeEMA !== null}
+        visible={isAuthenticated && activeEMA !== null}
         jitaiLogId={activeEMA?.jitaiLogId}
         onClose={() => setActiveEMA(null)}
       />

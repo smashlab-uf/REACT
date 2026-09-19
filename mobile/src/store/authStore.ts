@@ -3,6 +3,10 @@ import * as SecureStore from 'expo-secure-store';
 import { setTokens, clearTokens, setOnAuthFailure } from '../api/client';
 import { auth } from '../api/endpoints';
 import { log } from '../utils/logger';
+import * as Notifications from 'expo-notifications';
+import { pushRegistration } from '../notifications/session';
+
+let logoutPromise: Promise<void> | null = null;
 
 const KEYS = {
   tokens: 'auth_tokens',
@@ -40,10 +44,27 @@ export const useAuthStore = create<AuthStore>((set) => ({
   },
 
   logout: async () => {
-    await SecureStore.deleteItemAsync(KEYS.tokens);
-    await SecureStore.deleteItemAsync(KEYS.user);
-    clearTokens();
-    set({ user: null, userId: null, isAuthenticated: false });
+    if (logoutPromise) return logoutPromise;
+    set({ user: null, userId: null, isAuthenticated: false, isLoading: true });
+    logoutPromise = (async () => {
+      try {
+        await pushRegistration.unregister().catch(() => {
+          log('[PushToken] Cleanup pending; will retry on reconnect');
+        });
+        await Promise.allSettled([
+          Notifications.cancelAllScheduledNotificationsAsync(),
+          Notifications.dismissAllNotificationsAsync(),
+          Notifications.clearLastNotificationResponseAsync(),
+        ]);
+        await SecureStore.deleteItemAsync(KEYS.tokens);
+        await SecureStore.deleteItemAsync(KEYS.user);
+      } finally {
+        clearTokens();
+        set({ isLoading: false });
+        logoutPromise = null;
+      }
+    })();
+    return logoutPromise;
   },
 
   restoreSession: async () => {
