@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 import requests
 
-DEFAULT_BASE_URL = 'https://healthygatorsportfan-ab9271b02569.herokuapp.com'
+DEFAULT_BASE_URL = 'https://react-backend-prod-8db300645555.herokuapp.com'
 
 
 def register_or_login(base_url, email, password):
@@ -64,12 +64,19 @@ def enroll(base_url, headers, user_id, push_token):
 
 
 def submit_ema(base_url, headers, user_id, mood, stress, energy):
-    resp = requests.post(f'{base_url}/ema/', json={
-        'user': user_id,
+    # mood/stress/energy map to the routing engine's signal sub-items
+    # (app/tasks.py SIGNAL_SUB_ITEMS), same volatility mapping Dr. Chang
+    # confirmed 2026-08-17 -- /ema/ was retired when EMA moved to item
+    # responses; /ema/responses/ derives item_id/response_type from the
+    # catalog, so the client only sends sub_item_id + value.
+    resp = requests.post(f'{base_url}/ema/responses/', json={
         'prompt_id': 'full_circle_test',
-        'mood': mood,
-        'stress': stress,
-        'energy': energy,
+        'ema_type': 'scheduled_check_in',
+        'responses': [
+            {'sub_item_id': 'B1_valence', 'value': mood},
+            {'sub_item_id': 'B2_stress', 'value': stress},
+            {'sub_item_id': 'B1_arousal', 'value': energy},
+        ],
     }, headers=headers)
     resp.raise_for_status()
     return resp.json()

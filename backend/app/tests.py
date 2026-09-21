@@ -17,6 +17,7 @@ def eastern_today():
     return timezone.now().astimezone(EASTERN).date()
 
 from app.ema_catalog import EMA_RESPONSE_WINDOW_MINUTES
+from dashboard.data.config import RUN_IN_DAYS
 from app.models import (
     CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, HRVSample,
     JITAILog, PhoneTelemetry, StressSample, User, WearableDevice,
@@ -1877,6 +1878,7 @@ class EvaluateJITAITriggersTests(TestCase):
     def _make_enrolled_user(self, email='jitai_task@ufl.edu'):
         user = make_user(email=email, push_token='ExponentPushToken[test123]')
         user.is_enrolled = True
+        user.enrolled_at = timezone.now() - timedelta(days=RUN_IN_DAYS + 1)
         user.save()
         WearableDevice.objects.create(user=user, labfront_participant_id=f'LF_{email}')
         return user
@@ -1952,6 +1954,85 @@ class EvaluateJITAITriggersTests(TestCase):
         for i in range(5):
             self._make_ema(user, 4, 4, 4, offset_seconds=i * 60)
         return self._make_ema(user, 1, 1, 1, offset_seconds=300)
+
+    def _enroll_on_study_day(self, user, ema, study_day):
+        enrolled_at = ema.sent_at - timedelta(days=study_day)
+        User.objects.filter(pk=user.pk).update(enrolled_at=enrolled_at)
+        user.refresh_from_db()
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_run_in_blocks_a_prompt_that_would_otherwise_send(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        volatile = self._volatile_cohort(user)
+        self._enroll_on_study_day(user, volatile, 2)
+
+        evaluate_jitai_triggers()
+
+        log = JITAILog.objects.get(user=user)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.status, 'not_sent')
+        self.assertEqual(log.trigger_reason, 'run-in period')
+        self.assertIsNone(log.randomization_draw)
+        self.assertEqual(log.prompt_id, '')
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_last_run_in_day_is_still_blocked(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        volatile = self._volatile_cohort(user)
+        self._enroll_on_study_day(user, volatile, RUN_IN_DAYS - 1)
+
+        evaluate_jitai_triggers()
+
+        self.assertFalse(JITAILog.objects.get(user=user).send_prompt)
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_first_day_after_run_in_can_send(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        volatile = self._volatile_cohort(user)
+        self._enroll_on_study_day(user, volatile, RUN_IN_DAYS)
+
+        evaluate_jitai_triggers()
+
+        self.assertTrue(JITAILog.objects.get(user=user).send_prompt)
+        mock_send.assert_called_once()
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_run_in_is_measured_from_each_participants_own_enrollment(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        early = self._make_enrolled_user(email='run_in_early@ufl.edu')
+        late = self._make_enrolled_user(email='run_in_late@ufl.edu')
+        early_ema = self._volatile_cohort(early)
+        late_ema = self._volatile_cohort(late)
+        self._enroll_on_study_day(early, early_ema, 1)
+        self._enroll_on_study_day(late, late_ema, RUN_IN_DAYS + 3)
+
+        evaluate_jitai_triggers()
+
+        self.assertFalse(JITAILog.objects.get(user=early).send_prompt)
+        self.assertTrue(JITAILog.objects.get(user=late).send_prompt)
+        mock_send.assert_called_once()
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_missing_enrollment_date_fails_closed(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._volatile_cohort(user)
+        User.objects.filter(pk=user.pk).update(enrolled_at=None)
+
+        evaluate_jitai_triggers()
+
+        self.assertFalse(JITAILog.objects.get(user=user).send_prompt)
+        mock_send.assert_not_called()
 
     @patch('app.tasks.random.uniform', return_value=0.1)
     @patch('app.tasks.send_jitai_prompt')
@@ -2743,6 +2824,7 @@ class EvaluateUserMRTTests(TestCase):
         self.user = make_user(
             email='mrteval@test.com',
             is_enrolled=True,
+            enrolled_at=timezone.now() - timedelta(days=RUN_IN_DAYS + 3),
             push_token='ExponentPushToken[abc123]',
         )
         WearableDevice.objects.create(
