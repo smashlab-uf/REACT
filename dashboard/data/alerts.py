@@ -117,11 +117,12 @@ def _protocol_violations(field, threshold=0):
 def runin_violation(context):
     """Cohort-scoped on purpose: this is a fact about the engine, not a participant.
 
-    evaluate_jitai_triggers has no run-in gate, so it violates the baseline for
-    everyone identically. Raised per participant it produced one open critical
-    each, which pinned the same 4 points on every risk score and told the RA
-    nothing about who to call. MetricsDaily.runin_violation_n remains the
-    per-participant audit record; this was only ever the notification.
+    _evaluate_user gates run-in days, so a violation means the gate regressed or
+    the row predates it, and it hits everyone identically. Raised per participant
+    it produced one open critical each, which pinned the same 4 points on every
+    risk score and told the RA nothing about who to call.
+    MetricsDaily.runin_violation_n remains the per-participant audit record; this
+    was only ever the notification.
     """
     affected = _protocol_violations('runin_violation_n')
     if not affected:
@@ -130,8 +131,9 @@ def runin_violation(context):
         'participants': len(affected),
         'prompts': sum(row.runin_violation_n for rows in affected.values() for row in rows),
         'detail': 'JITAI prompts were sent during the run-in baseline; '
-                  'evaluate_jitai_triggers has no run-in gate. Per-participant '
-                  'counts are in MetricsDaily.runin_violation_n.',
+                  '_evaluate_user should have blocked these; rows written before the '
+                  'run-in gate are expected. Per-participant counts are in '
+                  'MetricsDaily.runin_violation_n.',
     })]
 
 

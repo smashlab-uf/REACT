@@ -53,8 +53,8 @@ class MetricsDaily(models.Model):
     cap_hit = models.BooleanField(null=True, blank=True)
     min_gap_min = models.IntegerField(null=True, blank=True)
     cooldown_violations_n = models.PositiveSmallIntegerField(null=True, blank=True)
-    # Prompts sent during the run-in baseline. evaluate_jitai_triggers has no
-    # run-in gate, so this is expected to be non-zero until one is added.
+    # Prompts sent during the run-in baseline. _evaluate_user gates run-in
+    # days, so this is zero unless the gate regresses or the row predates it.
     runin_violation_n = models.PositiveSmallIntegerField(null=True, blank=True)
 
     prompt_opened_n = models.PositiveSmallIntegerField(null=True, blank=True)

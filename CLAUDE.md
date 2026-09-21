@@ -491,10 +491,11 @@ move it, because `Alert.SEVERITY_CHOICES` has no `high`.
 item completeness measurable at all. `/ema/next/` returns the list, the client may echo it back,
 and the server recomputes the same set on submit when it does not.
 
-Two engine defects the monitor deliberately surfaces rather than works around, both documented
-in `analytics/analysis-resources/production_schema.md`: `evaluate_jitai_triggers` has **no run-in gate**,
-and `apply_decision_rules` counts its **daily cap over UTC days** while everything else is
-Eastern.
+One engine defect the monitor deliberately surfaces rather than works around, documented in
+`analytics/analysis-resources/production_schema.md`: `apply_decision_rules` counts its **daily
+cap over UTC days** while everything else is Eastern. The run-in gate lives in `_evaluate_user`
+(study day `< RUN_IN_DAYS` from `enrolled_at`, fail-closed when `enrolled_at` is null); the
+`runin_violation` alert is now the regression tripwire for it.
 
 `analytics/reconcile_monitoring.py` is what keeps the ORM implementation and
 `analytics/scripts.py` in step. Run it after changing any metric definition.
