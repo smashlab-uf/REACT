@@ -218,8 +218,8 @@ def _mrt_metrics(user, day_start, day_end, run_in_day):
         'cap_hit': any(log.trigger_reason == 'daily cap reached' for log in logs),
         'min_gap_min': round(min(gaps)) if gaps else None,
         'cooldown_violations_n': sum(1 for gap in gaps if gap < JITAI_COOLDOWN_MINUTES),
-        # evaluate_jitai_triggers has no run-in gate, so this is expected to be
-        # non-zero during week 1 until one is added.
+        # _evaluate_user gates run-in days, so this should be zero for any row
+        # written after the gate; a non-zero count is a regression.
         'runin_violation_n': len(sent) if run_in_day else 0,
         'delivery_failures_n': sum(1 for log in logs if log.delivery_status == 'failed'),
     }

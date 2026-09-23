@@ -975,8 +975,8 @@ class AlertTests(TestCase):
         evaluate_alerts(now=self.NOW)
 
         self.assertEqual(self._open_rules(), {
-            # Cohort-scoped: the engine has no run-in gate, so it violates the
-            # baseline identically for everyone. One alert, not one each.
+            # Cohort-scoped: a run-in violation is a fact about the engine, not
+            # a participant. One alert, not one each.
             (None, 'runin_violation'),
             (faults['cool'].pk, 'cooldown_violation'),
             (faults['cap'].pk, 'cap_exceeded'),

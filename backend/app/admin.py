@@ -135,7 +135,15 @@ class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
                 form.add_error(None, error)
             else:
                 self._enroll_message(request, user, device, created)
-                return HttpResponseRedirect(reverse('admin:app_user_change', args=[user.pk]))
+                if participant is not None:
+                    return HttpResponseRedirect(reverse('admin:app_user_change', args=[user.pk]))
+                return TemplateResponse(request, 'admin/app/user/onboard_complete.html', {
+                    **self.admin_site.each_context(request),
+                    'opts': self.model._meta,
+                    'title': 'Account created and enrolled',
+                    'credentials': form.generated_credentials,
+                    'user_url': reverse('admin:app_user_change', args=[user.pk]),
+                })
         context = {
             **self.admin_site.each_context(request),
             'opts': self.model._meta,

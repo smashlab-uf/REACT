@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from app.models import EMA, JITAILog, User, WearableDevice
 from app.tasks import _evaluate_user
-from dashboard.data.config import RANDOMIZATION_P_ENV, randomization_p
+from dashboard.data.config import RANDOMIZATION_P_ENV, RUN_IN_DAYS, randomization_p
 
 
 SEP = '─' * 62
@@ -81,6 +81,7 @@ class Command(BaseCommand):
             birthdate='2000-01-01',
             gender='other',
             is_enrolled=True,
+            enrolled_at=timezone.now() - timedelta(days=RUN_IN_DAYS + 1),
             push_token=push_token or None,
         )
 

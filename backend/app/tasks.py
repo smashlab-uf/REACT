@@ -30,11 +30,12 @@ from dashboard.data.config import (
     NOTIFICATION_WINDOW_END_HOUR,
     NOTIFICATION_WINDOW_START_HOUR,
     PARTICIPANT_TZ,
+    RUN_IN_DAYS,
     THRESHOLD_QUANTILE,
     arm_randomization_p,
     randomization_p,
 )
-from dashboard.data.windows import participant_day_bounds, scheduled_slot_bounds
+from dashboard.data.windows import participant_day_bounds, scheduled_slot_bounds, study_day_for
 from decision_engine.decision_engine import (
     apply_decision_rules,
     attach_rmssd_series_to_decisions,
@@ -150,6 +151,11 @@ def build_decision_frame(user):
     )
 
 
+def _in_run_in(user, moment):
+    study_day = study_day_for(user, moment.astimezone(PARTICIPANT_TZ).date())
+    return study_day is None or study_day < RUN_IN_DAYS
+
+
 def _evaluate_user(user, p):
 
     latest_new_ema = (
@@ -181,6 +187,10 @@ def _evaluate_user(user, p):
     threshold_at_decision = None if pd.isna(raw_threshold) else float(raw_threshold)
     trigger_reason = str(row['decision_reason'])
     trigger_signal = None
+
+    if eligible and _in_run_in(user, latest_new_ema.sent_at):
+        eligible = False
+        trigger_reason = 'run-in period'
 
     raw_rmssd = row.get('rmssd_ms')
     rmssd_at_trigger = None if pd.isna(raw_rmssd) else float(raw_rmssd)
