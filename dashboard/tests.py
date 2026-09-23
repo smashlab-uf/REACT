@@ -841,6 +841,25 @@ class CohortTests(TestCase):
         self.assertEqual(audited['mismatches'], 1)
         self.assertEqual(audited['draws'], 1)
 
+    def test_suppressed_decisions_do_not_trip_the_eligibility_cross_check(self):
+        self._seed_cohort(12, 'sup')
+        user = MetricsParticipant.objects.first().user
+        for reason, label in (('run_in', 'run-in period'), ('distress_baseline', 'distress override (baseline)')):
+            JITAILog.objects.create(
+                user=user, prompt_id='', trigger_reason=label, send_prompt=False,
+                suppression_reason=reason, decision_made_at=self.NOW,
+                status='not_sent', delivery_status='not_sent',
+            )
+        gauge = compute_cohort('all', now=self.NOW)['integrity']['eligibility_rate']
+        self.assertEqual(gauge['reason_eligible_but_no_draw'], 0)
+
+        JITAILog.objects.create(
+            user=user, prompt_id='', trigger_reason='prompt sent', send_prompt=False,
+            decision_made_at=self.NOW, status='not_sent', delivery_status='not_sent',
+        )
+        gauge = compute_cohort('all', now=self.NOW)['integrity']['eligibility_rate']
+        self.assertEqual(gauge['reason_eligible_but_no_draw'], 1)
+
     def test_active_retention_moves_when_formal_retention_cannot(self):
         """Formal retention only asks whether someone withdrew, so it cannot
         move before Day 35. Active retention moves the week someone goes quiet,

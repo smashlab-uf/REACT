@@ -106,6 +106,11 @@ python manage.py dump_item_bank --check            # fails if EMA_ITEM_BANK drif
 python manage.py backfill_withdrawals --dry-run    # backdate withdrawals from django_admin_log
 python manage.py backfill_thresholds --dry-run     # fill JITAILog.threshold_at_decision on
                                                    #   rows written before the engine kept it
+python manage.py import_baseline_distress_flags --dry-run --file export.csv
+                                                   # score a Qualtrics baseline export for Section 11
+                                                   #   signals, write DistressFlag(source='baseline').
+                                                   #   Defaults --id-column=participant_id
+                                                   #   --id-field=user_id; both still overridable.
 python manage.py test dashboard --settings=project.test_settings
 ```
 
@@ -193,7 +198,7 @@ what is deployed. The live schema is richer — e.g. `JITAILog` has **36** colum
 randomization and routing audit landed in migrations `0042`–`0043`, and
 `threshold_at_decision` / `threshold_source` in `0046`); `EMA` carries `ema_type`,
 outcome-window fields and `served_sub_item_ids`; there are additional tables (`EMAItemResponse`,
-`EngagementLog`, `PhoneTelemetry`, `EventDay`, `CheckinReminder`, `WearableSync`); and four derived
+`EngagementLog`, `PhoneTelemetry`, `EventDay`, `CheckinReminder`, `WearableSync`, `DistressFlag`); and four derived
 `dashboard_*` monitoring tables. For the actual deployed schema,
 trust `backend/app/models.py` and `analytics/analysis-resources/production_schema.md` (the latter maps every
 production table to its `data-dictionary.md` logical name).
@@ -382,6 +387,57 @@ Candidate trigger signals:
 
 Trigger reason string format (for `JITAILog.trigger_reason`): concatenate active signals,
 e.g. `"hr_elevated+stress_high"` or `"ema_low_mood+hr_elevated"`.
+
+---
+
+## Distress override (protocol Section 11)
+
+Any distress signal suspends prompt randomization for that participant and the app shows a
+resource card instead of a coping message. Logic lives in `backend/app/distress.py`; state lives
+in `DistressFlag`. Two sources, both checked inside `_evaluate_user` **before** the randomization
+draw, after the run-in gate (run-in is named first when both apply):
+
+- **baseline** (`source='baseline'`): the Qualtrics screens, scored offline in
+  `analytics/baseline_survey_scoring/` (`scoring.py`'s `phq9_self_harm_positive`,
+  `phq9_severity_alert`, `scoff_positive`, `audit_c_alert`, `pgsi_problem_gambling`,
+  `hunger_positive`, mapped to signal codes by `section11.py`) and turned into
+  `DistressFlag` rows by `manage.py import_baseline_distress_flags --file ... --id-column ...
+  --id-field user_id` (backend/; the export's `participant_id` is the numeric `user_id`). Re-running the same export is a no-op: a row is skipped
+  once a `DistressFlag` with that exact signal set already exists for the user. `free_text_risk`
+  is not produced by this pipeline at all — there is no free-text column in
+  `analytics/baseline_survey_scoring/definitions.py` — and stays a manual staff process. Pauses
+  coping prompts until staff document same-day contact (Django Admin action "Mark same-day
+  contact documented" sets `contact_documented_at`); randomization then resumes. Only the signal
+  codes are stored, never a score or the free-text disclosure.
+- **momentary** (`source='momentary'`): raised when a submitted check-in has ANY of
+  `B1_valence == 1` (scale floor), `B2_stress == 7` (scale ceiling), `B1_affect_sad == 5`, or
+  `B1_affect_anxious == 5` (both scale ceilings) — exact values, confirmed by Dr. Chang
+  2026-09-22 (`dashboard/data/config.py`'s `DISTRESS_B1_VALENCE_FLOOR` /
+  `DISTRESS_B2_STRESS_CEILING` / `DISTRESS_B1_AFFECT_CEILING`). Separate from, and not to be
+  confused with, the `ROUTING_TRIGGER_RULES` inequality cutoffs in `ema_catalog.py` used for
+  coping-message topic selection. Pauses for `DISTRESS_MOMENTARY_PAUSE_HOURS` (24). Multiple
+  signals can fire on one check-in (e.g. both sad and anxious at once) — all are recorded, not
+  deduped.
+
+A suppressed decision point is logged with `send_prompt=False`, `randomization_draw` and
+`randomization_probability` both null, and `JITAILog.suppression_reason` set (`run_in`,
+`distress_baseline`, `distress_momentary`). That column, not `trigger_reason`, is what the
+randomization audit and the timeline read, so a suppressed row is never mistaken for a dropped
+prompt or an engine defect. `POST /ema/responses/` returns `resource_card` (null when no override
+is active) after any check-in submitted under an active override. Card contents are
+`RESOURCE_CARD_RESOURCES` in `distress.py`: the seven resources from the study's resource document
+(the same seven as the baseline block), with digits-only contacts so tap-to-call works, and the
+911 instruction in the card message. The backend cannot see the app version, so a participant on
+an old build is suppressed but sees no card; every participant must be on the new build before Day 8.
+
+Decided by Dr. Chang 2026-09-23, so do not add them to the backend: **staff alerts come from
+Qualtrics** (it emails the PI and staff when a flagged baseline is submitted, so the same-day
+alert exists outside this repo; the import only suppresses); **`contact_documented_at` is a
+timestamp only**, with who called and what was given kept in the staff contact log, not Django
+(no free-text storage); in-app flags are resource-card-only with no staff notice. Staff mark a
+baseline flag documented in Admin after the log entry: same day for the two PHQ-9 flags, at the
+next visit for alcohol, eating, gambling and food. An unmarked flag suppresses that participant
+for the rest of the study, by design.
 
 ---
 

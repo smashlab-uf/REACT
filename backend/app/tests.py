@@ -1,7 +1,11 @@
 import os
+import tempfile
 from datetime import datetime, timedelta
+from io import StringIO
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 from zoneinfo import ZoneInfo
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -17,9 +21,10 @@ def eastern_today():
     return timezone.now().astimezone(EASTERN).date()
 
 from app.ema_catalog import EMA_RESPONSE_WINDOW_MINUTES
+from dashboard.data import config as study_config
 from dashboard.data.config import RUN_IN_DAYS
 from app.models import (
-    CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, HRVSample,
+    CheckinReminder, DistressFlag, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, HRVSample,
     JITAILog, PhoneTelemetry, StressSample, User, WearableDevice,
 )
 from app.serializers import (
@@ -1757,6 +1762,26 @@ class EMASerializerLikertValidationTests(TestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
 
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMAAnswerSerializerRangeValidationTests(TestCase):
+    """EMAAnswerSerializer.validate is what protects the exact-equality distress
+    cutoffs (app/distress.py): an out-of-range value like 99 is rejected here,
+    long before it could ever reach a `==` comparison."""
+
+    def setUp(self):
+        self.user = make_user(email='ema-answer-range@test.com')
+        self.client = authenticated_client(self.user)
+
+    def test_value_above_item_max_value_is_rejected(self):
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-RANGE',
+            'ema_type': 'scheduled_check_in',
+            'responses': [{'sub_item_id': 'B1_valence', 'value': 99}],
+        }, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('above maximum', str(response.json()))
+
+
 # ---------------------------------------------------------------------------
 # Ownership: PhoneTelemetry user derived from JWT, not body
 # ---------------------------------------------------------------------------
@@ -1974,7 +1999,9 @@ class EvaluateJITAITriggersTests(TestCase):
         self.assertFalse(log.send_prompt)
         self.assertEqual(log.status, 'not_sent')
         self.assertEqual(log.trigger_reason, 'run-in period')
+        self.assertEqual(log.suppression_reason, 'run_in')
         self.assertIsNone(log.randomization_draw)
+        self.assertIsNone(log.randomization_probability)
         self.assertEqual(log.prompt_id, '')
         mock_send.assert_not_called()
 
@@ -2033,6 +2060,136 @@ class EvaluateJITAITriggersTests(TestCase):
 
         self.assertFalse(JITAILog.objects.get(user=user).send_prompt)
         mock_send.assert_not_called()
+
+    def _flag(self, user, source, **kwargs):
+        defaults = {'signals': ['phq9_self_harm'] if source == 'baseline' else ['b1_low_valence']}
+        if source == 'momentary':
+            defaults['expires_at'] = timezone.now() + timedelta(hours=24)
+        defaults.update(kwargs)
+        return DistressFlag.objects.create(user=user, source=source, **defaults)
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_baseline_flag_suppresses_before_the_randomization_draw(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._volatile_cohort(user)
+        self._flag(user, 'baseline')
+
+        evaluate_jitai_triggers()
+
+        log = JITAILog.objects.get(user=user)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.status, 'not_sent')
+        self.assertEqual(log.suppression_reason, 'distress_baseline')
+        self.assertEqual(log.trigger_reason, 'distress override (baseline)')
+        self.assertIsNone(log.randomization_draw)
+        self.assertIsNone(log.randomization_probability)
+        self.assertIsNone(log.message_arm)
+        self.assertEqual(log.prompt_id, '')
+        mock_rand.assert_not_called()
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_active_momentary_flag_suppresses(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._volatile_cohort(user)
+        self._flag(user, 'momentary')
+
+        evaluate_jitai_triggers()
+
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.suppression_reason, 'distress_momentary')
+        self.assertFalse(log.send_prompt)
+        mock_rand.assert_not_called()
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_expired_momentary_flag_no_longer_suppresses(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._volatile_cohort(user)
+        self._flag(user, 'momentary', expires_at=timezone.now() - timedelta(minutes=1))
+
+        evaluate_jitai_triggers()
+
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.suppression_reason, '')
+        self.assertTrue(log.send_prompt)
+        mock_send.assert_called_once()
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_baseline_flag_lifts_once_contact_is_documented(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._volatile_cohort(user)
+        self._flag(user, 'baseline', contact_documented_at=timezone.now())
+
+        evaluate_jitai_triggers()
+
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.suppression_reason, '')
+        self.assertTrue(log.send_prompt)
+        mock_send.assert_called_once()
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_another_participants_flag_does_not_suppress(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        flagged = self._make_enrolled_user(email='flagged@ufl.edu')
+        clear = self._make_enrolled_user(email='clear@ufl.edu')
+        self._volatile_cohort(clear)
+        self._flag(flagged, 'baseline')
+
+        evaluate_jitai_triggers()
+
+        self.assertEqual(JITAILog.objects.get(user=clear).suppression_reason, '')
+        mock_send.assert_called_once()
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_baseline_flag_is_named_when_both_kinds_are_active(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._volatile_cohort(user)
+        self._flag(user, 'momentary')
+        self._flag(user, 'baseline')
+
+        evaluate_jitai_triggers()
+
+        self.assertEqual(JITAILog.objects.get(user=user).suppression_reason, 'distress_baseline')
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_run_in_is_named_ahead_of_distress(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        volatile = self._volatile_cohort(user)
+        self._enroll_on_study_day(user, volatile, 2)
+        self._flag(user, 'baseline')
+
+        evaluate_jitai_triggers()
+
+        self.assertEqual(JITAILog.objects.get(user=user).suppression_reason, 'run_in')
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_flag_leaves_an_ineligible_decision_untouched(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._make_ema(user, 4, 4, 4, offset_seconds=0)
+        self._make_ema(user, 4, 4, 4, offset_seconds=60)
+        self._flag(user, 'baseline')
+
+        evaluate_jitai_triggers()
+
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.trigger_reason, 'insufficient within-person history')
+        self.assertEqual(log.suppression_reason, '')
 
     @patch('app.tasks.random.uniform', return_value=0.1)
     @patch('app.tasks.send_jitai_prompt')
@@ -3713,3 +3870,363 @@ class UserAdminEnrollActionTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Enroll for notifications')
         self.assertContains(response, self.enroll_url)
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class MomentaryDistressSignalTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='signals@test.com')
+
+    def _ema(self, valence=None, stress=None, sad=None, anxious=None):
+        ema = EMA.objects.create(user=self.user, prompt_id='P', status='completed')
+        items = [
+            ('B1', 'B1_valence', valence), ('B2', 'B2_stress', stress),
+            ('B1', 'B1_affect_sad', sad), ('B1', 'B1_affect_anxious', anxious),
+        ]
+        for item_id, sub_item_id, value in items:
+            if value is not None:
+                EMAItemResponse.objects.create(
+                    ema=ema, item_id=item_id, sub_item_id=sub_item_id,
+                    response_type='likert', value_numeric=value,
+                )
+        return ema
+
+    def test_valence_at_floor_signals_and_one_above_does_not(self):
+        from app.distress import momentary_signals
+        self.assertEqual(momentary_signals(self._ema(valence=1)), ['b1_low_valence'])
+        self.assertEqual(momentary_signals(self._ema(valence=2)), [])
+
+    def test_stress_at_ceiling_signals_and_one_below_does_not(self):
+        from app.distress import momentary_signals
+        self.assertEqual(momentary_signals(self._ema(stress=7)), ['b2_high_stress'])
+        self.assertEqual(momentary_signals(self._ema(stress=6)), [])
+
+    def test_sad_at_ceiling_signals_independently(self):
+        from app.distress import momentary_signals
+        self.assertEqual(momentary_signals(self._ema(sad=5)), ['b1_affect_sad'])
+        self.assertEqual(momentary_signals(self._ema(sad=4)), [])
+
+    def test_anxious_at_ceiling_signals_independently(self):
+        from app.distress import momentary_signals
+        self.assertEqual(momentary_signals(self._ema(anxious=5)), ['b1_affect_anxious'])
+        self.assertEqual(momentary_signals(self._ema(anxious=4)), [])
+
+    def test_sad_and_anxious_can_both_fire_on_one_check_in(self):
+        from app.distress import momentary_signals
+        self.assertEqual(
+            sorted(momentary_signals(self._ema(sad=5, anxious=5))),
+            ['b1_affect_anxious', 'b1_affect_sad'],
+        )
+
+    def test_missing_answers_never_signal(self):
+        from app.distress import momentary_signals
+        self.assertEqual(momentary_signals(self._ema()), [])
+
+    def test_skipped_item_does_not_signal_even_near_cutoff(self):
+        # stress/sad/anxious simply have no row this check-in (rotated out),
+        # not a low/neutral value -- must not be treated as satisfying anything.
+        from app.distress import momentary_signals
+        self.assertEqual(momentary_signals(self._ema(valence=4)), [])
+
+    def test_raising_a_flag_pauses_for_the_configured_hours(self):
+        from app.distress import raise_momentary_flag
+        flag = raise_momentary_flag(self._ema(stress=7))
+        self.assertEqual(flag.source, 'momentary')
+        self.assertEqual(flag.signals, ['b2_high_stress'])
+        window = flag.expires_at - flag.raised_at
+        self.assertEqual(window, timedelta(hours=study_config.DISTRESS_MOMENTARY_PAUSE_HOURS))
+        self.assertEqual(window, timedelta(hours=24))
+
+    def test_no_flag_is_created_without_a_signal(self):
+        from app.distress import raise_momentary_flag
+        self.assertIsNone(raise_momentary_flag(self._ema(valence=6, stress=1)))
+        self.assertFalse(DistressFlag.objects.exists())
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMAResponseDistressTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='submit-distress@test.com')
+        self.client = authenticated_client(self.user)
+
+    def _submit(self, valence=None, stress=None, sad=None, anxious=None):
+        pairs = [
+            ('B1_valence', valence), ('B2_stress', stress),
+            ('B1_affect_sad', sad), ('B1_affect_anxious', anxious),
+        ]
+        responses = [
+            {'sub_item_id': sub_item_id, 'value': value}
+            for sub_item_id, value in pairs if value is not None
+        ]
+        return self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-DISTRESS',
+            'ema_type': 'scheduled_check_in',
+            'responses': responses,
+        }, format='json')
+
+    def test_flagged_check_in_returns_the_resource_card_and_raises_a_flag(self):
+        response = self._submit(valence=4, stress=7)
+        self.assertEqual(response.status_code, 201)
+        card = response.json()['resource_card']
+        self.assertTrue(any('988' in (item.get('contact') or '') for item in card['resources']))
+        flag = DistressFlag.objects.get(user=self.user)
+        self.assertEqual(flag.source, 'momentary')
+        self.assertEqual(flag.ema_id, response.json()['id'])
+
+    def test_unflagged_check_in_has_no_card(self):
+        response = self._submit(valence=4, stress=2)
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNone(response.json()['resource_card'])
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def _card(self):
+        response = self._submit(valence=4, stress=7)
+        return response.json()['resource_card']
+
+    def test_card_lists_the_seven_baseline_block_resources_in_order(self):
+        names = [resource['name'] for resource in self._card()['resources']]
+        self.assertEqual(names, [
+            'Campus Counseling Center',
+            '988 Suicide and Crisis Lifeline',
+            'Hitchcock Field & Fork Pantry',
+            'National Alliance for Eating Disorders Helpline',
+            'SAMHSA National Helpline',
+            'National Problem Gambling Helpline',
+            "Florida's Gambling Helpline",
+        ])
+
+    def test_card_contacts_are_the_confirmed_digits(self):
+        contacts = {resource['name']: resource['contact'] for resource in self._card()['resources']}
+        self.assertEqual(contacts['National Problem Gambling Helpline'], '1-800-697-3738')
+        self.assertEqual(contacts["Florida's Gambling Helpline"], '888-236-4848')
+        self.assertEqual(contacts['988 Suicide and Crisis Lifeline'], '988')
+
+    def test_every_card_contact_is_dialable_by_the_mobile_pattern(self):
+        import re
+        dialable = re.compile(r'^[0-9+\-\s()]+$')
+        for resource in self._card()['resources']:
+            self.assertRegex(resource['contact'], dialable, resource['name'])
+
+    def test_card_message_leads_with_the_911_instruction(self):
+        self.assertIn('call 911', self._card()['message'])
+
+    def test_sad_at_ceiling_returns_the_resource_card(self):
+        response = self._submit(sad=5)
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNotNone(response.json()['resource_card'])
+        self.assertEqual(DistressFlag.objects.get(user=self.user).signals, ['b1_affect_sad'])
+
+    def test_anxious_at_ceiling_returns_the_resource_card(self):
+        response = self._submit(anxious=5)
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNotNone(response.json()['resource_card'])
+        self.assertEqual(DistressFlag.objects.get(user=self.user).signals, ['b1_affect_anxious'])
+
+    def test_check_in_under_an_active_baseline_flag_shows_the_card(self):
+        DistressFlag.objects.create(user=self.user, source='baseline', signals=['scoff'])
+        response = self._submit(valence=4, stress=2)
+        self.assertIsNotNone(response.json()['resource_card'])
+
+    def test_check_in_after_contact_is_documented_has_no_card(self):
+        DistressFlag.objects.create(
+            user=self.user, source='baseline', signals=['scoff'],
+            contact_documented_at=timezone.now(),
+        )
+        response = self._submit(valence=4, stress=2)
+        self.assertIsNone(response.json()['resource_card'])
+
+    def test_dismissed_feedback_never_raises_a_flag(self):
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-DISMISSED',
+            'ema_type': 'prompt_feedback',
+            'responses': [],
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertFalse(DistressFlag.objects.exists())
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class DistressFlagAdminTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='admin-flag@test.com')
+        staff = AuthUser.objects.create_superuser('staff', 'staff@test.com', 'pw')
+        self.client.force_login(staff)
+
+    def _run_action(self, flags):
+        return self.client.post('/admin/app/distressflag/', {
+            'action': 'mark_contact_documented',
+            '_selected_action': [flag.pk for flag in flags],
+        }, follow=True)
+
+    def test_action_documents_baseline_contact_and_resumes_randomization(self):
+        from app.distress import active_distress_flag
+        flag = DistressFlag.objects.create(user=self.user, source='baseline', signals=['scoff'])
+        self.assertIsNotNone(active_distress_flag(self.user))
+
+        response = self._run_action([flag])
+
+        self.assertEqual(response.status_code, 200)
+        flag.refresh_from_db()
+        self.assertIsNotNone(flag.contact_documented_at)
+        self.assertIsNone(active_distress_flag(self.user))
+
+    def test_action_leaves_momentary_flags_alone(self):
+        flag = DistressFlag.objects.create(
+            user=self.user, source='momentary', signals=['b2_high_stress'],
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
+        self._run_action([flag])
+        flag.refresh_from_db()
+        self.assertIsNone(flag.contact_documented_at)
+
+    def test_change_form_lists_every_signal_code(self):
+        flag = DistressFlag.objects.create(user=self.user, source='baseline', signals=['phq9_self_harm'])
+        response = self.client.get(f'/admin/app/distressflag/{flag.pk}/change/')
+        self.assertEqual(response.status_code, 200)
+        for code in ('phq9_self_harm', 'phq9_severity', 'scoff', 'audit_c',
+                     'problem_gambling', 'food_insecurity', 'free_text_risk'):
+            self.assertContains(response, f'value="{code}"')
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class ImportBaselineDistressFlagsCommandTests(TestCase):
+    """Exercises the real analytics/baseline_survey_scoring pipeline end to
+    end: a minimal export whose headers are definitions.py column names
+    directly (bypassing Qualtrics text matching), scored for real, matched
+    to real Users, and written as real DistressFlag rows."""
+
+    def setUp(self):
+        self.flagged = make_user(email='flagged-baseline@ufl.edu')
+        self.clear = make_user(email='clear-baseline@ufl.edu')
+
+    def _write_csv(self, rows):
+        tmp_dir = tempfile.mkdtemp()
+        path = Path(tmp_dir) / 'export.csv'
+        import pandas as pd
+        pd.DataFrame(rows).to_csv(path, index=False)
+        return path
+
+    def _phq9_self_harm_row(self, participant_id):
+        row = {f'phq9_{i}': 0 for i in range(1, 10)}
+        row['phq9_9'] = 1
+        row['participant_id'] = participant_id
+        return row
+
+    def _clear_row(self, participant_id):
+        row = {f'phq9_{i}': 0 for i in range(1, 10)}
+        row['participant_id'] = participant_id
+        return row
+
+    def _run(self, path, dry_run=False, id_column='participant_id', id_field='email'):
+        args = [f'--file={path}']
+        if id_column is not None:
+            args.append(f'--id-column={id_column}')
+        if id_field is not None:
+            args.append(f'--id-field={id_field}')
+        out = StringIO()
+        call_command('import_baseline_distress_flags', *args, dry_run=dry_run, stdout=out)
+        return out.getvalue()
+
+    def test_flagged_row_creates_a_baseline_flag(self):
+        path = self._write_csv([
+            self._phq9_self_harm_row(self.flagged.email),
+            self._clear_row(self.clear.email),
+        ])
+        output = self._run(path)
+
+        flag = DistressFlag.objects.get(user=self.flagged)
+        self.assertEqual(flag.source, 'baseline')
+        self.assertEqual(flag.signals, ['phq9_self_harm'])
+        self.assertFalse(DistressFlag.objects.filter(user=self.clear).exists())
+        self.assertIn('Created 1 baseline flag(s)', output)
+
+    def test_dry_run_writes_nothing(self):
+        path = self._write_csv([self._phq9_self_harm_row(self.flagged.email)])
+        output = self._run(path, dry_run=True)
+
+        self.assertFalse(DistressFlag.objects.exists())
+        self.assertIn('Would create 1 baseline flag(s)', output)
+        self.assertIn(str(self.flagged.user_id), output)
+
+    def test_rerunning_the_same_export_does_not_duplicate(self):
+        path = self._write_csv([self._phq9_self_harm_row(self.flagged.email)])
+        self._run(path)
+        self._run(path)
+
+        self.assertEqual(DistressFlag.objects.filter(user=self.flagged).count(), 1)
+
+    def test_unmatched_identifier_is_reported_not_silently_dropped(self):
+        path = self._write_csv([self._phq9_self_harm_row('nobody@ufl.edu')])
+        output = self._run(path)
+
+        self.assertFalse(DistressFlag.objects.exists())
+        self.assertIn('matched no User.email', output)
+        self.assertIn('nobody@ufl.edu', output)
+
+    def test_id_field_user_id_matches_by_primary_key(self):
+        path = self._write_csv([self._phq9_self_harm_row(str(self.flagged.user_id))])
+        self._run(path, id_column='participant_id', id_field='user_id')
+
+        self.assertTrue(DistressFlag.objects.filter(user=self.flagged).exists())
+
+    def test_non_numeric_identifier_under_user_id_is_reported(self):
+        path = self._write_csv([self._phq9_self_harm_row('not-a-number')])
+        output = self._run(path, id_field='user_id')
+
+        self.assertFalse(DistressFlag.objects.exists())
+        self.assertIn('missing or unusable', output)
+
+    def test_missing_id_column_raises_a_clear_error(self):
+        path = self._write_csv([self._phq9_self_harm_row(self.flagged.email)])
+        with self.assertRaises(Exception):
+            self._run(path, id_column='not_a_real_column')
+
+    def test_asrs_positive_alone_creates_no_flag(self):
+        row = self._clear_row(self.flagged.email)
+        row.update({f'asrs_{i}': 3 for i in range(1, 7)})
+        path = self._write_csv([row])
+        self._run(path)
+
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def test_free_text_disclosure_column_is_not_read_by_this_command(self):
+        row = self._clear_row(self.flagged.email)
+        row['free_text_disclosure'] = 'I have been thinking about hurting myself'
+        path = self._write_csv([row])
+        self._run(path)
+
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def test_defaults_match_users_by_user_id_with_no_flags_passed(self):
+        path = self._write_csv([self._phq9_self_harm_row(str(self.flagged.user_id))])
+        self._run(path, id_column=None, id_field=None)
+
+        self.assertTrue(DistressFlag.objects.filter(user=self.flagged).exists())
+
+    def test_leading_zero_user_id_identifier_matches(self):
+        path = self._write_csv([self._phq9_self_harm_row(f'0{self.flagged.user_id}')])
+        self._run(path, id_field='user_id')
+
+        self.assertTrue(DistressFlag.objects.filter(user=self.flagged).exists())
+
+    def test_whitespace_padded_user_id_identifier_matches(self):
+        path = self._write_csv([self._phq9_self_harm_row(f' {self.flagged.user_id} ')])
+        self._run(path, id_field='user_id')
+
+        self.assertTrue(DistressFlag.objects.filter(user=self.flagged).exists())
+
+    def test_float_formatted_user_id_identifier_matches(self):
+        path = self._write_csv([self._phq9_self_harm_row(f'{self.flagged.user_id}.0')])
+        self._run(path, id_field='user_id')
+
+        self.assertTrue(DistressFlag.objects.filter(user=self.flagged).exists())
+
+    def test_fractional_user_id_identifier_is_reported_not_guessed(self):
+        path = self._write_csv([self._phq9_self_harm_row(f'{self.flagged.user_id}.5')])
+        output = self._run(path, id_field='user_id')
+
+        self.assertFalse(DistressFlag.objects.exists())
+        self.assertIn('missing or unusable', output)

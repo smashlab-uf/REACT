@@ -292,7 +292,8 @@ def _mrt_integrity(users, now):
         draw_set_but_reason_ineligible=Count('id', filter=Q(
             randomization_draw__isnull=False, trigger_reason__in=INELIGIBLE_REASONS)),
         reason_eligible_but_no_draw=Count('id', filter=Q(
-            randomization_draw__isnull=True) & ~Q(trigger_reason__in=INELIGIBLE_REASONS)),
+            randomization_draw__isnull=True, suppression_reason='')
+            & ~Q(trigger_reason__in=INELIGIBLE_REASONS)),
     )
 
     return {

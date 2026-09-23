@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   LayoutAnimation,
+  Linking,
   Modal,
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -22,7 +23,13 @@ const HEADER_TITLE_SWAP = LayoutAnimation.create(180, LayoutAnimation.Types.ease
 const STICK_THRESHOLD = 12;
 import EMASubItemField from '../components/EMASubItemField';
 import { ema as emaApi, telemetry } from '../api/endpoints';
-import { EMAAnswerValue, EMAItem, EMANextShowResponse, EMASubItem } from '../api/types';
+import {
+  EMAAnswerValue,
+  EMAItem,
+  EMANextShowResponse,
+  EMASubItem,
+  ResourceCard,
+} from '../api/types';
 import { isAnswered, isSubItemVisible, pruneHiddenAnswers, visibleSubItems } from '../ema/visibility';
 import { useAuthStore } from '../store/authStore';
 import { useAlertStore } from '../store/alertStore';
@@ -38,7 +45,9 @@ const NO_SHOW_FALLBACK = "You're all caught up! There's no check-in for you righ
 
 const MAX_TIMEOUT_MS = 2147483647;
 
-type Phase = 'loading' | 'form' | 'noshow' | 'expired' | 'error';
+type Phase = 'loading' | 'form' | 'noshow' | 'expired' | 'error' | 'resources';
+
+const DIALABLE = /^[0-9+\-\s()]+$/;
 
 type Props = {
   visible: boolean;
@@ -63,6 +72,7 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
   const [phase, setPhase] = useState<Phase>('loading');
   const [survey, setSurvey] = useState<EMANextShowResponse | null>(null);
   const [noShowReason, setNoShowReason] = useState<string | null>(null);
+  const [resourceCard, setResourceCard] = useState<ResourceCard | null>(null);
   const [answers, setAnswers] = useState<Record<string, EMAAnswerValue>>({});
   const [submitting, setSubmitting] = useState(false);
   const [activeSectionTitle, setActiveSectionTitle] = useState<string | null>(null);
@@ -94,6 +104,7 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     setPhase('loading');
     setSurvey(null);
     setNoShowReason(null);
+    setResourceCard(null);
     setAnswers({});
     setSubmitting(false);
     setActiveSectionTitle(null);
@@ -174,7 +185,7 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     setSubmitting(true);
 
     try {
-      await emaApi.submitResponses({
+      const { data: submitted } = await emaApi.submitResponses({
         prompt_id: survey.prompt_id,
         ema_type: survey.ema_type,
         jitai_log_id: survey.jitai_log_id ?? jitaiLogId ?? null,
@@ -186,6 +197,12 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
         })),
       });
       logEngagement('ema_completed', survey.jitai_log_id);
+      if (submitted.resource_card) {
+        setResourceCard(submitted.resource_card);
+        setSubmitting(false);
+        setPhase('resources');
+        return;
+      }
       onClose();
     } catch (e: any) {
       const status = e?.response?.status;
@@ -289,6 +306,33 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
       );
     }
 
+    if (phase === 'resources' && resourceCard) {
+      return (
+        <ScrollView contentContainerStyle={styles.body}>
+          <Text style={styles.sectionTitle}>{resourceCard.title}</Text>
+          <Text style={styles.resourceMessage}>{resourceCard.message}</Text>
+          {resourceCard.resources.map((resource) => (
+            <View key={resource.name} style={styles.resource}>
+              <Text style={styles.resourceName}>{resource.name}</Text>
+              {resource.description ? (
+                <Text style={styles.messageBody}>{resource.description}</Text>
+              ) : null}
+              {resource.contact && DIALABLE.test(resource.contact) ? (
+                <TouchableOpacity
+                  style={styles.resourceCall}
+                  onPress={() => Linking.openURL(`tel:${resource.contact!.replace(/\s/g, '')}`)}
+                  accessibilityLabel={`Call ${resource.name}`}>
+                  <Text style={styles.resourceCallText}>Call {resource.contact}</Text>
+                </TouchableOpacity>
+              ) : resource.contact ? (
+                <Text style={styles.resourceContact}>{resource.contact}</Text>
+              ) : null}
+            </View>
+          ))}
+        </ScrollView>
+      );
+    }
+
     if (phase === 'expired') {
       return (
         <View style={styles.centered}>
@@ -356,9 +400,9 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
                 <Text style={styles.submitText}>Submit</Text>
               )}
             </TouchableOpacity>
-          ) : phase === 'noshow' || phase === 'expired' ? (
+          ) : phase === 'noshow' || phase === 'expired' || phase === 'resources' ? (
             <TouchableOpacity style={styles.submit} onPress={onClose}>
-              <Text style={styles.submitText}>Close</Text>
+              <Text style={styles.submitText}>{phase === 'resources' ? 'Done' : 'Close'}</Text>
             </TouchableOpacity>
           ) : null}
         </View>
@@ -416,6 +460,23 @@ const styles = StyleSheet.create({
   groupText: { ...typography.label, marginBottom: 12 },
   messageTitle: { fontSize: 20, fontWeight: '700', color: colors.textPrimary, marginBottom: 8, textAlign: 'center' },
   messageBody: { ...typography.body, textAlign: 'center', lineHeight: 21 },
+  resourceMessage: { ...typography.body, lineHeight: 21, marginBottom: 20 },
+  resource: {
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.md,
+    padding: 16,
+    marginBottom: 12,
+  },
+  resourceName: { ...typography.label, marginBottom: 4 },
+  resourceContact: { ...typography.body, marginTop: 8, fontWeight: '600' },
+  resourceCall: {
+    backgroundColor: colors.primary,
+    borderRadius: radius.md,
+    padding: 12,
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  resourceCallText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   retry: { marginTop: 20, paddingVertical: 10, paddingHorizontal: 24 },
   retryText: { fontSize: 16, color: colors.primary, fontWeight: '600' },
   footer: { paddingHorizontal: 24, paddingBottom: 40, paddingTop: 8 },

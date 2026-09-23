@@ -18,6 +18,7 @@ from app.notification_service import (
     send_checkin_reminder,
     send_jitai_prompt,
 )
+from app.distress import active_distress_flag
 from app.views import _latest_active_jitai, _today_scheduled_check_in_count
 from dashboard.data.config import (
     CHECKIN_REMINDER_DELAY_MINUTES,
@@ -188,9 +189,18 @@ def _evaluate_user(user, p):
     trigger_reason = str(row['decision_reason'])
     trigger_signal = None
 
-    if eligible and _in_run_in(user, latest_new_ema.sent_at):
-        eligible = False
-        trigger_reason = 'run-in period'
+    suppression_reason = ''
+    if eligible:
+        if _in_run_in(user, latest_new_ema.sent_at):
+            suppression_reason = 'run_in'
+            trigger_reason = 'run-in period'
+        else:
+            distress_flag = active_distress_flag(user)
+            if distress_flag is not None:
+                suppression_reason = f'distress_{distress_flag.source}'
+                trigger_reason = f'distress override ({distress_flag.source})'
+        if suppression_reason:
+            eligible = False
 
     raw_rmssd = row.get('rmssd_ms')
     rmssd_at_trigger = None if pd.isna(raw_rmssd) else float(raw_rmssd)
@@ -275,7 +285,8 @@ def _evaluate_user(user, p):
                 'rmssd_at_trigger': rmssd_at_trigger,
                 'rmssd_baseline_at_trigger': rmssd_baseline_at_trigger,
                 'hrv_class_at_trigger': hrv_class_at_trigger,
-                'randomization_probability': p,
+                'randomization_probability': None if suppression_reason else p,
+                'suppression_reason': suppression_reason,
                 'randomization_draw': draw,
                 'message_arm': message_arm,
                 'arm_randomization_probability': arm_p,
