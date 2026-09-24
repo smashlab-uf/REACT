@@ -384,12 +384,48 @@ class JITAILog(models.Model):
     matched_categories = models.JSONField(null=True, blank=True)
     category_drawn = models.CharField(max_length=64, null=True, blank=True)
     fallback_reason = models.CharField(max_length=128, blank=True, default='')
+    SUPPRESSION_CHOICES = [
+        ('run_in', 'Run-in period'),
+        ('distress_baseline', 'Distress override (baseline screen)'),
+        ('distress_momentary', 'Distress override (check-in)'),
+    ]
+    suppression_reason = models.CharField(
+        max_length=32, choices=SUPPRESSION_CHOICES, blank=True, default='', db_index=True
+    )
 
     class Meta:
         ordering = ['-triggered_at']
 
     def __str__(self):
         return f"JITAI for {self.user.email} at {self.triggered_at}"
+
+
+class DistressFlag(models.Model):
+    SOURCE_CHOICES = [
+        ('baseline', 'Baseline screen'),
+        ('momentary', 'Check-in'),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='distress_flags')
+    source = models.CharField(max_length=16, choices=SOURCE_CHOICES)
+    signals = models.JSONField(default=list, blank=True)
+    raised_at = models.DateTimeField(default=timezone.now, db_index=True)
+    ema = models.ForeignKey(EMA, on_delete=models.SET_NULL, null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    contact_documented_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-raised_at']
+        indexes = [models.Index(fields=['user', 'raised_at'])]
+
+    def is_active(self, now=None):
+        now = now or timezone.now()
+        if self.source == 'baseline':
+            return self.contact_documented_at is None
+        return self.expires_at is not None and now < self.expires_at
+
+    def __str__(self):
+        return f"{self.source} distress flag for {self.user.email} at {self.raised_at}"
 
 
 class EngagementLog(models.Model):

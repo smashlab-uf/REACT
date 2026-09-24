@@ -293,8 +293,10 @@ def mssd_lane(user, local_date):
             'trigger_reason': log.trigger_reason,
             'eligible': log.randomization_draw is not None,
             'send_prompt': log.send_prompt,
+            'suppression_reason': log.suppression_reason or None,
             'unexplained': bool(
                 above and log.randomization_draw is None
+                and not log.suppression_reason
                 and log.threshold_source == 'engine'
             ),
         })

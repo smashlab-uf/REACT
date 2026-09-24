@@ -129,6 +129,19 @@ AUDIT_C_CUT_OTHER = 3
 SCOFF_POSITIVE_AT = 2
 HUNGER_POSITIVE_AT = 1   # Sometimes true (1) or Often true (2)
 
+# Section 11 safety signals, added for the JITAI distress override
+# (backend/app/distress.py). Not from the codebook, which gives PHQ-9 no
+# severity bands at all: these are the instrument's own published scoring
+# (Kroenke, Spitzer & Williams, 2001). phq9_9 is "Thoughts that you would be
+# better off dead or of hurting yourself in some way" -- confirmed against
+# analysis-resources/Survey Scoring Codebook.docx, item 9 of 9, same order.
+PHQ9_SELF_HARM_ITEM = D.PHQ9[-1]
+PHQ9_MODERATELY_SEVERE_AT = 15  # 15-19 moderately severe, 20-27 severe
+
+# Not a new threshold: pgsi_band() below already treats 8+ as "problem
+# gambling". This just exposes that existing cutoff as a boolean flag.
+PGSI_PROBLEM_GAMBLING_AT = 8
+
 
 def score_ssis(frame: pd.DataFrame) -> Dict[str, pd.Series]:
     lo, hi = SSIS_RANGE
@@ -322,7 +335,11 @@ def pgsi_band(score) -> Optional[str]:
 
 def score_pgsi(frame: pd.DataFrame) -> Dict[str, pd.Series]:
     total = sum_score(frame, D.PGSI)
-    return {"pgsi_total": total, "pgsi_band": total.map(pgsi_band)}
+    return {
+        "pgsi_total": total,
+        "pgsi_band": total.map(pgsi_band),
+        "pgsi_problem_gambling": threshold_flag(total, PGSI_PROBLEM_GAMBLING_AT),
+    }
 
 
 def score_hunger(frame: pd.DataFrame) -> Dict[str, pd.Series]:
@@ -371,13 +388,23 @@ def score_rmeq(frame: pd.DataFrame) -> Dict[str, pd.Series]:
 
 
 def score_phq9(frame: pd.DataFrame) -> Dict[str, pd.Series]:
-    """Sum of all nine items, 0-27.
+    """Sum of all nine items, 0-27, plus the two Section 11 safety flags.
 
     The codebook's scoring line says "the sum of all four items". That is a
     leftover from when this instrument was PHQ-4 in the older xlsx; its own item
     list here has nine. Reported, not implemented.
+
+    phq9_self_harm_positive is a nonzero response to the self-harm item alone,
+    never summed with anything else. phq9_severity_alert is the total at or
+    above the moderately-severe band. Both feed the distress override and stay
+    separate from the "resource handout" ALERT_RULES below.
     """
-    return {"phq9_total": sum_score(frame, D.PHQ9)}
+    total = sum_score(frame, D.PHQ9)
+    return {
+        "phq9_total": total,
+        "phq9_self_harm_positive": threshold_flag(frame[PHQ9_SELF_HARM_ITEM], 1),
+        "phq9_severity_alert": threshold_flag(total, PHQ9_MODERATELY_SEVERE_AT),
+    }
 
 
 def score_scoff(frame: pd.DataFrame) -> Dict[str, pd.Series]:
@@ -480,5 +507,7 @@ SCORE_RANGES = {
     "hunger_endorsed_n": (0, 2), "asrs_count": (0, 6),
     "ucla3_total": (3, 9), "eds_total": (5, 25), "rmeq_total": (4, 25),
     "phq9_total": (0, 27), "scoff_total": (0, 5), "ace_total": (0, 10),
+    "pgsi_problem_gambling": (0, 1), "phq9_self_harm_positive": (0, 1),
+    "phq9_severity_alert": (0, 1),
     "macarthur_community": (1, 10), "macarthur_us": (1, 10),
 }
