@@ -320,7 +320,7 @@ class DistressFlagAdmin(ReadableAdminMixin, admin.ModelAdmin):
     def active(self, obj):
         return obj.is_active()
 
-    @admin.action(description="Mark same-day contact documented (resumes randomization)")
+    @admin.action(description="Mark contact documented (resumes randomization)")
     def mark_contact_documented(self, request, queryset):
         updated = queryset.filter(
             source="baseline", contact_documented_at__isnull=True

@@ -408,8 +408,8 @@ draw, after the run-in gate (run-in is named first when both apply):
   once a `DistressFlag` with that exact signal set already exists for the user. `free_text_risk`
   is not produced by this pipeline at all — there is no free-text column in
   `analytics/baseline_survey_scoring/definitions.py` — and stays a manual staff process. Pauses
-  coping prompts until staff document same-day contact (Django Admin action "Mark same-day
-  contact documented" sets `contact_documented_at`); randomization then resumes. Only the signal
+  coping prompts until staff mark the contact documented (Django Admin action "Mark contact
+  documented" sets `contact_documented_at`); randomization then resumes. Only the signal
   codes are stored, never a score or the free-text disclosure.
 - **momentary** (`source='momentary'`): raised when a submitted check-in has ANY of
   `B1_valence == 1` (scale floor), `B2_stress == 7` (scale ceiling), `B1_affect_sad == 5`, or

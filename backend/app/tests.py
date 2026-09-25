@@ -4296,6 +4296,17 @@ class DistressFlagAdminTests(TestCase):
         self.assertIsNotNone(flag.contact_documented_at)
         self.assertIsNone(active_distress_flag(self.user))
 
+    def test_action_label_does_not_promise_same_day_contact(self):
+        from app.admin import DistressFlagAdmin
+        label = DistressFlagAdmin.mark_contact_documented.short_description
+        self.assertNotIn('same-day', label.lower())
+        self.assertIn('contact documented', label.lower())
+
+    def test_action_is_offered_under_the_neutral_label_in_the_changelist(self):
+        DistressFlag.objects.create(user=self.user, source='baseline', signals=['scoff'])
+        response = self.client.get('/admin/app/distressflag/')
+        self.assertContains(response, 'Mark contact documented (resumes randomization)')
+
     def test_action_leaves_momentary_flags_alone(self):
         flag = DistressFlag.objects.create(
             user=self.user, source='momentary', signals=['b2_high_stress'],
