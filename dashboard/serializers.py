@@ -14,7 +14,7 @@ class MetricsDailySerializer(serializers.ModelSerializer):
             'slots_expected', 'slots_covered', 'slots_reminded_uncovered', 'slots_silent',
             'reminders_sent', 'reminders_per_checkin_median',
             'completeness_mean', 'ema_missing_b1b2_n',
-            'decision_points_n', 'eligible_n', 'sent_n', 'delivered_n', 'cap_hit',
+            'decision_points_n', 'eligible_n', 'sent_n', 'suppressed_n', 'delivered_n', 'cap_hit',
             'min_gap_min', 'cooldown_violations_n', 'runin_violation_n',
             'prompt_opened_n', 'prompt_acted_n', 'prompt_dismissed_n', 'outcome_captured_n',
             'wear_valid_pct', 'wear_gap_pct', 'gaps_gt2h_n', 'max_gap_min', 'hr_minutes_valid',

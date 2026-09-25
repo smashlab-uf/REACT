@@ -32,6 +32,7 @@ OUTCOME_COLORS = {
     'no data': '#bdbdbd', 'no history': '#bdbdbd', 'below threshold': '#74add1',
     'cooldown': '#fdae61', 'cap reached': '#f46d43',
     'eligible, not sent': '#8073ac', 'eligible, sent': '#1a9850',
+    'suppressed (run-in)': '#5ab4ac', 'suppressed (distress)': '#01665e',
 }
 STATE_COLORS = {'answered': '#1a9850', 'not answered': '#b2182b',
                 'not applicable': '#f0f0f0'}

@@ -119,5 +119,72 @@ class Section11SignalsTests(unittest.TestCase):
         self.assertEqual(signals.iloc[0], [])
 
 
+class MissingItemTests(unittest.TestCase):
+
+    def _scores(self, **overrides):
+        frame = pd.DataFrame([_row(**overrides)])
+        scores, _ = scoring.score_participants(frame)
+        return scores
+
+    def test_one_missing_phq9_item_leaves_severity_unflagged_not_false(self):
+        items = {D.PHQ9[i]: 3 for i in range(8)}
+        items[D.PHQ9[2]] = np.nan
+        items[D.PHQ9[-1]] = 0
+        scores = self._scores(**items)
+        self.assertTrue(pd.isna(scores['phq9_total'].iloc[0]))
+        self.assertTrue(pd.isna(scores['phq9_severity_alert'].iloc[0]))
+        self.assertEqual(section11_signals(scores).iloc[0], [])
+
+    def test_a_missing_self_harm_item_yields_no_code(self):
+        items = {D.PHQ9[i]: 0 for i in range(8)}
+        items[D.PHQ9[-1]] = np.nan
+        self.assertEqual(section11_signals(self._scores(**items)).iloc[0], [])
+
+
+class ExactCutoffTests(unittest.TestCase):
+
+    def _scores(self, **overrides):
+        scores, _ = scoring.score_participants(pd.DataFrame([_row(**overrides)]))
+        return scores.iloc[0]
+
+    def test_phq9_total_14_is_below_and_15_is_at_the_severity_cutoff(self):
+        below = {D.PHQ9[i]: 2 for i in range(7)}
+        below[D.PHQ9[-1]] = 0
+        at = dict(below, **{D.PHQ9[7]: 1})
+        below[D.PHQ9[7]] = 0
+        self.assertEqual(self._scores(**below)['phq9_total'], 14)
+        self.assertFalse(self._scores(**below)['phq9_severity_alert'])
+        self.assertEqual(self._scores(**at)['phq9_total'], 15)
+        self.assertTrue(self._scores(**at)['phq9_severity_alert'])
+
+    def test_self_harm_flags_at_every_nonzero_response(self):
+        for value, expected in ((0, False), (1, True), (2, True), (3, True)):
+            with self.subTest(value=value):
+                row = self._scores(**_phq9(0, value))
+                self.assertEqual(row['phq9_self_harm_positive'], expected)
+
+    def test_scoff_flags_at_two_not_one(self):
+        one = {D.SCOFF[0]: 1, **{D.SCOFF[i]: 0 for i in range(1, 5)}}
+        two = dict(one, **{D.SCOFF[1]: 1})
+        self.assertFalse(self._scores(**one)['scoff_positive'])
+        self.assertTrue(self._scores(**two)['scoff_positive'])
+
+    def test_hunger_flags_at_one_endorsed_item_not_zero(self):
+        none = {D.HUNGER_VITAL_SIGN[0]: 0, D.HUNGER_VITAL_SIGN[1]: 0}
+        one = dict(none, **{D.HUNGER_VITAL_SIGN[0]: 1})
+        self.assertFalse(self._scores(**none)['hunger_positive'])
+        self.assertTrue(self._scores(**one)['hunger_positive'])
+
+    def test_audit_c_cutoff_is_4_for_men_and_3_for_everyone_else(self):
+        def audit(total, gender):
+            items = {D.AUDIT_C[0]: total, D.AUDIT_C[1]: 0, D.AUDIT_C[2]: 0, D.GENDER: gender}
+            return self._scores(**items)['audit_c_alert']
+        self.assertFalse(audit(3, 'man'))
+        self.assertTrue(audit(4, 'man'))
+        self.assertFalse(audit(2, 'woman'))
+        self.assertTrue(audit(3, 'woman'))
+        self.assertTrue(audit(3, np.nan))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -6,7 +6,9 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from zoneinfo import ZoneInfo
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.test import APIClient
@@ -1295,6 +1297,26 @@ class JITAIEndpointTests(TestCase):
         self.assertEqual(response.status_code, http_status.HTTP_200_OK)
         self.assertEqual(len(response.data), 2)
 
+    def test_get_exposes_the_suppression_label(self):
+        JITAILog.objects.create(
+            user=self.user, prompt_id='', trigger_reason='run-in period', send_prompt=False,
+            status='suppressed', delivery_status='suppressed', suppression_reason='run_in')
+        JITAILog.objects.create(
+            user=self.user, prompt_id='', trigger_reason='cooldown active', send_prompt=False,
+            status='not_sent', delivery_status='not_sent')
+        rows = {row['trigger_reason']: row for row in self.client.get(f'/jitai/{self.user.user_id}/').data}
+        self.assertEqual(rows['run-in period']['suppression_reason'], 'run_in')
+        self.assertEqual(rows['run-in period']['status'], 'suppressed')
+        self.assertEqual(rows['cooldown active']['suppression_reason'], '')
+
+    def test_post_cannot_set_the_suppression_label(self):
+        response = self.client.post('/jitai/', {
+            'user': self.user.user_id, 'prompt_id': 'T1', 'trigger_reason': 'hr_elevated',
+            'send_prompt': True, 'suppression_reason': 'run_in',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        self.assertEqual(JITAILog.objects.get().suppression_reason, '')
+
     def test_get_returns_empty_list_for_user_with_no_logs(self):
         response = self.client.get(f'/jitai/{self.user.user_id}/')
         self.assertEqual(response.status_code, http_status.HTTP_200_OK)
@@ -1908,7 +1930,7 @@ class EvaluateJITAITriggersTests(TestCase):
         WearableDevice.objects.create(user=user, labfront_participant_id=f'LF_{email}')
         return user
 
-    def _make_ema(self, user, mood, stress, energy, offset_seconds=0):
+    def _make_ema(self, user, mood, stress, energy, offset_seconds=0, base=None):
         ema = EMA.objects.create(
             user=user,
             prompt_id='P1',
@@ -1918,7 +1940,7 @@ class EvaluateJITAITriggersTests(TestCase):
             status='completed',
             responded_at=timezone.now(),
         )
-        t = timezone.now() - timedelta(seconds=3600) + timedelta(seconds=offset_seconds)
+        t = (base or timezone.now() - timedelta(seconds=3600)) + timedelta(seconds=offset_seconds)
         EMA.objects.filter(pk=ema.pk).update(sent_at=t)
         ema.refresh_from_db()
         EMAItemResponse.objects.create(ema=ema, item_id='B1', sub_item_id='B1_valence', response_type='likert', value_numeric=mood)
@@ -1997,7 +2019,7 @@ class EvaluateJITAITriggersTests(TestCase):
 
         log = JITAILog.objects.get(user=user)
         self.assertFalse(log.send_prompt)
-        self.assertEqual(log.status, 'not_sent')
+        self.assertEqual(log.status, 'suppressed')
         self.assertEqual(log.trigger_reason, 'run-in period')
         self.assertEqual(log.suppression_reason, 'run_in')
         self.assertIsNone(log.randomization_draw)
@@ -2058,7 +2080,10 @@ class EvaluateJITAITriggersTests(TestCase):
 
         evaluate_jitai_triggers()
 
-        self.assertFalse(JITAILog.objects.get(user=user).send_prompt)
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.suppression_reason, 'run_in')
+        self.assertEqual(log.status, 'suppressed')
+        self.assertFalse(log.send_prompt)
         mock_send.assert_not_called()
 
     def _flag(self, user, source, **kwargs):
@@ -2080,7 +2105,7 @@ class EvaluateJITAITriggersTests(TestCase):
 
         log = JITAILog.objects.get(user=user)
         self.assertFalse(log.send_prompt)
-        self.assertEqual(log.status, 'not_sent')
+        self.assertEqual(log.status, 'suppressed')
         self.assertEqual(log.suppression_reason, 'distress_baseline')
         self.assertEqual(log.trigger_reason, 'distress override (baseline)')
         self.assertIsNone(log.randomization_draw)
@@ -2190,6 +2215,142 @@ class EvaluateJITAITriggersTests(TestCase):
         log = JITAILog.objects.get(user=user)
         self.assertEqual(log.trigger_reason, 'insufficient within-person history')
         self.assertEqual(log.suppression_reason, '')
+
+    NULL_ON_SUPPRESSION = (
+        'randomization_draw', 'randomization_probability', 'message_arm',
+        'arm_randomization_probability', 'arm_randomization_draw',
+        'eligible_prompt_ids', 'evaluated_items', 'matched_categories', 'category_drawn',
+    )
+
+    def _suppressed_log(self, reason):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user(email=f'suppressed_{reason}@ufl.edu')
+        volatile = self._volatile_cohort(user)
+        HeartRateSample.objects.create(user=user, timestamp=volatile.sent_at, bpm=88)
+        StressSample.objects.create(user=user, timestamp=volatile.sent_at, stress_score=61)
+        if reason == 'run_in':
+            self._enroll_on_study_day(user, volatile, 1)
+        else:
+            self._flag(user, 'baseline' if reason == 'distress_baseline' else 'momentary')
+        with patch('app.tasks.random.uniform', return_value=0.1) as rand, \
+                patch('app.tasks.select_prompt') as select, \
+                patch('app.tasks.select_control_prompt') as control, \
+                patch('app.tasks.send_jitai_prompt') as send:
+            evaluate_jitai_triggers()
+        for mocked in (rand, select, control, send):
+            mocked.assert_not_called()
+        return JITAILog.objects.get(user=user)
+
+    def test_every_suppressed_row_is_explicitly_labeled_and_fully_null(self):
+        for reason in ('run_in', 'distress_baseline', 'distress_momentary'):
+            with self.subTest(reason=reason):
+                log = self._suppressed_log(reason)
+                self.assertEqual(log.status, 'suppressed')
+                self.assertEqual(log.delivery_status, 'suppressed')
+                self.assertEqual(log.suppression_reason, reason)
+                self.assertFalse(log.send_prompt)
+                self.assertEqual(log.prompt_id, '')
+                self.assertEqual(log.fallback_reason, '')
+                for field in self.NULL_ON_SUPPRESSION:
+                    self.assertIsNone(getattr(log, field), field)
+
+    def test_suppressed_row_still_records_the_biometric_snapshot(self):
+        log = self._suppressed_log('distress_baseline')
+        self.assertEqual(log.hr_at_trigger, 88)
+        self.assertEqual(log.stress_at_trigger, 61)
+        self.assertIsNotNone(log.observed_mssd)
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_ineligible_row_under_a_flag_is_not_labeled_suppressed(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._make_ema(user, 4, 4, 4, offset_seconds=0)
+        self._make_ema(user, 4, 4, 4, offset_seconds=60)
+        self._flag(user, 'baseline')
+
+        evaluate_jitai_triggers()
+
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.status, 'not_sent')
+        self.assertEqual(log.delivery_status, 'not_sent')
+        self.assertEqual(log.suppression_reason, '')
+        self.assertEqual(log.randomization_probability, study_config.randomization_p())
+        self.assertIsNone(log.randomization_draw)
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_sent_row_is_never_labeled_suppressed(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._volatile_cohort(user)
+
+        evaluate_jitai_triggers()
+
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual((log.status, log.delivery_status, log.suppression_reason), ('pending', 'pending', ''))
+
+    def _enrolled_at(self, user, moment):
+        User.objects.filter(pk=user.pk).update(enrolled_at=moment)
+        user.refresh_from_db()
+
+    def _cohort_ending_at(self, user, moment):
+        base = moment - timedelta(seconds=300)
+        for i in range(5):
+            self._make_ema(user, 4, 4, 4, offset_seconds=i * 60, base=base)
+        return self._make_ema(user, 1, 1, 1, offset_seconds=300, base=base)
+
+    def _decision_for(self, enrolled, completed):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user(email='boundary@ufl.edu')
+        self._enrolled_at(user, enrolled)
+        self._cohort_ending_at(user, completed)
+        with patch('app.tasks.random.uniform', return_value=0.1), \
+                patch('app.tasks.send_jitai_prompt'):
+            evaluate_jitai_triggers()
+        return JITAILog.objects.get(user=user)
+
+    def test_run_in_ends_on_the_eastern_calendar_day_not_the_utc_day(self):
+        enrolled = datetime(2026, 9, 10, 20, 0, tzinfo=EASTERN)
+        last = self._decision_for(enrolled, datetime(2026, 9, 16, 23, 59, tzinfo=EASTERN))
+        self.assertEqual(last.suppression_reason, 'run_in')
+        self.assertFalse(last.send_prompt)
+
+    def test_first_eastern_minute_after_the_run_in_can_send(self):
+        enrolled = datetime(2026, 9, 10, 20, 0, tzinfo=EASTERN)
+        first = self._decision_for(enrolled, datetime(2026, 9, 17, 0, 1, tzinfo=EASTERN))
+        self.assertEqual(first.suppression_reason, '')
+        self.assertTrue(first.send_prompt)
+
+    def test_run_in_counts_calendar_days_across_the_november_fallback(self):
+        enrolled = datetime(2026, 10, 26, 12, 0, tzinfo=EASTERN)
+        last = self._decision_for(enrolled, datetime(2026, 11, 1, 23, 30, tzinfo=EASTERN))
+        self.assertEqual(last.suppression_reason, 'run_in')
+
+    def test_first_calendar_day_after_the_fallback_can_send_before_seven_full_days_elapse(self):
+        enrolled = datetime(2026, 10, 26, 12, 0, tzinfo=EASTERN)
+        first = self._decision_for(enrolled, datetime(2026, 11, 2, 0, 30, tzinfo=EASTERN))
+        self.assertEqual(first.suppression_reason, '')
+        self.assertTrue(first.send_prompt)
+
+    def test_run_in_is_decided_by_when_the_check_in_was_sent_not_when_it_is_evaluated(self):
+        enrolled = timezone.now() - timedelta(days=30)
+        early = self._decision_for(enrolled, enrolled + timedelta(days=2))
+        self.assertEqual(early.suppression_reason, 'run_in')
+
+    def test_a_flag_is_read_at_evaluation_time_so_an_expired_one_no_longer_suppresses(self):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._enrolled_at(user, timezone.now() - timedelta(days=20))
+        self._cohort_ending_at(user, timezone.now() - timedelta(hours=30))
+        self._flag(user, 'momentary', expires_at=timezone.now() - timedelta(hours=6))
+        with patch('app.tasks.random.uniform', return_value=0.1), \
+                patch('app.tasks.send_jitai_prompt') as send:
+            evaluate_jitai_triggers()
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.suppression_reason, '')
+        self.assertTrue(log.send_prompt)
+        send.assert_called_once()
 
     @patch('app.tasks.random.uniform', return_value=0.1)
     @patch('app.tasks.send_jitai_prompt')
@@ -3929,6 +4090,44 @@ class MomentaryDistressSignalTests(TestCase):
         from app.distress import momentary_signals
         self.assertEqual(momentary_signals(self._ema(valence=4)), [])
 
+    def _bare_ema(self):
+        return EMA.objects.create(user=self.user, prompt_id='P', status='completed')
+
+    def _stored(self, ema, sub_item_id, value, response_type='likert'):
+        EMAItemResponse.objects.create(
+            ema=ema, item_id=sub_item_id.split('_')[0], sub_item_id=sub_item_id,
+            response_type=response_type, value_numeric=value)
+
+    def test_stored_rows_with_no_numeric_value_never_signal(self):
+        from app.distress import momentary_signals
+        ema = self._bare_ema()
+        for sub_item_id in ('B1_valence', 'B2_stress', 'B1_affect_sad', 'B1_affect_anxious'):
+            self._stored(ema, sub_item_id, None)
+        self.assertEqual(momentary_signals(ema), [])
+
+    def test_only_unrelated_sub_items_never_signal(self):
+        from app.distress import momentary_signals
+        ema = self._bare_ema()
+        self._stored(ema, 'B4_hunger', 7)
+        self._stored(ema, 'B1_arousal', 1)
+        self._stored(ema, 'B1_affect_angry', 5)
+        self.assertEqual(momentary_signals(ema), [])
+
+    def test_out_of_range_stored_values_never_signal(self):
+        from app.distress import momentary_signals
+        cases = {
+            'B1_valence': (0, -1, 8, 99),
+            'B2_stress': (0, -1, 8, 99),
+            'B1_affect_sad': (0, -1, 6, 99),
+            'B1_affect_anxious': (0, -1, 6, 99),
+        }
+        for sub_item_id, values in cases.items():
+            for value in values:
+                with self.subTest(sub_item_id=sub_item_id, value=value):
+                    ema = self._bare_ema()
+                    self._stored(ema, sub_item_id, value)
+                    self.assertEqual(momentary_signals(ema), [])
+
     def test_raising_a_flag_pauses_for_the_configured_hours(self):
         from app.distress import raise_momentary_flag
         flag = raise_momentary_flag(self._ema(stress=7))
@@ -4011,6 +4210,30 @@ class EMAResponseDistressTests(TestCase):
 
     def test_card_message_leads_with_the_911_instruction(self):
         self.assertIn('call 911', self._card()['message'])
+
+    def test_null_value_is_rejected_and_nothing_is_stored(self):
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': 'EMA-NULL', 'ema_type': 'scheduled_check_in',
+            'responses': [{'sub_item_id': 'B1_valence', 'value': None}],
+        }, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(EMA.objects.filter(prompt_id='EMA-NULL').exists())
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def test_every_distress_item_rejects_values_outside_its_scale(self):
+        cases = {
+            'B1_valence': (0, 8, 99), 'B2_stress': (0, 8, 99),
+            'B1_affect_sad': (0, 6, 99), 'B1_affect_anxious': (0, 6, 99),
+        }
+        for sub_item_id, values in cases.items():
+            for value in values:
+                with self.subTest(sub_item_id=sub_item_id, value=value):
+                    response = self.client.post('/ema/responses/', {
+                        'prompt_id': 'EMA-RANGE', 'ema_type': 'scheduled_check_in',
+                        'responses': [{'sub_item_id': sub_item_id, 'value': value}],
+                    }, format='json')
+                    self.assertEqual(response.status_code, 400)
+        self.assertFalse(DistressFlag.objects.exists())
 
     def test_sad_at_ceiling_returns_the_resource_card(self):
         response = self._submit(sad=5)
@@ -4180,9 +4403,29 @@ class ImportBaselineDistressFlagsCommandTests(TestCase):
         self.assertIn('missing or unusable', output)
 
     def test_missing_id_column_raises_a_clear_error(self):
+        from django.core.management.base import CommandError
         path = self._write_csv([self._phq9_self_harm_row(self.flagged.email)])
-        with self.assertRaises(Exception):
+        with self.assertRaises(CommandError) as raised:
             self._run(path, id_column='not_a_real_column')
+        self.assertIn("'not_a_real_column' not found", str(raised.exception))
+
+    def test_nonexistent_file_raises_a_clear_error(self):
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError) as raised:
+            self._run(Path('/nonexistent/export.csv'))
+        self.assertIn('does not exist', str(raised.exception))
+
+    def test_blank_identifier_is_reported_not_matched(self):
+        path = self._write_csv([self._phq9_self_harm_row('')])
+        output = self._run(path, id_field='user_id')
+        self.assertFalse(DistressFlag.objects.exists())
+        self.assertIn('missing or unusable', output)
+
+    def test_a_row_with_no_positive_screen_writes_nothing_and_says_so(self):
+        path = self._write_csv([self._clear_row(self.clear.email)])
+        output = self._run(path)
+        self.assertFalse(DistressFlag.objects.exists())
+        self.assertIn('Created 0 baseline flag(s)', output)
 
     def test_asrs_positive_alone_creates_no_flag(self):
         row = self._clear_row(self.flagged.email)
@@ -4230,3 +4473,238 @@ class ImportBaselineDistressFlagsCommandTests(TestCase):
 
         self.assertFalse(DistressFlag.objects.exists())
         self.assertIn('missing or unusable', output)
+
+
+class MigrationTestCase(TransactionTestCase):
+    migrate_from = None
+    migrate_to = None
+
+    def setUp(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.migrate_from)
+        self.old_apps = executor.loader.project_state(self.migrate_from).apps
+
+    def migrate_forward(self, targets=None):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(targets or self.migrate_to)
+        return executor.loader.project_state(targets or self.migrate_to).apps
+
+    def tearDown(self):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
+    def old_log(self, user, **kwargs):
+        defaults = dict(user=user, prompt_id='', send_prompt=False, status='not_sent', delivery_status='not_sent')
+        defaults.update(kwargs)
+        return self.old_apps.get_model('app', 'JITAILog').objects.create(**defaults)
+
+    def old_user(self, email='migrate@test.com'):
+        return self.old_apps.get_model('app', 'User').objects.create(
+            email=email, birthdate='2000-01-01', gender='male')
+
+
+class SuppressionReasonColumnMigrationTests(MigrationTestCase):
+    migrate_from = [('app', '0047_hrvsample_and_jitai_hrv_fields')]
+    migrate_to = [('app', '0048_distressflag_and_jitailog_suppression_reason')]
+
+    def test_existing_rows_get_an_empty_suppression_reason(self):
+        user = self.old_user()
+        log = self.old_log(user, trigger_reason='below within-person threshold', decision_point_id='ema_1')
+
+        apps = self.migrate_forward()
+
+        row = apps.get_model('app', 'JITAILog').objects.get(pk=log.pk)
+        self.assertEqual(row.suppression_reason, '')
+        self.assertEqual(row.status, 'not_sent')
+
+
+class SuppressedStatusBackfillMigrationTests(MigrationTestCase):
+    migrate_from = [('app', '0048_distressflag_and_jitailog_suppression_reason')]
+    migrate_to = [('app', '0049_suppressed_status_and_backfill')]
+
+    def _rows(self):
+        user = self.old_user()
+        return {
+            'legacy_run_in': self.old_log(user, trigger_reason='run-in period', decision_point_id='ema_1'),
+            'distress': self.old_log(
+                user, trigger_reason='distress override (baseline)',
+                suppression_reason='distress_baseline', decision_point_id='ema_2'),
+            'ineligible': self.old_log(user, trigger_reason='cooldown active', decision_point_id='ema_3'),
+            'sent': self.old_log(
+                user, trigger_reason='prompt sent', send_prompt=True, status='delivered',
+                delivery_status='received_on_device', decision_point_id='ema_4',
+                randomization_draw=0.2, randomization_probability=0.5),
+        }
+
+    def _fetch(self, apps, rows):
+        model = apps.get_model('app', 'JITAILog')
+        return {name: model.objects.get(pk=row.pk) for name, row in rows.items()}
+
+    def test_legacy_run_in_rows_are_labeled_and_backfilled(self):
+        rows = self._rows()
+        fetched = self._fetch(self.migrate_forward(), rows)
+
+        legacy = fetched['legacy_run_in']
+        self.assertEqual(legacy.suppression_reason, 'run_in')
+        self.assertEqual((legacy.status, legacy.delivery_status), ('suppressed', 'suppressed'))
+
+    def test_distress_rows_written_before_the_label_are_relabeled(self):
+        rows = self._rows()
+        fetched = self._fetch(self.migrate_forward(), rows)
+
+        distress = fetched['distress']
+        self.assertEqual(distress.suppression_reason, 'distress_baseline')
+        self.assertEqual((distress.status, distress.delivery_status), ('suppressed', 'suppressed'))
+
+    def test_ordinary_ineligible_and_sent_rows_are_untouched(self):
+        rows = self._rows()
+        fetched = self._fetch(self.migrate_forward(), rows)
+
+        self.assertEqual(
+            (fetched['ineligible'].status, fetched['ineligible'].delivery_status,
+             fetched['ineligible'].suppression_reason),
+            ('not_sent', 'not_sent', ''))
+        self.assertEqual(
+            (fetched['sent'].status, fetched['sent'].delivery_status,
+             fetched['sent'].suppression_reason),
+            ('delivered', 'received_on_device', ''))
+
+    def test_backfill_is_idempotent(self):
+        rows = self._rows()
+        apps = self.migrate_forward()
+        before = {n: (r.status, r.delivery_status, r.suppression_reason)
+                  for n, r in self._fetch(apps, rows).items()}
+
+        from importlib import import_module
+        migration = import_module('app.migrations.0049_suppressed_status_and_backfill')
+        migration.backfill_suppressed_labels(apps, None)
+
+        after = {n: (r.status, r.delivery_status, r.suppression_reason)
+                 for n, r in self._fetch(apps, rows).items()}
+        self.assertEqual(before, after)
+
+    def test_reversing_restores_not_sent_and_keeps_the_reason(self):
+        rows = self._rows()
+        self.migrate_forward()
+
+        apps = self.migrate_forward(self.migrate_from)
+
+        fetched = self._fetch(apps, rows)
+        for name in ('legacy_run_in', 'distress'):
+            self.assertEqual((fetched[name].status, fetched[name].delivery_status), ('not_sent', 'not_sent'))
+        self.assertEqual(fetched['legacy_run_in'].suppression_reason, 'run_in')
+
+    def test_a_legacy_row_trips_the_randomization_audit_until_backfilled(self):
+        from dashboard.data.alerts import randomization_audit
+        self._rows()
+        self.assertEqual(len(randomization_audit(None)), 1)
+
+        self.migrate_forward()
+
+        self.assertEqual(randomization_audit(None), [])
+
+
+class MetricsDailySuppressedColumnMigrationTests(MigrationTestCase):
+    migrate_from = [('dashboard', '0004_metricscohort_funnel_metricscohort_integrity')]
+    migrate_to = [('dashboard', '0005_metricsdaily_suppressed_n')]
+
+    def test_existing_daily_rows_stay_null_until_recomputed(self):
+        user = self.old_user()
+        row = self.old_apps.get_model('dashboard', 'MetricsDaily').objects.create(
+            user=user, study_day=8, local_date='2026-09-20', is_run_in=False,
+            is_active_day=True, item_bank_version='v1', decision_points_n=3, eligible_n=1)
+
+        apps = self.migrate_forward()
+
+        migrated = apps.get_model('dashboard', 'MetricsDaily').objects.get(pk=row.pk)
+        self.assertIsNone(migrated.suppressed_n)
+        self.assertEqual((migrated.decision_points_n, migrated.eligible_n), (3, 1))
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class DistressFlagWindowTests(TestCase):
+    T = datetime(2026, 9, 20, 12, 0, tzinfo=EASTERN)
+
+    def setUp(self):
+        self.user = make_user(email='window@test.com')
+
+    def _momentary(self, expires_at, raised_at=None):
+        return DistressFlag.objects.create(
+            user=self.user, source='momentary', signals=['b2_high_stress'],
+            raised_at=raised_at or self.T, expires_at=expires_at)
+
+    def _stress_ema(self):
+        ema = EMA.objects.create(user=self.user, prompt_id='P', status='completed')
+        EMAItemResponse.objects.create(ema=ema, item_id='B2', sub_item_id='B2_stress',
+                                       response_type='likert', value_numeric=7)
+        return ema
+
+    def test_a_momentary_flag_is_inactive_exactly_at_its_expiry(self):
+        from app.distress import active_distress_flag
+        self._momentary(expires_at=self.T)
+        self.assertIsNone(active_distress_flag(self.user, now=self.T))
+        self.assertIsNotNone(active_distress_flag(self.user, now=self.T - timedelta(microseconds=1)))
+
+    def test_a_flag_raised_at_a_fixed_moment_pauses_for_exactly_24_hours(self):
+        from app.distress import active_distress_flag, raise_momentary_flag
+        ema = self._stress_ema()
+        with patch('app.distress.timezone.now', return_value=self.T):
+            flag = raise_momentary_flag(ema)
+        self.assertEqual(flag.raised_at, self.T)
+        self.assertEqual(flag.expires_at, self.T + timedelta(hours=24))
+        self.assertIsNotNone(active_distress_flag(self.user, now=self.T + timedelta(hours=24, seconds=-1)))
+        self.assertIsNone(active_distress_flag(self.user, now=self.T + timedelta(hours=24)))
+
+    def test_a_later_qualifying_check_in_extends_the_pause(self):
+        from app.distress import active_distress_flag, raise_momentary_flag
+        first, second = self._stress_ema(), self._stress_ema()
+        with patch('app.distress.timezone.now', return_value=self.T):
+            raise_momentary_flag(first)
+        with patch('app.distress.timezone.now', return_value=self.T + timedelta(hours=10)):
+            raise_momentary_flag(second)
+        self.assertEqual(DistressFlag.objects.filter(user=self.user).count(), 2)
+        self.assertIsNotNone(active_distress_flag(self.user, now=self.T + timedelta(hours=30)))
+        self.assertIsNone(active_distress_flag(self.user, now=self.T + timedelta(hours=34)))
+
+    def test_a_baseline_flag_does_not_expire_with_time(self):
+        from app.distress import active_distress_flag
+        DistressFlag.objects.create(
+            user=self.user, source='baseline', signals=['scoff'],
+            raised_at=self.T - timedelta(days=400))
+        self.assertIsNotNone(active_distress_flag(self.user, now=self.T))
+
+    def test_a_momentary_flag_with_no_expiry_is_inactive(self):
+        from app.distress import active_distress_flag
+        self._momentary(expires_at=None)
+        self.assertIsNone(active_distress_flag(self.user, now=self.T))
+
+    def test_the_model_and_the_query_always_agree_on_whether_a_flag_is_active(self):
+        from app.distress import active_distress_flag
+        cases = [
+            dict(source='baseline'),
+            dict(source='baseline', contact_documented_at=self.T),
+            dict(source='momentary', expires_at=self.T + timedelta(seconds=1)),
+            dict(source='momentary', expires_at=self.T - timedelta(seconds=1)),
+            dict(source='momentary', expires_at=self.T),
+            dict(source='momentary', expires_at=None),
+        ]
+        for case in cases:
+            with self.subTest(case=case):
+                flag = DistressFlag.objects.create(
+                    user=self.user, signals=['scoff'], raised_at=self.T, **case)
+                self.assertEqual(
+                    flag.is_active(self.T),
+                    active_distress_flag(self.user, now=self.T) is not None)
+                flag.delete()
+
+    def test_baseline_is_reported_ahead_of_momentary_and_newest_momentary_first(self):
+        from app.distress import active_distress_flag
+        older = self._momentary(self.T + timedelta(hours=5), raised_at=self.T - timedelta(hours=2))
+        newer = self._momentary(self.T + timedelta(hours=5), raised_at=self.T - timedelta(hours=1))
+        self.assertEqual(active_distress_flag(self.user, now=self.T), newer)
+        baseline = DistressFlag.objects.create(
+            user=self.user, source='baseline', signals=['scoff'], raised_at=self.T - timedelta(days=3))
+        self.assertEqual(active_distress_flag(self.user, now=self.T), baseline)
+        self.assertNotEqual(older, newer)

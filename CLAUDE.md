@@ -111,7 +111,9 @@ python manage.py import_baseline_distress_flags --dry-run --file export.csv
                                                    #   signals, write DistressFlag(source='baseline').
                                                    #   Defaults --id-column=participant_id
                                                    #   --id-field=user_id; both still overridable.
-python manage.py test dashboard --settings=project.test_settings
+# The dashboard tests do NOT run from backend/: the label 'dashboard' resolves to the directory
+# backend/dashboard/ there, so bare `manage.py test` (and CI) skips them. Run them from the repo root:
+python3 backend/manage.py test dashboard --settings=project.test_settings
 ```
 
 ```bash
@@ -420,10 +422,18 @@ draw, after the run-in gate (run-in is named first when both apply):
   deduped.
 
 A suppressed decision point is logged with `send_prompt=False`, `randomization_draw` and
-`randomization_probability` both null, and `JITAILog.suppression_reason` set (`run_in`,
-`distress_baseline`, `distress_momentary`). That column, not `trigger_reason`, is what the
-randomization audit and the timeline read, so a suppressed row is never mistaken for a dropped
-prompt or an engine defect. `POST /ema/responses/` returns `resource_card` (null when no override
+`randomization_probability` both null, `status` and `delivery_status` both `'suppressed'` (never
+`not_sent`, which stays for ordinary ineligible or randomized-out decisions), and
+`JITAILog.suppression_reason` set (`run_in`, `distress_baseline`, `distress_momentary`). That
+column, not `trigger_reason`, is what the randomization audit and the timeline read, so a
+suppressed row is never mistaken for a dropped prompt or an engine defect. It is exposed on the
+JITAI API, on the monitor's decision events (outcome "suppressed (run-in)" / "suppressed
+(distress)"), and in `analytics/scripts.py` (`load_jitai_log`, `audit_decision_stages`'s
+`suppressed` column, the trajectory plot). `MetricsDaily.suppressed_n` counts them per day;
+they stay in `decision_points_n` and out of `eligible_n`. Migration `0049` backfilled rows
+written before the label existed (`run-in period` rows from commit `ded0498` got
+`suppression_reason='run_in'`, and every suppressed row was relabeled `'suppressed'`); without
+it the cohort audit reads those legacy rows as "eligible but no draw". `POST /ema/responses/` returns `resource_card` (null when no override
 is active) after any check-in submitted under an active override. Card contents are
 `RESOURCE_CARD_RESOURCES` in `distress.py`: the seven resources from the study's resource document
 (the same seven as the baseline block), with digits-only contacts so tap-to-call works, and the
