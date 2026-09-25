@@ -4719,3 +4719,227 @@ class DistressFlagWindowTests(TestCase):
             user=self.user, source='baseline', signals=['scoff'], raised_at=self.T - timedelta(days=3))
         self.assertEqual(active_distress_flag(self.user, now=self.T), baseline)
         self.assertNotEqual(older, newer)
+
+
+def _full_screen_row(participant_id, **overrides):
+    import sys
+    from django.conf import settings
+    path = str(settings.REPO_ROOT / 'analytics' / 'baseline_survey_scoring')
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    from section11 import REQUIRED_SCREEN_COLUMNS
+    row = {column: 0 for column in REQUIRED_SCREEN_COLUMNS}
+    row['participant_id'] = participant_id
+    row.update(overrides)
+    return row
+
+
+def _csv_bytes(rows):
+    import io
+    import pandas as pd
+    return io.BytesIO(pd.DataFrame(rows).to_csv(index=False).encode('utf-8'))
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class BaselineImportFunctionTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='fn-flagged@ufl.edu')
+        self.other = make_user(email='fn-clear@ufl.edu')
+
+    def _run(self, rows, **kwargs):
+        from app.baseline_import import import_baseline_flags
+        return import_baseline_flags(_csv_bytes(rows), **kwargs)
+
+    def test_a_dry_run_reports_the_plan_and_writes_nothing(self):
+        report = self._run([_full_screen_row(self.user.user_id, phq9_9=1)], dry_run=True)
+        self.assertEqual(report.planned, [{'user_id': self.user.user_id, 'email': self.user.email,
+                                           'signals': ['phq9_self_harm']}])
+        self.assertEqual(report.created, [])
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def test_a_real_run_writes_the_flag_and_calls_the_hook_once_per_flag(self):
+        seen = []
+        report = self._run([_full_screen_row(self.user.user_id, phq9_9=1)],
+                           dry_run=False, on_create=seen.append)
+        self.assertEqual(len(report.created), 1)
+        self.assertEqual([flag.user_id for flag in seen], [self.user.user_id])
+        self.assertEqual(DistressFlag.objects.get().signals, ['phq9_self_harm'])
+
+    def test_columns_missing_from_the_export_are_reported(self):
+        import pandas as pd
+        rows = [{'participant_id': self.user.user_id, 'phq9_1': 0}]
+        report = self._run(rows, dry_run=True)
+        self.assertIn('scoff_1', report.missing_screen_columns)
+        self.assertNotIn('phq9_1', report.missing_screen_columns)
+
+    def test_a_complete_export_has_nothing_missing_or_incomplete(self):
+        report = self._run([_full_screen_row(self.user.user_id)], dry_run=True)
+        self.assertEqual(report.missing_screen_columns, [])
+        self.assertEqual(report.incomplete, [])
+
+    def test_rows_with_a_blank_screening_item_are_listed_as_incomplete(self):
+        rows = [_full_screen_row(self.user.user_id, phq9_3=''), _full_screen_row(self.other.user_id)]
+        report = self._run(rows, dry_run=True)
+        self.assertEqual(report.incomplete, [str(self.user.user_id)])
+
+    def test_commit_is_refused_when_a_screen_is_missing_and_completeness_is_required(self):
+        rows = [{'participant_id': self.user.user_id, **{f'phq9_{i}': (1 if i == 9 else 0) for i in range(1, 10)}}]
+        report = self._run(rows, dry_run=False, require_complete_screens=True)
+        self.assertTrue(report.refused)
+        self.assertEqual(report.created, [])
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def test_a_dry_run_is_never_refused_only_warned(self):
+        rows = [{'participant_id': self.user.user_id, 'phq9_9': 1}]
+        report = self._run(rows, dry_run=True, require_complete_screens=True)
+        self.assertFalse(report.refused)
+        self.assertTrue(report.missing_screen_columns)
+
+    def test_a_missing_id_column_raises_a_clear_error(self):
+        from app.baseline_import import BaselineImportError
+        with self.assertRaises(BaselineImportError) as raised:
+            self._run([_full_screen_row(self.user.user_id)], id_column='nope')
+        self.assertIn("'nope' not found", str(raised.exception))
+
+    def test_unrecognized_columns_are_reported(self):
+        rows = [_full_screen_row(self.user.user_id, some_new_question='x')]
+        report = self._run(rows, dry_run=True)
+        self.assertIn('some_new_question', report.unmatched_headers)
+
+    def test_a_failure_midway_writes_no_flags(self):
+        from unittest.mock import patch as mock_patch
+        rows = [_full_screen_row(self.user.user_id, phq9_9=1), _full_screen_row(self.other.user_id, phq9_9=1)]
+        calls = {'n': 0}
+        def boom(flag):
+            calls['n'] += 1
+            if calls['n'] == 2:
+                raise RuntimeError('simulated')
+        with self.assertRaises(RuntimeError):
+            self._run(rows, dry_run=False, on_create=boom)
+        self.assertFalse(DistressFlag.objects.exists())
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class BaselineImportAdminTests(TestCase):
+    URL = '/admin/app/distressflag/import-baseline/'
+
+    def setUp(self):
+        self.participant = make_user(email='admin-import@ufl.edu')
+        self.staff = AuthUser.objects.create_superuser('importer', 'importer@test.com', 'pw')
+        self.client.force_login(self.staff)
+
+    def _upload(self, rows, name='export.csv', preview=True, raw=None):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        content = raw if raw is not None else _csv_bytes(rows).getvalue()
+        data = {'file': SimpleUploadedFile(name, content, content_type='text/csv')}
+        if preview:
+            data['preview'] = 'on'
+        return self.client.post(self.URL, data)
+
+    def _flagged_rows(self):
+        return [_full_screen_row(self.participant.user_id, phq9_9=1)]
+
+    def test_the_changelist_offers_the_import_button(self):
+        response = self.client.get('/admin/app/distressflag/')
+        self.assertContains(response, 'Import baseline export')
+        self.assertContains(response, self.URL)
+
+    def test_the_form_defaults_to_preview_only(self):
+        response = self.client.get(self.URL)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'type="file"')
+        self.assertRegex(response.content.decode(), r'name="preview"[^>]*checked')
+
+    def test_a_preview_shows_the_plan_and_writes_nothing(self):
+        response = self._upload(self._flagged_rows())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'nothing was written')
+        self.assertContains(response, 'phq9_self_harm')
+        self.assertContains(response, str(self.participant.user_id))
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def test_a_real_import_creates_the_flag_and_logs_who_did_it(self):
+        from django.contrib.admin.models import ADDITION, LogEntry
+        response = self._upload(self._flagged_rows(), preview=False)
+        self.assertContains(response, 'Created 1')
+        flag = DistressFlag.objects.get()
+        self.assertEqual((flag.user_id, flag.source, flag.signals),
+                         (self.participant.user_id, 'baseline', ['phq9_self_harm']))
+        entry = LogEntry.objects.get(action_flag=ADDITION, object_id=str(flag.pk))
+        self.assertEqual(entry.user_id, self.staff.pk)
+        self.assertIn('phq9_self_harm', entry.change_message)
+
+    def test_importing_the_same_export_twice_does_not_duplicate(self):
+        self._upload(self._flagged_rows(), preview=False)
+        response = self._upload(self._flagged_rows(), preview=False)
+        self.assertEqual(DistressFlag.objects.count(), 1)
+        self.assertContains(response, 'already on record')
+
+    def test_staff_without_permission_cannot_open_it(self):
+        limited = AuthUser.objects.create_user('limited', 'limited@test.com', 'pw', is_staff=True)
+        self.client.force_login(limited)
+        self.assertEqual(self.client.get(self.URL).status_code, 403)
+        self.assertEqual(self._upload(self._flagged_rows(), preview=False).status_code, 403)
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def test_anonymous_users_are_sent_to_login(self):
+        self.client.logout()
+        self.assertEqual(self.client.get(self.URL).status_code, 302)
+
+    def test_only_csv_files_are_accepted(self):
+        response = self._upload(self._flagged_rows(), name='export.xlsx', preview=False)
+        self.assertContains(response, 'CSV')
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def test_an_oversized_file_is_rejected(self):
+        with patch('app.admin.MAX_BASELINE_UPLOAD_BYTES', 10):
+            response = self._upload(self._flagged_rows(), preview=False)
+        self.assertContains(response, 'too large')
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def test_submitting_without_a_file_shows_an_error(self):
+        response = self.client.post(self.URL, {'preview': 'on'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'required')
+
+    def test_an_undecodable_file_is_reported_not_a_server_error(self):
+        response = self._upload(None, raw=b'\xff\xfe\x00\x81\x82garbage')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Could not read')
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def test_an_empty_file_is_rejected(self):
+        response = self._upload(None, raw=b'')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'empty')
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def test_a_missing_participant_id_column_is_reported(self):
+        rows = [{k: v for k, v in _full_screen_row(1).items() if k != 'participant_id'}]
+        response = self._upload(rows, preview=False)
+        self.assertContains(response, "not found in the export")
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def test_a_real_import_is_refused_when_a_screen_is_missing_from_the_export(self):
+        rows = [{'participant_id': self.participant.user_id, **{f'phq9_{i}': (1 if i == 9 else 0) for i in range(1, 10)}}]
+        response = self._upload(rows, preview=False)
+        self.assertContains(response, 'Nothing was written')
+        self.assertContains(response, 'scoff_1')
+        self.assertFalse(DistressFlag.objects.exists())
+
+    def test_a_preview_of_the_same_incomplete_export_still_warns(self):
+        rows = [{'participant_id': self.participant.user_id, 'phq9_9': 1}]
+        response = self._upload(rows, preview=True)
+        self.assertContains(response, 'scoff_1')
+        self.assertContains(response, 'nothing was written')
+
+    def test_problems_are_listed_on_the_page(self):
+        rows = [
+            _full_screen_row(self.participant.user_id, phq9_9=1, phq9_3='', unknown_question='x'),
+            _full_screen_row(999999, phq9_9=1),
+        ]
+        response = self._upload(rows)
+        self.assertContains(response, 'unknown_question')
+        self.assertContains(response, '999999')
+        self.assertContains(response, 'blank screening item')

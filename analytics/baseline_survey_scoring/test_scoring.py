@@ -4,14 +4,17 @@ and section11.py. No Django: run with
     cd analytics/baseline_survey_scoring && python3 -m unittest test_scoring
 """
 
+import io
 import unittest
+from contextlib import redirect_stdout
 
 import numpy as np
 import pandas as pd
 
 import definitions as D
+import qualtrics
 import scoring
-from section11 import section11_signals
+from section11 import REQUIRED_SCREEN_COLUMNS, section11_signals
 
 
 def _row(**overrides):
@@ -184,6 +187,56 @@ class ExactCutoffTests(unittest.TestCase):
         self.assertFalse(audit(2, 'woman'))
         self.assertTrue(audit(3, 'woman'))
         self.assertTrue(audit(3, np.nan))
+
+
+class ReadExportTests(unittest.TestCase):
+
+    def _csv(self, header, rows, bom=False):
+        text = ','.join(header) + '\n' + '\n'.join(','.join(str(v) for v in r) for r in rows) + '\n'
+        return io.BytesIO((('\ufeff' if bom else '') + text).encode('utf-8'))
+
+    def test_reads_an_uploaded_file_like_object_without_touching_disk(self):
+        source = self._csv(['participant_id', 'phq9_1'], [[7, 2]])
+        frame, diagnostics = qualtrics.read_export(source)
+        self.assertEqual(frame['participant_id'].tolist(), ['7'])
+        self.assertEqual(frame['phq9_1'].tolist(), [2.0])
+
+    def test_a_byte_order_mark_does_not_garble_the_first_header(self):
+        frame, _ = qualtrics.read_export(self._csv(['participant_id', 'phq9_1'], [[7, 2]], bom=True))
+        self.assertIn('participant_id', frame.columns)
+
+    def test_diagnostics_list_missing_scoring_items_and_unrecognized_columns(self):
+        source = self._csv(['participant_id', 'phq9_1', 'some_other_question'], [[7, 2, 'x']])
+        _, diagnostics = qualtrics.read_export(source)
+        self.assertIn('phq9_2', diagnostics['absent_columns'])
+        self.assertNotIn('phq9_1', diagnostics['absent_columns'])
+        self.assertEqual(diagnostics['unmatched_headers'], ['some_other_question'])
+
+    def test_unknown_response_labels_are_reported_per_column(self):
+        source = self._csv(['participant_id', 'phq9_1'], [[7, 'Sometimes maybe']])
+        _, diagnostics = qualtrics.read_export(source)
+        self.assertEqual(diagnostics['unknown_labels'], {'phq9_1': ['Sometimes maybe']})
+
+    def test_load_export_still_prints_its_report_and_returns_the_frame(self):
+        import tempfile, pathlib
+        path = pathlib.Path(tempfile.mkdtemp()) / 'export.csv'
+        path.write_bytes(self._csv(['participant_id', 'phq9_1'], [[7, 2]]).getvalue())
+        out = io.StringIO()
+        with redirect_stdout(out):
+            frame = qualtrics.load_export(path)
+        self.assertEqual(frame['phq9_1'].tolist(), [2.0])
+        self.assertIn('loaded 1 rows', out.getvalue())
+        self.assertIn('scoring items NOT found', out.getvalue())
+
+
+class RequiredScreenColumnsTests(unittest.TestCase):
+
+    def test_every_automated_section11_instrument_is_required(self):
+        for group in (D.PHQ9, D.SCOFF, D.AUDIT_C, D.PGSI, D.HUNGER_VITAL_SIGN):
+            self.assertTrue(set(group) <= set(REQUIRED_SCREEN_COLUMNS))
+
+    def test_unrelated_instruments_are_not_required(self):
+        self.assertFalse(set(D.ASRS) & set(REQUIRED_SCREEN_COLUMNS))
 
 
 if __name__ == '__main__':

@@ -680,13 +680,24 @@ def to_numeric(series: pd.Series, options: Optional[dict]) -> Tuple[pd.Series, L
     return pd.Series(out, index=series.index, dtype="float64"), unknown
 
 
-def load_export(path, overrides: Optional[Dict[str, str]] = None) -> pd.DataFrame:
-    """Read an export and return it with definitions.py column names and numbers."""
-    path = Path(path)
-    if path.suffix.lower() in {".xlsx", ".xls"}:
-        raw = pd.read_excel(path, dtype=object)
+def read_export(source, overrides: Optional[Dict[str, str]] = None) -> Tuple[pd.DataFrame, dict]:
+    """Read an export from a path or an open binary file and return
+    (frame, diagnostics).
+
+    The frame has definitions.py column names and numbers. diagnostics reports what
+    could not be placed: absent_columns (scoring items missing from the export),
+    unmatched_headers (export columns that map to no item), and unknown_labels
+    (response text not in an item's option table, read as NA). A file-like source
+    is read as CSV, in memory, and never written anywhere.
+    """
+    if hasattr(source, "read"):
+        raw = pd.read_csv(source, dtype=object, keep_default_na=False, encoding="utf-8-sig")
     else:
-        raw = pd.read_csv(path, dtype=object, keep_default_na=False)
+        path = Path(source)
+        if path.suffix.lower() in {".xlsx", ".xls"}:
+            raw = pd.read_excel(path, dtype=object)
+        else:
+            raw = pd.read_csv(path, dtype=object, keep_default_na=False, encoding="utf-8-sig")
 
     # Qualtrics writes two metadata rows under the header. The first cell of the
     # second one is the ImportId JSON blob, which is how it is recognised.
@@ -707,10 +718,23 @@ def load_export(path, overrides: Optional[Dict[str, str]] = None) -> pd.DataFram
         if unknown:
             unknown_labels[column] = sorted(set(unknown))
 
-    present = [c for c in D.ALL_SCORING_COLUMNS if c in frame.columns]
-    absent = [c for c in D.ALL_SCORING_COLUMNS if c not in frame.columns]
+    diagnostics = {
+        "absent_columns": [c for c in D.ALL_SCORING_COLUMNS if c not in frame.columns],
+        "unmatched_headers": list(unmatched),
+        "unknown_labels": unknown_labels,
+    }
+    return frame, diagnostics
 
-    print(f"loaded {len(frame)} rows from {path.name}")
+
+def load_export(path, overrides: Optional[Dict[str, str]] = None) -> pd.DataFrame:
+    """Read an export and return it with definitions.py column names and numbers."""
+    frame, diagnostics = read_export(path, overrides)
+    absent = diagnostics["absent_columns"]
+    unmatched = diagnostics["unmatched_headers"]
+    unknown_labels = diagnostics["unknown_labels"]
+    present = [c for c in D.ALL_SCORING_COLUMNS if c in frame.columns]
+
+    print(f"loaded {len(frame)} rows from {Path(path).name}")
     print(f"  scoring items found: {len(present)} of {len(D.ALL_SCORING_COLUMNS)}")
     if absent:
         print(f"  !! {len(absent)} scoring items NOT found; every subscale using one will be NA:")

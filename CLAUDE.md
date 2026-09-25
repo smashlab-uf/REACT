@@ -421,6 +421,18 @@ draw, after the run-in gate (run-in is named first when both apply):
   signals can fire on one check-in (e.g. both sad and anxious at once) — all are recorded, not
   deduped.
 
+**Importing the baseline** has two front ends over one function (`backend/app/baseline_import.py`,
+`import_baseline_flags`): the management command, and an **"Import baseline export" button** on
+Django Admin > Distress flags (`DistressFlagAdmin.import_baseline_view`). The button takes a CSV
+upload (5 MB cap, read in memory, never saved) and previews by default; staff choose the file
+again with "Preview only" unchecked to write. It refuses to write when any screening instrument's
+items (`section11.REQUIRED_SCREEN_COLUMNS`) are missing from the export, since nobody could be
+flagged on that screen, and it lists rows with a blank screening item, unrecognized columns and
+unmatched IDs. Creation is all-or-nothing, and every flag it creates gets an Admin log entry
+showing who imported it. Only staff with the add-flag permission can use it. The loader is
+`qualtrics.read_export` (path or file-like; returns the frame plus diagnostics; `load_export`
+wraps it and prints).
+
 A suppressed decision point is logged with `send_prompt=False`, `randomization_draw` and
 `randomization_probability` both null, `status` and `delivery_status` both `'suppressed'` (never
 `not_sent`, which stays for ordinary ineligible or randomized-out decisions), and
