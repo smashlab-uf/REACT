@@ -326,7 +326,10 @@ def load_jitai_log(
             eligible_prompt_ids, hr_at_trigger, stress_at_trigger, ema_id,
             ema_mood, ema_stress, ema_energy, status, delivery_status,
             push_sent_at, device_received_at, receipt_reported_at,
-            receipt_platform, receipt_app_state, delivery_error.
+            receipt_platform, receipt_app_state, delivery_error,
+            suppression_reason ('' for a decision the engine evaluated normally;
+            run_in / distress_baseline / distress_momentary for one held back
+            on purpose).
         One row per decision point. Timestamps are timezone-aware (UTC).
 
     Example:
@@ -352,7 +355,7 @@ def load_jitai_log(
             "stress_at_trigger", "ema_id", "ema_mood", "ema_stress",
             "ema_energy", "status", "delivery_status", "push_sent_at",
             "device_received_at", "receipt_reported_at", "receipt_platform",
-            "receipt_app_state", "delivery_error",
+            "receipt_app_state", "delivery_error", "suppression_reason",
         )
     )
     return _to_utc(
@@ -1398,6 +1401,22 @@ def flag_stale_sync(
 # PI sign-offs (2026-07-06): p = 0.50, daily cap = 4, cooldown = 60 min.
 
 
+_SUPPRESSED_TRIGGER_TEXT = ("run-in period", "distress override")
+
+
+def _is_suppressed(df: pd.DataFrame) -> pd.Series:
+    """True for a decision point held back on purpose (run-in or distress).
+
+    Reads suppression_reason. A frame loaded before that column existed falls
+    back to the trigger_reason text the engine wrote for the same rows.
+    """
+    if "suppression_reason" in df.columns:
+        reason = df["suppression_reason"].fillna("").astype(str)
+        return reason != ""
+    trigger = df["trigger_reason"].fillna("").astype(str).str.lower()
+    return trigger.str.contains("|".join(_SUPPRESSED_TRIGGER_TEXT), regex=True)
+
+
 def audit_decision_stages(jitai_df: pd.DataFrame) -> pd.DataFrame:
     """
     Purpose:
@@ -1413,7 +1432,10 @@ def audit_decision_stages(jitai_df: pd.DataFrame) -> pd.DataFrame:
     Outputs:
         pd.DataFrame with columns:
             user_id, total_decision_points, eligible, randomized_to_send,
-            sent, not_sent, pct_sent_of_eligible.
+            sent, not_sent, pct_sent_of_eligible, suppressed.
+        suppressed counts decision points held back on purpose (run-in or
+        distress override); they are in total_decision_points and not_sent,
+        never in eligible. 0 when jitai_df has no suppression_reason column.
         One row per participant, plus a cohort-aggregate row (user_id = 'ALL').
 
     Example:
@@ -1423,7 +1445,8 @@ def audit_decision_stages(jitai_df: pd.DataFrame) -> pd.DataFrame:
         non-null randomization_draw (only eligible points are randomized).
     """
     columns = ["user_id", "total_decision_points", "eligible",
-               "randomized_to_send", "sent", "not_sent", "pct_sent_of_eligible"]
+               "randomized_to_send", "sent", "not_sent", "pct_sent_of_eligible",
+               "suppressed"]
     if jitai_df is None or jitai_df.empty:
         return pd.DataFrame(columns=columns)
 
@@ -1438,6 +1461,7 @@ def audit_decision_stages(jitai_df: pd.DataFrame) -> pd.DataFrame:
     df["_eligible"] = draw.notna()
     df["_sent"] = df["send_prompt"].fillna(False).astype(bool)
     df["_randomized_to_send"] = df["_eligible"] & draw.lt(probability)
+    df["_suppressed"] = _is_suppressed(df)
 
     def _summary(label, frame):
         eligible = int(frame["_eligible"].sum())
@@ -1450,6 +1474,7 @@ def audit_decision_stages(jitai_df: pd.DataFrame) -> pd.DataFrame:
             "sent": sent,
             "not_sent": int(frame.shape[0] - sent),
             "pct_sent_of_eligible": 100.0 * sent / eligible if eligible else np.nan,
+            "suppressed": int(frame["_suppressed"].sum()),
         }
 
     records = [_summary(user_id, frame) for user_id, frame in df.groupby("user_id")]
@@ -2629,6 +2654,8 @@ _DECISION_CATEGORIES = [
     ("Cooldown blocked", "cooldown", "tab:orange"),
     ("Daily-cap blocked", "daily cap", "tab:red"),
     ("Insufficient history/data", "insufficient", "tab:purple"),
+    ("Suppressed (run-in)", "run-in period", "tab:blue"),
+    ("Suppressed (distress)", "distress override", "tab:cyan"),
 ]
 
 
@@ -3527,7 +3554,8 @@ def plot_participant_mssd_trajectory(jitai_df: pd.DataFrame) -> plt.Figure:
 
     sent = df["send_prompt"].fillna(False).astype(bool)
     eligible = df["randomization_draw"].notna()
-    ineligible = ~eligible
+    suppressed = _is_suppressed(df)
+    ineligible = ~eligible & ~suppressed
     elig_not_sent = eligible & ~sent
 
     fig, ax = plt.subplots(figsize=(11, 5))
@@ -3535,6 +3563,8 @@ def plot_participant_mssd_trajectory(jitai_df: pd.DataFrame) -> plt.Figure:
             linewidth=1, zorder=1)
     ax.scatter(df.loc[ineligible, "triggered_at"], df.loc[ineligible, "observed_mssd"],
                s=28, color="tab:gray", label="ineligible", zorder=2)
+    ax.scatter(df.loc[suppressed, "triggered_at"], df.loc[suppressed, "observed_mssd"],
+               s=28, color="tab:blue", label="suppressed", zorder=2)
     ax.scatter(df.loc[elig_not_sent, "triggered_at"], df.loc[elig_not_sent, "observed_mssd"],
                s=32, color="tab:orange", label="eligible, not sent", zorder=3)
     ax.scatter(df.loc[sent, "triggered_at"], df.loc[sent, "observed_mssd"],

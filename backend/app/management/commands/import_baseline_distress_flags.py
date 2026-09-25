@@ -1,10 +1,8 @@
-import sys
 from pathlib import Path
 
-from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from app.models import DistressFlag, User
+from app.baseline_import import BaselineImportError, import_baseline_flags
 
 ID_FIELD_CHOICES = ('email', 'user_id')
 
@@ -18,7 +16,8 @@ class Command(BaseCommand):
         'free_text_risk -- there is no free-text column in this pipeline, so '
         'a disclosure is still a staff call, made and recorded outside this '
         'command. Skips a row whose exact signal set already has a flag on '
-        'record for that user, so re-running the same export is a no-op.'
+        'record for that user, so re-running the same export is a no-op. The '
+        'same logic backs the "Import baseline export" button in Django Admin.'
     )
 
     def add_arguments(self, parser):
@@ -43,86 +42,46 @@ class Command(BaseCommand):
         if not file_path.exists():
             raise CommandError(f'{file_path} does not exist')
 
-        analytics_dir = str(settings.REPO_ROOT / 'analytics' / 'baseline_survey_scoring')
-        if analytics_dir not in sys.path:
-            sys.path.insert(0, analytics_dir)
-        import qualtrics
-        import scoring
-        from section11 import section11_signals
+        try:
+            report = import_baseline_flags(
+                file_path, id_column=id_column, id_field=id_field, dry_run=dry_run)
+        except BaselineImportError as error:
+            raise CommandError(str(error))
 
-        frame = qualtrics.load_export(file_path)
-        if id_column not in frame.columns:
-            raise CommandError(
-                f'--id-column {id_column!r} not found in the export. '
-                f'Columns present: {sorted(frame.columns)}'
-            )
+        if report.missing_screen_columns:
+            self.stdout.write(self.style.WARNING(
+                f'{len(report.missing_screen_columns)} screening item(s) not found in the '
+                f'export; nobody can be flagged on a screen missing its items: '
+                f'{report.missing_screen_columns}'
+            ))
+        if report.incomplete:
+            self.stdout.write(self.style.WARNING(
+                f'{len(report.incomplete)} row(s) have a blank screening item and cannot be '
+                f'fully screened: {report.incomplete}'
+            ))
 
-        scores, _ = scoring.score_participants(frame)
-        signals_by_row = section11_signals(scores)
-
-        created = skipped_existing = skipped_no_signal = 0
-        unmatched, ambiguous, bad_identifier = [], [], []
-
-        for idx in frame.index:
-            codes = signals_by_row.loc[idx]
-            if not codes:
-                skipped_no_signal += 1
-                continue
-
-            identifier = frame.loc[idx, id_column]
-            if identifier is None or (isinstance(identifier, float) and identifier != identifier):
-                bad_identifier.append((idx, codes))
-                continue
-
-            lookup_value = identifier
-            if id_field == 'user_id':
-                try:
-                    lookup_value = int(identifier)
-                except (TypeError, ValueError):
-                    try:
-                        as_float = float(identifier)
-                    except (TypeError, ValueError):
-                        bad_identifier.append((identifier, codes))
-                        continue
-                    if not as_float.is_integer():
-                        bad_identifier.append((identifier, codes))
-                        continue
-                    lookup_value = int(as_float)
-
-            matches = list(User.objects.filter(**{id_field: lookup_value}))
-            if len(matches) == 0:
-                unmatched.append((identifier, codes))
-                continue
-            if len(matches) > 1:
-                ambiguous.append((identifier, codes))
-                continue
-
-            user = matches[0]
-            if DistressFlag.objects.filter(user=user, source='baseline', signals=codes).exists():
-                skipped_existing += 1
-                continue
-
-            if dry_run:
-                self.stdout.write(f'  would flag user_id={user.user_id} ({user.email}): {codes}')
-            else:
-                DistressFlag.objects.create(user=user, source='baseline', signals=codes)
-            created += 1
-
+        if dry_run:
+            for row in report.planned:
+                self.stdout.write(
+                    f'  would flag user_id={row["user_id"]} ({row["email"]}): {row["signals"]}')
+        count = len(report.planned) if dry_run else len(report.created)
         self.stdout.write(
-            ('Would create' if dry_run else 'Created') + f' {created} baseline flag(s). '
-            f'{skipped_existing} already on record, {skipped_no_signal} with no positive signal.'
+            ('Would create' if dry_run else 'Created') + f' {count} baseline flag(s). '
+            f'{report.skipped_existing} already on record, '
+            f'{report.skipped_no_signal} with no positive signal.'
         )
-        if bad_identifier:
+        if report.bad_identifier:
             self.stdout.write(self.style.WARNING(
-                f'{len(bad_identifier)} flagged row(s) had a missing or unusable '
-                f'{id_column!r} and could not be matched to anyone: {bad_identifier}'
+                f'{len(report.bad_identifier)} flagged row(s) had a missing or unusable '
+                f'{id_column!r} and could not be matched to anyone: {report.bad_identifier}'
             ))
-        if unmatched:
+        if report.unmatched:
             self.stdout.write(self.style.WARNING(
-                f'{len(unmatched)} flagged row(s) matched no User.{id_field}: {unmatched}'
+                f'{len(report.unmatched)} flagged row(s) matched no User.{id_field}: '
+                f'{report.unmatched}'
             ))
-        if ambiguous:
+        if report.ambiguous:
             self.stdout.write(self.style.ERROR(
-                f'{len(ambiguous)} flagged row(s) matched more than one User.{id_field}, '
-                f'skipped rather than guessed: {ambiguous}'
+                f'{len(report.ambiguous)} flagged row(s) matched more than one User.{id_field}, '
+                f'skipped rather than guessed: {report.ambiguous}'
             ))

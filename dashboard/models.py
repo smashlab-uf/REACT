@@ -49,6 +49,10 @@ class MetricsDaily(models.Model):
     decision_points_n = models.PositiveSmallIntegerField(null=True, blank=True)
     eligible_n = models.PositiveSmallIntegerField(null=True, blank=True)
     sent_n = models.PositiveSmallIntegerField(null=True, blank=True)
+    # Decision points held back on purpose (run-in or distress override). They
+    # are in decision_points_n and out of eligible_n, so without this column
+    # they cannot be told apart from ordinary ineligible decisions.
+    suppressed_n = models.PositiveSmallIntegerField(null=True, blank=True)
     delivered_n = models.PositiveSmallIntegerField(null=True, blank=True)
     cap_hit = models.BooleanField(null=True, blank=True)
     min_gap_min = models.IntegerField(null=True, blank=True)

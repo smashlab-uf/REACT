@@ -1,0 +1,8 @@
+{% extends "admin/change_list.html" %}
+
+{% block object-tools-items %}
+{% if has_add_permission %}
+<li><a href="{% url 'admin:app_distressflag_import_baseline' %}" class="addlink">Import baseline export</a></li>
+{% endif %}
+{{ block.super }}
+{% endblock %}
