@@ -35,7 +35,7 @@ from django.test import Client, TestCase, override_settings
 
 from dashboard.data import timeline as tl
 from dashboard.data import windows as w
-from dashboard.data.alerts import Context, evaluate_alerts, pipeline_stalled
+from dashboard.data.alerts import Context, evaluate_alerts, pipeline_stalled, randomization_audit
 from dashboard.data.cohort import (
     WEAR_DIVERGENCE,
     _gauge,
@@ -285,8 +285,39 @@ class ComputeDailyTests(TestCase):
         self.assertTrue(metrics['cap_hit'])
         self.assertEqual(metrics['min_gap_min'], 20)
         self.assertEqual(metrics['cooldown_violations_n'], 1)
-        # Study day 3 is inside the run-in, and no gate exists in the engine.
+        # Study day 3 is inside the run-in; these sent rows are written directly,
+        # bypassing the gate in _evaluate_user, so they count as violations.
         self.assertEqual(metrics['runin_violation_n'], 2)
+
+    def test_suppressed_n_counts_only_suppressed_decisions(self):
+        make_decision(self.user, self._at(9, 0), send=False, reason='run-in period',
+                      suppression_reason='run_in', status='suppressed',
+                      delivery_status='suppressed')
+        make_decision(self.user, self._at(10, 0), send=False,
+                      reason='distress override (baseline)',
+                      suppression_reason='distress_baseline', status='suppressed',
+                      delivery_status='suppressed')
+        make_decision(self.user, self._at(11, 0), send=False, reason='cooldown active')
+        make_decision(self.user, self._at(12, 0))
+
+        metrics = self._compute()
+        self.assertEqual(metrics['suppressed_n'], 2)
+        self.assertEqual(metrics['decision_points_n'], 4)
+        self.assertEqual(metrics['eligible_n'], 1)
+        self.assertEqual(metrics['sent_n'], 1)
+
+    def test_suppressed_n_is_zero_not_null_on_a_day_with_no_suppression(self):
+        make_decision(self.user, self._at(10, 0), send=False, reason='cooldown active')
+        self.assertEqual(self._compute()['suppressed_n'], 0)
+
+    def test_a_suppressed_run_in_decision_is_not_a_run_in_violation(self):
+        make_decision(self.user, self._at(10, 0), send=False, reason='run-in period',
+                      suppression_reason='run_in', status='suppressed',
+                      delivery_status='suppressed')
+        metrics = self._compute()
+        self.assertEqual(metrics['runin_violation_n'], 0)
+        self.assertEqual(metrics['sent_n'], 0)
+        self.assertEqual(metrics['suppressed_n'], 1)
 
     def test_engagement_and_outcome_capture(self):
         log = make_decision(self.user, self._at(10, 0))
@@ -1525,6 +1556,16 @@ class TimelineTests(TestCase):
         point = tl.mssd_lane(self.user, self.LOCAL)[0]
         self.assertFalse(point['unexplained'])
 
+    def test_mssd_lane_carries_the_suppression_label(self):
+        make_decision(self.user, self._at(10), send=False, reason='run-in period',
+                      suppression_reason='run_in', observed_mssd=9.0,
+                      threshold_at_decision=4.0, threshold_source='engine')
+        make_decision(self.user, self._at(11), send=False, reason='cooldown active')
+        suppressed, ordinary = tl.mssd_lane(self.user, self.LOCAL)
+        self.assertEqual(suppressed['suppression_reason'], 'run_in')
+        self.assertFalse(suppressed['unexplained'])
+        self.assertIsNone(ordinary['suppression_reason'])
+
     def test_mssd_lane_leaves_a_missing_threshold_as_a_gap(self):
         make_decision(self.user, self._at(10), send=False,
                       reason='insufficient within-person history', observed_mssd=9.0)
@@ -1584,6 +1625,23 @@ class TimelineEndpointTests(TestCase):
         enrolled = datetime(self.today.year, self.today.month, self.today.day,
                             10, 0, tzinfo=EASTERN) - timedelta(days=4)
         self.user = make_participant('tle@x.test', enrolled)
+
+    def test_decision_events_carry_the_suppression_label(self):
+        make_decision(self.user, datetime(self.today.year, self.today.month, self.today.day,
+                                          10, 0, tzinfo=EASTERN),
+                      send=False, reason='distress override (momentary)',
+                      suppression_reason='distress_momentary', status='suppressed',
+                      delivery_status='suppressed')
+        body = self.client.get(
+            f'/api/monitor/participant/{self.user.pk}/timeline', **self.headers).json()
+        decisions = [event for event in body['events'] if event['kind'] == 'decision']
+        self.assertEqual(decisions[0]['suppression_reason'], 'distress_momentary')
+        self.assertFalse(decisions[0]['eligible'])
+
+    def test_grid_serves_the_suppressed_metric(self):
+        response = self.client.get('/api/monitor/grid?metric=suppressed_n', **self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('suppressed_n', METRIC_FIELDS)
 
     def test_multi_day_returns_oldest_first(self):
         body = self.client.get(
@@ -1775,3 +1833,36 @@ class BackfillWithdrawalsTests(TestCase):
         call_command('backfill_withdrawals', '--dry-run', stdout=StringIO())
         self.assertEqual(
             MetricsParticipant.objects.get(user=user).first_seen_not_enrolled_at, before)
+
+
+
+class RandomizationAuditRuleTests(TestCase):
+    NOW = datetime(2026, 9, 20, 15, 0, tzinfo=EASTERN)
+
+    def setUp(self):
+        self.user = make_participant('audit-rule@x.test', datetime(2026, 9, 1, 10, 0, tzinfo=EASTERN))
+
+    def _rule(self):
+        return randomization_audit(Context(self.NOW))
+
+    def test_suppressed_decisions_do_not_trip_the_rule(self):
+        for reason, label in (('run_in', 'run-in period'),
+                              ('distress_baseline', 'distress override (baseline)'),
+                              ('distress_momentary', 'distress override (momentary)')):
+            make_decision(self.user, self.NOW, send=False, reason=label,
+                          suppression_reason=reason, status='suppressed',
+                          delivery_status='suppressed')
+        self.assertEqual(self._rule(), [])
+
+    def test_an_unlabeled_drawless_decision_with_an_eligible_reason_still_trips_it(self):
+        make_decision(self.user, self.NOW, send=False, reason='run-in period')
+        findings = self._rule()
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].payload['eligibility_disagreements'], 1)
+
+    def test_a_suppressed_row_carrying_a_draw_is_still_a_contradiction(self):
+        JITAILog.objects.create(
+            user=self.user, prompt_id='', trigger_reason='run-in period', send_prompt=False,
+            suppression_reason='run_in', randomization_draw=0.3, randomization_probability=0.5,
+            decision_made_at=self.NOW, status='suppressed', delivery_status='suppressed')
+        self.assertEqual(len(self._rule()), 1)

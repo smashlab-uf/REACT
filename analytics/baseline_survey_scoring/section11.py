@@ -15,6 +15,8 @@ from typing import Dict, List
 
 import pandas as pd
 
+import definitions as D
+
 # code (as stored in DistressFlag.signals / app.distress.BASELINE_SIGNALS) ->
 # the scores column that is True when it fires.
 SIGNAL_COLUMNS: Dict[str, str] = {
@@ -25,6 +27,14 @@ SIGNAL_COLUMNS: Dict[str, str] = {
     "problem_gambling": "pgsi_problem_gambling",
     "food_insecurity": "hunger_positive",
 }
+
+
+# Every item an automated Section 11 signal is scored from. A row missing any of
+# them cannot be fully screened, and an export missing a whole instrument's
+# columns can flag nobody on it.
+REQUIRED_SCREEN_COLUMNS = tuple(
+    D.PHQ9 + D.SCOFF + D.AUDIT_C + D.PGSI + D.HUNGER_VITAL_SIGN
+)
 
 
 def row_signals(row: pd.Series) -> List[str]:

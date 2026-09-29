@@ -261,6 +261,8 @@ def _evaluate_user(user, p):
         send_prompt = False
         selected_prompt_id = ''
 
+    unsent_status = 'suppressed' if suppression_reason else 'not_sent'
+
     recent_hr = HeartRateSample.objects.filter(user=user).order_by('-timestamp').first()
     recent_stress = StressSample.objects.filter(user=user).order_by('-timestamp').first()
 
@@ -292,8 +294,8 @@ def _evaluate_user(user, p):
                 'arm_randomization_probability': arm_p,
                 'arm_randomization_draw': arm_draw,
                 'send_prompt': send_prompt,
-                'status': 'pending' if send_prompt else 'not_sent',
-                'delivery_status': 'pending' if send_prompt else 'not_sent',
+                'status': unsent_status if not send_prompt else 'pending',
+                'delivery_status': unsent_status if not send_prompt else 'pending',
                 'trigger_signal': trigger_signal,
                 'ema_mood': _snap.get(SIGNAL_SUB_ITEMS['mood']),
                 'ema_stress': _snap.get(SIGNAL_SUB_ITEMS['stress']),

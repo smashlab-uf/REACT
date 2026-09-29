@@ -8,6 +8,7 @@ from django.urls import path, reverse
 from django.utils import timezone
 from django.views.decorators.debug import sensitive_post_parameters
 
+from .baseline_import import BaselineImportError, import_baseline_flags
 from .distress import BASELINE_SIGNALS, MOMENTARY_SIGNALS
 from .forms import ParticipantEnrollmentForm
 
@@ -303,9 +304,26 @@ class DistressFlagAdminForm(forms.ModelForm):
         fields = "__all__"
 
 
+MAX_BASELINE_UPLOAD_BYTES = 5 * 1024 * 1024
+
+
+class BaselineImportForm(forms.Form):
+    file = forms.FileField(label="Qualtrics export (.csv)")
+    preview = forms.BooleanField(label="Preview only (write nothing)", required=False, initial=True)
+
+    def clean_file(self):
+        upload = self.cleaned_data["file"]
+        if not upload.name.lower().endswith(".csv"):
+            raise forms.ValidationError("Upload the export as a CSV (.csv).")
+        if upload.size > MAX_BASELINE_UPLOAD_BYTES:
+            raise forms.ValidationError("That file is too large for an import.")
+        return upload
+
+
 @admin.register(DistressFlag)
 class DistressFlagAdmin(ReadableAdminMixin, admin.ModelAdmin):
     form = DistressFlagAdminForm
+    change_list_template = "admin/app/distressflag/change_list.html"
     actions = ("mark_contact_documented",)
     list_display = (
         "user", "source", "signals", "raised_at", "expires_at", "contact_documented_at", "active",
@@ -320,7 +338,54 @@ class DistressFlagAdmin(ReadableAdminMixin, admin.ModelAdmin):
     def active(self, obj):
         return obj.is_active()
 
-    @admin.action(description="Mark same-day contact documented (resumes randomization)")
+    def get_urls(self):
+        custom = [
+            path(
+                "import-baseline/",
+                self.admin_site.admin_view(self.import_baseline_view),
+                name="app_distressflag_import_baseline",
+            ),
+        ]
+        return custom + super().get_urls()
+
+    def import_baseline_view(self, request):
+        if not self.has_add_permission(request):
+            raise PermissionDenied
+        form = BaselineImportForm(request.POST or None, request.FILES or None)
+        report = None
+        if request.method == "POST" and form.is_valid():
+            preview = form.cleaned_data["preview"]
+
+            def log_created(flag):
+                self.log_addition(
+                    request, flag,
+                    f"Imported from a Qualtrics baseline export (signals: {', '.join(flag.signals)})",
+                )
+
+            try:
+                report = import_baseline_flags(
+                    form.cleaned_data["file"], dry_run=preview,
+                    require_complete_screens=True, on_create=log_created,
+                )
+            except BaselineImportError as error:
+                form.add_error("file", str(error))
+            except ValueError as error:
+                form.add_error("file", f"Could not read that file as a Qualtrics CSV export: {error}")
+        rows_to_show = []
+        if report is not None:
+            rows_to_show = report.planned if report.dry_run else report.created
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Import baseline export",
+            "opts": self.model._meta,
+            "form": form,
+            "report": report,
+            "rows_to_show": rows_to_show,
+            "unknown_labels": sorted(report.unknown_labels.items()) if report else [],
+        }
+        return TemplateResponse(request, "admin/app/distressflag/import_baseline.html", context)
+
+    @admin.action(description="Mark contact documented (resumes randomization)")
     def mark_contact_documented(self, request, queryset):
         updated = queryset.filter(
             source="baseline", contact_documented_at__isnull=True

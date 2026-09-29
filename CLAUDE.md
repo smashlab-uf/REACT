@@ -111,7 +111,9 @@ python manage.py import_baseline_distress_flags --dry-run --file export.csv
                                                    #   signals, write DistressFlag(source='baseline').
                                                    #   Defaults --id-column=participant_id
                                                    #   --id-field=user_id; both still overridable.
-python manage.py test dashboard --settings=project.test_settings
+# The dashboard tests do NOT run from backend/: the label 'dashboard' resolves to the directory
+# backend/dashboard/ there, so bare `manage.py test` (and CI) skips them. Run them from the repo root:
+python3 backend/manage.py test dashboard --settings=project.test_settings
 ```
 
 ```bash
@@ -406,8 +408,8 @@ draw, after the run-in gate (run-in is named first when both apply):
   once a `DistressFlag` with that exact signal set already exists for the user. `free_text_risk`
   is not produced by this pipeline at all — there is no free-text column in
   `analytics/baseline_survey_scoring/definitions.py` — and stays a manual staff process. Pauses
-  coping prompts until staff document same-day contact (Django Admin action "Mark same-day
-  contact documented" sets `contact_documented_at`); randomization then resumes. Only the signal
+  coping prompts until staff mark the contact documented (Django Admin action "Mark contact
+  documented" sets `contact_documented_at`); randomization then resumes. Only the signal
   codes are stored, never a score or the free-text disclosure.
 - **momentary** (`source='momentary'`): raised when a submitted check-in has ANY of
   `B1_valence == 1` (scale floor), `B2_stress == 7` (scale ceiling), `B1_affect_sad == 5`, or
@@ -419,11 +421,31 @@ draw, after the run-in gate (run-in is named first when both apply):
   signals can fire on one check-in (e.g. both sad and anxious at once) — all are recorded, not
   deduped.
 
+**Importing the baseline** has two front ends over one function (`backend/app/baseline_import.py`,
+`import_baseline_flags`): the management command, and an **"Import baseline export" button** on
+Django Admin > Distress flags (`DistressFlagAdmin.import_baseline_view`). The button takes a CSV
+upload (5 MB cap, read in memory, never saved) and previews by default; staff choose the file
+again with "Preview only" unchecked to write. It refuses to write when any screening instrument's
+items (`section11.REQUIRED_SCREEN_COLUMNS`) are missing from the export, since nobody could be
+flagged on that screen, and it lists rows with a blank screening item, unrecognized columns and
+unmatched IDs. Creation is all-or-nothing, and every flag it creates gets an Admin log entry
+showing who imported it. Only staff with the add-flag permission can use it. The loader is
+`qualtrics.read_export` (path or file-like; returns the frame plus diagnostics; `load_export`
+wraps it and prints).
+
 A suppressed decision point is logged with `send_prompt=False`, `randomization_draw` and
-`randomization_probability` both null, and `JITAILog.suppression_reason` set (`run_in`,
-`distress_baseline`, `distress_momentary`). That column, not `trigger_reason`, is what the
-randomization audit and the timeline read, so a suppressed row is never mistaken for a dropped
-prompt or an engine defect. `POST /ema/responses/` returns `resource_card` (null when no override
+`randomization_probability` both null, `status` and `delivery_status` both `'suppressed'` (never
+`not_sent`, which stays for ordinary ineligible or randomized-out decisions), and
+`JITAILog.suppression_reason` set (`run_in`, `distress_baseline`, `distress_momentary`). That
+column, not `trigger_reason`, is what the randomization audit and the timeline read, so a
+suppressed row is never mistaken for a dropped prompt or an engine defect. It is exposed on the
+JITAI API, on the monitor's decision events (outcome "suppressed (run-in)" / "suppressed
+(distress)"), and in `analytics/scripts.py` (`load_jitai_log`, `audit_decision_stages`'s
+`suppressed` column, the trajectory plot). `MetricsDaily.suppressed_n` counts them per day;
+they stay in `decision_points_n` and out of `eligible_n`. Migration `0049` backfilled rows
+written before the label existed (`run-in period` rows from commit `ded0498` got
+`suppression_reason='run_in'`, and every suppressed row was relabeled `'suppressed'`); without
+it the cohort audit reads those legacy rows as "eligible but no draw". `POST /ema/responses/` returns `resource_card` (null when no override
 is active) after any check-in submitted under an active override. Card contents are
 `RESOURCE_CARD_RESOURCES` in `distress.py`: the seven resources from the study's resource document
 (the same seven as the baseline block), with digits-only contacts so tap-to-call works, and the

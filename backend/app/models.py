@@ -305,10 +305,12 @@ class JITAILog(models.Model):
         ('interacted', 'Interacted'),
         ('failed', 'Failed'),
         ('not_sent', 'Not Sent'),
+        ('suppressed', 'Suppressed'),
     ]
     DELIVERY_STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('not_sent', 'Not Sent'),
+        ('suppressed', 'Suppressed'),
         ('accepted_by_expo', 'Accepted by Expo'),
         ('received_on_device', 'Received on Device'),
         ('failed', 'Failed'),
