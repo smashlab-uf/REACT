@@ -300,7 +300,9 @@ class MonitorTimelineView(APIView):
         events.extend({
             'kind': 'decision', 'at': log.decision_made_at, 'id': log.id,
             'decision_point_id': log.decision_point_id,
-            'trigger_reason': log.trigger_reason, 'observed_mssd': log.observed_mssd,
+            'trigger_reason': log.trigger_reason,
+            'suppression_reason': log.suppression_reason or None,
+            'observed_mssd': log.observed_mssd,
             'threshold_at_decision': log.threshold_at_decision,
             'threshold_source': log.threshold_source or None,
             'randomization_probability': log.randomization_probability,

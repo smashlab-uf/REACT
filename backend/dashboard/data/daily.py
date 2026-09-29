@@ -214,6 +214,7 @@ def _mrt_metrics(user, day_start, day_end, run_in_day):
         # non-null draw is the eligibility marker (app/tasks.py).
         'eligible_n': sum(1 for log in logs if log.randomization_draw is not None),
         'sent_n': len(sent),
+        'suppressed_n': sum(1 for log in logs if log.suppression_reason),
         'delivered_n': sum(1 for log in logs if log.device_received_at is not None),
         'cap_hit': any(log.trigger_reason == 'daily cap reached' for log in logs),
         'min_gap_min': round(min(gaps)) if gaps else None,
@@ -397,7 +398,7 @@ METRIC_FIELDS = (
     'slots_expected', 'slots_covered', 'slots_reminded_uncovered', 'slots_silent',
     'reminders_sent', 'reminders_per_checkin_median',
     'completeness_mean', 'ema_missing_b1b2_n',
-    'decision_points_n', 'eligible_n', 'sent_n', 'delivered_n', 'cap_hit',
+    'decision_points_n', 'eligible_n', 'sent_n', 'suppressed_n', 'delivered_n', 'cap_hit',
     'min_gap_min', 'cooldown_violations_n', 'runin_violation_n',
     'prompt_opened_n', 'prompt_acted_n', 'prompt_dismissed_n', 'outcome_captured_n',
     'wear_valid_pct', 'wear_gap_pct', 'gaps_gt2h_n', 'max_gap_min', 'hr_minutes_valid',

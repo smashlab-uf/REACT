@@ -28,6 +28,15 @@ DECISION_OUTCOMES = {
     'cooldown active': 'cooldown',
     'daily cap reached': 'cap reached',
     'prompt sent': 'eligible',
+    'run-in period': 'suppressed (run-in)',
+    'distress override (baseline)': 'suppressed (distress)',
+    'distress override (momentary)': 'suppressed (distress)',
+}
+
+SUPPRESSION_OUTCOMES = {
+    'run_in': 'suppressed (run-in)',
+    'distress_baseline': 'suppressed (distress)',
+    'distress_momentary': 'suppressed (distress)',
 }
 
 
@@ -134,6 +143,7 @@ def decision_frame(day):
     for event in _events(day, 'decision'):
         eligible = event['eligible']
         outcome = DECISION_OUTCOMES.get(event['trigger_reason'], event['trigger_reason'])
+        outcome = SUPPRESSION_OUTCOMES.get(event.get('suppression_reason'), outcome)
         if eligible and not event['send_prompt']:
             outcome = 'eligible, not sent'
         elif eligible and event['send_prompt']:
@@ -142,6 +152,7 @@ def decision_frame(day):
             'at': _minutes(event['at'], day_start),
             'outcome': outcome,
             'trigger_reason': event['trigger_reason'],
+            'suppression_reason': event.get('suppression_reason'),
             'observed_mssd': event['observed_mssd'],
             'threshold': event['threshold_at_decision'],
             'threshold_source': event['threshold_source'],

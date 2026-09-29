@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from dashboard.data.config import OUTCOME_WINDOW_HOURS, PARTICIPANT_TZ
 from dashboard.data.windows import participant_day_bounds
+from .distress import active_distress_flag, raise_momentary_flag, resource_card
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
@@ -765,6 +766,7 @@ class EMANextView(APIView):
 class EMAResponseView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request):
         app_user = _get_app_user(request)
         if app_user is None:
@@ -822,7 +824,11 @@ class EMAResponseView(APIView):
         ]
         EMAItemResponse.objects.bulk_create(responses)
 
-        return Response(EMASerializer(ema).data, status=status.HTTP_201_CREATED)
+        raise_momentary_flag(ema)
+        payload = dict(EMASerializer(ema).data)
+        payload['resource_card'] = resource_card() if active_distress_flag(app_user) else None
+
+        return Response(payload, status=status.HTTP_201_CREATED)
 
 
 class JITAILogView(APIView):

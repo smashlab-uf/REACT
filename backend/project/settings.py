@@ -28,6 +28,12 @@ from datetime import timedelta
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# The repository root, for code that reads files outside backend/ such as the
+# baseline scoring package in analytics/. Not put on sys.path: the dashboard
+# app lives in backend/, and a repo-root entry would let a stale top-level
+# dashboard/ shadow it.
+REPO_ROOT = BASE_DIR.parent
+
 # Use the PORT environment variable set by Heroku.
 # Gunicorn (see Procfile) uses the dynamic port assigned by Heroku, or defaults to 8000 if PORT is not set.
 # Running 'python manage.py runserver 0.0.0.0:8000' explicitly sets the port for local testing,

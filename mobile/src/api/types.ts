@@ -79,6 +79,18 @@ export type EMAStoredAnswer = {
   value: EMAAnswerValue;
 };
 
+export type ResourceCardResource = {
+  name: string;
+  description?: string;
+  contact?: string;
+};
+
+export type ResourceCard = {
+  title: string;
+  message: string;
+  resources: ResourceCardResource[];
+};
+
 export type EMASubmitResponse = {
   id: number;
   user: number;
@@ -95,4 +107,5 @@ export type EMASubmitResponse = {
   stress?: number | null;
   energy?: number | null;
   item_responses: EMAStoredAnswer[];
+  resource_card?: ResourceCard | null;
 };

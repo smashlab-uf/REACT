@@ -392,7 +392,8 @@ def randomization_audit(context):
     )
     disagreeing = JITAILog.objects.filter(
         Q(randomization_draw__isnull=False, trigger_reason__in=INELIGIBLE_REASONS)
-        | (Q(randomization_draw__isnull=True) & ~Q(trigger_reason__in=INELIGIBLE_REASONS))
+        | (Q(randomization_draw__isnull=True, suppression_reason='')
+           & ~Q(trigger_reason__in=INELIGIBLE_REASONS))
     ).count()
 
     if not mismatched and not disagreeing:

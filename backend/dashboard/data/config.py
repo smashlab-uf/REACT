@@ -23,6 +23,10 @@ __all__ = [
     'BENCHMARKS',
     'CHECKIN_REMINDER_DELAY_MINUTES',
     'DAILY_PROMPT_CAP',
+    'DISTRESS_B1_AFFECT_CEILING',
+    'DISTRESS_B1_VALENCE_FLOOR',
+    'DISTRESS_B2_STRESS_CEILING',
+    'DISTRESS_MOMENTARY_PAUSE_HOURS',
     'EMA_RESPONSE_WINDOW_MINUTES',
     'HRV_BASELINE_WINDOW',
     'HRV_BBI_MAX_MS',
@@ -86,6 +90,21 @@ THRESHOLD_QUANTILE = 0.80
 MSSD_WINDOW = 3
 JITAI_COOLDOWN_MINUTES = 60
 DAILY_PROMPT_CAP = 4
+
+DISTRESS_MOMENTARY_PAUSE_HOURS = 24
+
+# Momentary distress override cutoffs, confirmed by Dr. Chang 2026-09-22: exact
+# scale-endpoint values, not thresholds. Separate from ROUTING_TRIGGER_RULES in
+# app/ema_catalog.py:174-230 (coping-message topic selection only) -- do not
+# confuse the two. Routing uses inequalities (B1_valence <= 3, B2_stress >= 5,
+# B1_affect_sad/anxious >= 4); this uses exact equality deliberately:
+# EMAAnswerSerializer.validate already rejects any value outside an item's
+# min/max with a 400, so an out-of-range value can never reach storage and an
+# `==` cutoff can never be defeated the way an inequality could.
+DISTRESS_B1_VALENCE_FLOOR = 1      # B1_valence is 1-7; 1 is the floor.
+DISTRESS_B2_STRESS_CEILING = 7     # B2_stress is 1-7; 7 is the ceiling.
+DISTRESS_B1_AFFECT_CEILING = 5     # B1_affect_sad / B1_affect_anxious are 1-5;
+                                    # both share this ceiling.
 
 # HRV (RMSSD over Garmin beat-to-beat intervals). PROVISIONAL: every value below
 # is a numeric decision threshold and none has PI sign-off yet, so HRV is only

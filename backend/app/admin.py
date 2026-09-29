@@ -1,3 +1,4 @@
+from django import forms
 from django.contrib import admin, messages
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
@@ -7,10 +8,12 @@ from django.urls import path, reverse
 from django.utils import timezone
 from django.views.decorators.debug import sensitive_post_parameters
 
+from .baseline_import import BaselineImportError, import_baseline_flags
+from .distress import BASELINE_SIGNALS, MOMENTARY_SIGNALS
 from .forms import ParticipantEnrollmentForm
 
 from .models import (
-    CheckinReminder, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, HRVSample,
+    CheckinReminder, DistressFlag, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, HRVSample,
     JITAILog, PhoneTelemetry, StressSample, User, WearableDevice,
 )
 
@@ -289,6 +292,113 @@ class CheckinReminderAdmin(ReadableAdminMixin, admin.ModelAdmin):
     autocomplete_fields = ("user",)
 
 
+class DistressFlagAdminForm(forms.ModelForm):
+    signals = forms.MultipleChoiceField(
+        choices=BASELINE_SIGNALS + MOMENTARY_SIGNALS,
+        widget=forms.CheckboxSelectMultiple,
+        required=False,
+    )
+
+    class Meta:
+        model = DistressFlag
+        fields = "__all__"
+
+
+MAX_BASELINE_UPLOAD_BYTES = 5 * 1024 * 1024
+
+
+class BaselineImportForm(forms.Form):
+    file = forms.FileField(label="Qualtrics export (.csv)")
+    preview = forms.BooleanField(label="Preview only (write nothing)", required=False, initial=True)
+
+    def clean_file(self):
+        upload = self.cleaned_data["file"]
+        if not upload.name.lower().endswith(".csv"):
+            raise forms.ValidationError("Upload the export as a CSV (.csv).")
+        if upload.size > MAX_BASELINE_UPLOAD_BYTES:
+            raise forms.ValidationError("That file is too large for an import.")
+        return upload
+
+
+@admin.register(DistressFlag)
+class DistressFlagAdmin(ReadableAdminMixin, admin.ModelAdmin):
+    form = DistressFlagAdminForm
+    change_list_template = "admin/app/distressflag/change_list.html"
+    actions = ("mark_contact_documented",)
+    list_display = (
+        "user", "source", "signals", "raised_at", "expires_at", "contact_documented_at", "active",
+    )
+    list_filter = ("source", "raised_at")
+    search_fields = ("user__email",)
+    ordering = ("-raised_at",)
+    autocomplete_fields = ("user",)
+    readonly_fields = ("ema",)
+
+    @admin.display(boolean=True, description="Pausing prompts")
+    def active(self, obj):
+        return obj.is_active()
+
+    def get_urls(self):
+        custom = [
+            path(
+                "import-baseline/",
+                self.admin_site.admin_view(self.import_baseline_view),
+                name="app_distressflag_import_baseline",
+            ),
+        ]
+        return custom + super().get_urls()
+
+    def import_baseline_view(self, request):
+        if not self.has_add_permission(request):
+            raise PermissionDenied
+        form = BaselineImportForm(request.POST or None, request.FILES or None)
+        report = None
+        if request.method == "POST" and form.is_valid():
+            preview = form.cleaned_data["preview"]
+
+            def log_created(flag):
+                self.log_addition(
+                    request, flag,
+                    f"Imported from a Qualtrics baseline export (signals: {', '.join(flag.signals)})",
+                )
+
+            try:
+                report = import_baseline_flags(
+                    form.cleaned_data["file"], dry_run=preview,
+                    require_complete_screens=True, on_create=log_created,
+                )
+            except BaselineImportError as error:
+                form.add_error("file", str(error))
+            except ValueError as error:
+                form.add_error("file", f"Could not read that file as a Qualtrics CSV export: {error}")
+        rows_to_show = []
+        if report is not None:
+            rows_to_show = report.planned if report.dry_run else report.created
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Import baseline export",
+            "opts": self.model._meta,
+            "form": form,
+            "report": report,
+            "rows_to_show": rows_to_show,
+            "unknown_labels": sorted(report.unknown_labels.items()) if report else [],
+        }
+        return TemplateResponse(request, "admin/app/distressflag/import_baseline.html", context)
+
+    @admin.action(description="Mark contact documented (resumes randomization)")
+    def mark_contact_documented(self, request, queryset):
+        updated = queryset.filter(
+            source="baseline", contact_documented_at__isnull=True
+        ).update(contact_documented_at=timezone.now())
+        skipped = queryset.count() - updated
+        self.message_user(
+            request,
+            f"{updated} baseline flag(s) marked documented."
+            + (f" {skipped} skipped (momentary or already documented)." if skipped else ""),
+            messages.SUCCESS if updated else messages.WARNING,
+        )
+
+
 @admin.register(JITAILog)
 class JITAILogAdmin(ReadableAdminMixin, admin.ModelAdmin):
     list_display = (
@@ -297,6 +407,7 @@ class JITAILogAdmin(ReadableAdminMixin, admin.ModelAdmin):
         "prompt_id",
         "triggered_at",
         "trigger_reason",
+        "suppression_reason",
         "hr_at_trigger",
         "stress_at_trigger",
         "status",
@@ -305,18 +416,18 @@ class JITAILogAdmin(ReadableAdminMixin, admin.ModelAdmin):
         "push_sent_at",
         "device_received_at",
     )
-    list_filter = ("status", "delivery_status", "trigger_reason", "triggered_at")
+    list_filter = ("status", "delivery_status", "trigger_reason", "suppression_reason", "triggered_at")
     search_fields = ("user__email", "prompt_id", "trigger_reason")
     date_hierarchy = "triggered_at"
     ordering = ("-triggered_at",)
     autocomplete_fields = ("user",)
-    readonly_fields = ("triggered_at", "decision_made_at", "push_sent_at", "device_received_at", "receipt_reported_at", "receipt_event_id")
+    readonly_fields = ("triggered_at", "decision_made_at", "push_sent_at", "device_received_at", "receipt_reported_at", "receipt_event_id", "suppression_reason")
     fieldsets = (
         ("Prompt", {
             "fields": ("user", "prompt_id", "triggered_at", "status"),
         }),
         ("Trigger Context", {
-            "fields": ("trigger_reason", "hr_at_trigger", "stress_at_trigger"),
+            "fields": ("trigger_reason", "suppression_reason", "hr_at_trigger", "stress_at_trigger"),
         }),
         ("Delivery Latency", {
             "fields": (

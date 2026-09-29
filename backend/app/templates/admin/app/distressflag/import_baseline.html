@@ -1,0 +1,103 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">Home</a>
+&rsaquo; <a href="{% url 'admin:app_distressflag_changelist' %}">Distress flags</a>
+&rsaquo; Import baseline export
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+  <p>Upload the Qualtrics baseline export as a CSV. Screens are scored and a baseline flag is created for
+  each participant who screens positive. The file is read in memory and never saved; only the signal codes
+  are stored. The export's <code>participant_id</code> column must hold each participant's numeric user ID.</p>
+
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    {{ form.non_field_errors }}
+    <fieldset class="module aligned">
+      <div class="form-row">
+        {{ form.file.errors }}
+        <label for="{{ form.file.id_for_label }}">{{ form.file.label }}:</label>
+        {{ form.file }}
+      </div>
+      <div class="form-row">
+        {{ form.preview.errors }}
+        <label for="{{ form.preview.id_for_label }}">{{ form.preview.label }}:</label>
+        {{ form.preview }}
+        <div class="help">Leave checked to see what would happen. To write the flags, choose the file again, uncheck this, and submit.</div>
+      </div>
+    </fieldset>
+    <div class="submit-row"><input type="submit" value="Run" class="default"></div>
+  </form>
+
+  {% if report %}
+  <h2>{% if report.refused %}Nothing was written{% elif report.dry_run %}Preview: nothing was written{% else %}Imported{% endif %}</h2>
+
+  {% if report.refused %}
+  <p class="errornote">The export is missing screening items, so nobody could be flagged on those screens. Nothing was written. Fix the export and try again, or preview it to see the full list.</p>
+  {% endif %}
+
+  {% if report.missing_screen_columns %}
+  <div class="errornote">
+    <strong>{{ report.missing_screen_columns|length }} screening item(s) not found in the export.</strong>
+    Nobody can be flagged on a screen whose items are missing:
+    {{ report.missing_screen_columns|join:", " }}
+  </div>
+  {% endif %}
+
+  {% if report.incomplete %}
+  <div class="errornote">
+    <strong>{{ report.incomplete|length }} row(s) have a blank screening item</strong> and cannot be fully screened
+    (participant IDs): {{ report.incomplete|join:", " }}
+  </div>
+  {% endif %}
+
+  <p>
+    {% if report.dry_run %}Would create {{ report.planned|length }}{% else %}Created {{ report.created|length }}{% endif %}
+    baseline flag(s). {{ report.rows }} row(s) read; {{ report.skipped_existing }} already on record;
+    {{ report.skipped_no_signal }} with no positive signal.
+  </p>
+
+  {% if rows_to_show %}
+  <table>
+    <thead><tr><th>User ID</th><th>Signals</th></tr></thead>
+    <tbody>
+    {% for row in rows_to_show %}
+      <tr><td>{{ row.user_id }}</td><td>{{ row.signals|join:", " }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if report.unmatched %}
+  <div class="errornote"><strong>{{ report.unmatched|length }} flagged row(s) matched no participant:</strong>
+    {% for identifier, codes in report.unmatched %}{{ identifier }} ({{ codes|join:", " }}){% if not forloop.last %}; {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+  {% if report.bad_identifier %}
+  <div class="errornote"><strong>{{ report.bad_identifier|length }} flagged row(s) had a missing or unusable participant ID:</strong>
+    {% for identifier, codes in report.bad_identifier %}{{ identifier }} ({{ codes|join:", " }}){% if not forloop.last %}; {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+  {% if report.ambiguous %}
+  <div class="errornote"><strong>{{ report.ambiguous|length }} flagged row(s) matched more than one participant and were skipped:</strong>
+    {% for identifier, codes in report.ambiguous %}{{ identifier }}{% if not forloop.last %}; {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+  {% if report.unmatched_headers %}
+  <div class="errornote"><strong>{{ report.unmatched_headers|length }} column(s) in the export were not recognized:</strong>
+    {{ report.unmatched_headers|join:", " }}
+  </div>
+  {% endif %}
+  {% if unknown_labels %}
+  <div class="errornote"><strong>Answers not in a question's option list were read as blank:</strong>
+    {% for column, labels in unknown_labels %}{{ column }}: {{ labels|join:", " }}{% if not forloop.last %}; {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+{% endblock %}
