@@ -682,6 +682,18 @@ class JITAILogModelTests(TestCase):
         user.delete()
         self.assertEqual(JITAILog.objects.count(), 0)
 
+    def test_cooldown_and_daily_cap_are_valid_suppression_reason_choices(self):
+        user = make_user()
+        for reason in ('cooldown', 'daily_cap'):
+            log = JITAILog(
+                user=user, prompt_id='TEMPLATE_001', trigger_reason='hr_elevated',
+                send_prompt=False, status='suppressed', delivery_status='suppressed',
+                suppression_reason=reason,
+            )
+            log.full_clean()
+            log.save()
+            self.assertEqual(JITAILog.objects.get(pk=log.pk).suppression_reason, reason)
+
 
 # ---------------------------------------------------------------------------
 # Serializer: WearableDevice
@@ -1290,11 +1302,20 @@ class EMAEndpointTests(TestCase):
 class JITAIEndpointTests(TestCase):
 
     def setUp(self):
-        self.user = make_user(email='jitai@ufl.edu')
+        self.user = make_user(
+            email='jitai@ufl.edu', is_enrolled=True,
+            enrolled_at=timezone.now() - timedelta(days=RUN_IN_DAYS + 1),
+        )
         self.client = authenticated_client(self.user)
+        self.staff = AuthUser.objects.create_superuser(
+            'jitai-admin', 'jitai-admin@example.com', 'adminpass123',
+        )
+        self.staff_client = APIClient()
+        refresh = RefreshToken.for_user(self.staff)
+        self.staff_client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
 
     def test_post_creates_jitai_log_and_returns_201(self):
-        response = self.client.post('/jitai/', {
+        response = self.staff_client.post('/jitai/', {
             'user': self.user.user_id,
             'prompt_id': 'TEMPLATE_HR_HIGH',
             'trigger_reason': 'hr_elevated+stress_high',
@@ -1305,6 +1326,7 @@ class JITAIEndpointTests(TestCase):
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         self.assertEqual(JITAILog.objects.count(), 1)
+        self.assertTrue(JITAILog.objects.get().send_prompt)
 
     def test_post_without_auth_returns_401(self):
         response = APIClient().post('/jitai/', {
@@ -1313,6 +1335,162 @@ class JITAIEndpointTests(TestCase):
             'trigger_reason': 'hr_elevated',
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_post_as_non_staff_participant_returns_403(self):
+        response = self.client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+        self.assertEqual(JITAILog.objects.count(), 0)
+
+    def test_post_during_run_in_is_forced_suppressed(self):
+        fresh_user = make_user(
+            email='jitai-runin@ufl.edu', is_enrolled=True, enrolled_at=timezone.now(),
+        )
+        response = self.staff_client.post('/jitai/', {
+            'user': fresh_user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.get(user=fresh_user)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.status, 'suppressed')
+        self.assertEqual(log.suppression_reason, 'run_in')
+
+    def test_post_with_active_distress_flag_is_forced_suppressed(self):
+        DistressFlag.objects.create(
+            user=self.user, source='momentary', signals=['b2_stress_ceiling'],
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.get(user=self.user)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'distress_momentary')
+
+    def test_post_within_cooldown_window_is_forced_suppressed(self):
+        JITAILog.objects.create(
+            user=self.user, prompt_id='T0', trigger_reason='hr_elevated',
+            send_prompt=True, status='delivered', delivery_status='delivered',
+        )
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'cooldown')
+
+    def test_post_past_daily_cap_is_forced_suppressed(self):
+        old_enough = timezone.now() - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES + 5)
+        for i in range(study_config.DAILY_PROMPT_CAP):
+            log = JITAILog.objects.create(
+                user=self.user, prompt_id=f'T{i}', trigger_reason='hr_elevated',
+                send_prompt=True, status='delivered', delivery_status='delivered',
+            )
+            JITAILog.objects.filter(pk=log.pk).update(triggered_at=old_enough)
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T_over_cap',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'daily_cap')
+
+    def test_prior_suppressed_decision_does_not_trigger_cooldown(self):
+        JITAILog.objects.create(
+            user=self.user, prompt_id='T0', trigger_reason='run-in period',
+            send_prompt=False, status='suppressed', delivery_status='suppressed',
+            suppression_reason='run_in',
+        )
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.suppression_reason, '')
+
+    def test_decision_allowed_once_cooldown_window_has_fully_elapsed(self):
+        just_past_cooldown = timezone.now() - timedelta(
+            minutes=study_config.JITAI_COOLDOWN_MINUTES, seconds=5,
+        )
+        log = JITAILog.objects.create(
+            user=self.user, prompt_id='T0', trigger_reason='hr_elevated',
+            send_prompt=True, status='delivered', delivery_status='delivered',
+        )
+        JITAILog.objects.filter(pk=log.pk).update(triggered_at=just_past_cooldown)
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.suppression_reason, '')
+
+    def test_cooldown_takes_priority_over_daily_cap_when_both_apply(self):
+        just_within_cooldown = timezone.now() - timedelta(
+            minutes=study_config.JITAI_COOLDOWN_MINUTES - 1,
+        )
+        for i in range(study_config.DAILY_PROMPT_CAP):
+            log = JITAILog.objects.create(
+                user=self.user, prompt_id=f'T{i}', trigger_reason='hr_elevated',
+                send_prompt=True, status='delivered', delivery_status='delivered',
+            )
+            JITAILog.objects.filter(pk=log.pk).update(triggered_at=just_within_cooldown)
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T_over_cap_and_cooldown',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'cooldown')
+
+    def test_run_in_takes_priority_over_cooldown_in_safeguards(self):
+        fresh_user = make_user(
+            email='jitai-runin-cooldown@ufl.edu', is_enrolled=True, enrolled_at=timezone.now(),
+        )
+        recent = timezone.now() - timedelta(minutes=1)
+        log = JITAILog.objects.create(
+            user=fresh_user, prompt_id='T0', trigger_reason='hr_elevated',
+            send_prompt=True, status='delivered', delivery_status='delivered',
+        )
+        JITAILog.objects.filter(pk=log.pk).update(triggered_at=recent)
+        response = self.staff_client.post('/jitai/', {
+            'user': fresh_user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=fresh_user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'run_in')
 
     def test_get_returns_jitai_history(self):
         JITAILog.objects.create(
@@ -1338,7 +1516,7 @@ class JITAIEndpointTests(TestCase):
         self.assertEqual(rows['cooldown active']['suppression_reason'], '')
 
     def test_post_cannot_set_the_suppression_label(self):
-        response = self.client.post('/jitai/', {
+        response = self.staff_client.post('/jitai/', {
             'user': self.user.user_id, 'prompt_id': 'T1', 'trigger_reason': 'hr_elevated',
             'send_prompt': True, 'suppression_reason': 'run_in',
         }, format='json')
@@ -1351,7 +1529,7 @@ class JITAIEndpointTests(TestCase):
         self.assertEqual(len(response.data), 0)
 
     def test_send_prompt_false_is_stored(self):
-        self.client.post('/jitai/', {
+        self.staff_client.post('/jitai/', {
             'user': self.user.user_id,
             'prompt_id': 'TEMPLATE_001',
             'trigger_reason': 'cooldown',

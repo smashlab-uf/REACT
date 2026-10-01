@@ -309,7 +309,7 @@ but that file doesn't exist in the repo — don't chase it.)
 | GET | `/ema/next/` | Fetch the next EMA prompt for the mobile app to show |
 | POST | `/ema/responses/` | Submit an EMA response from the mobile app |
 | GET | `/ema/{user_id}/` | Fetch EMA history (dashboard/admin use) |
-| POST | `/jitai/` | Internal — Celery logs a triggered intervention |
+| POST | `/jitai/` | Staff-only. Not used by Celery — `_evaluate_user` writes `JITAILog` rows via the ORM directly; this is a manual/admin write path, gated by `IsAdminUser` and re-validated through `_decision_point_safeguards` (see below) |
 | GET | `/jitai/{user_id}/` | Fetch JITAI history (dashboard/admin use) |
 | POST | `/jitai/receipt/` | Mobile app reports delivery/open of a JITAI push (`jitai_log_id`) |
 | POST | `/telemetry/ingest/` | Internal — Celery bulk-ingest wearable data |
@@ -466,7 +466,10 @@ stores only signal codes — it's a crosswalk, not a join key into anything sens
 A suppressed decision point is logged with `send_prompt=False`, `randomization_draw` and
 `randomization_probability` both null, `status` and `delivery_status` both `'suppressed'` (never
 `not_sent`, which stays for ordinary ineligible or randomized-out decisions), and
-`JITAILog.suppression_reason` set (`run_in`, `distress_baseline`, `distress_momentary`). That
+`JITAILog.suppression_reason` set (`run_in`, `distress_baseline`, `distress_momentary`, plus
+`cooldown` and `daily_cap` — the latter two are only ever produced by `POST /jitai/`'s own
+safeguard recheck below, never by `_evaluate_user`, which already enforces cooldown/daily-cap
+upstream via `apply_decision_rules` on the MSSD frame). That
 column, not `trigger_reason`, is what the randomization audit and the timeline read, so a
 suppressed row is never mistaken for a dropped prompt or an engine defect. It is exposed on the
 JITAI API, on the monitor's decision events (outcome "suppressed (run-in)" / "suppressed
@@ -475,7 +478,17 @@ JITAI API, on the monitor's decision events (outcome "suppressed (run-in)" / "su
 they stay in `decision_points_n` and out of `eligible_n`. Migration `0049` backfilled rows
 written before the label existed (`run-in period` rows from commit `ded0498` got
 `suppression_reason='run_in'`, and every suppressed row was relabeled `'suppressed'`); without
-it the cohort audit reads those legacy rows as "eligible but no draw". `POST /ema/responses/` returns `resource_card` (null when no override
+it the cohort audit reads those legacy rows as "eligible but no draw".
+
+`backend/app/tasks.py`'s `_protocol_override_reason` (run-in + distress) and
+`_decision_point_safeguards` (run-in + distress + cooldown + daily cap) are the single
+implementations of "is this user currently protected right now" — `_evaluate_user` calls the
+former (it already handles cooldown/cap itself via the MSSD frame), and `JITAILogView.post`
+calls the latter as a full defense-in-depth recheck, since a direct POST has no decision frame
+that would otherwise have enforced any of this. `POST /jitai/` is staff-only (`IsAdminUser`) for
+the same reason: nothing in the real pipeline calls it over HTTP, so a write through it always
+gets this safeguard check regardless of what the caller's payload sets `send_prompt`/`status`
+to. `POST /ema/responses/` returns `resource_card` (null when no override
 is active) after any check-in submitted under an active override. Card contents are
 `RESOURCE_CARD_RESOURCES` in `distress.py`: the seven resources from the study's resource document
 (the same seven as the baseline block), with digits-only contacts so tap-to-call works, and the

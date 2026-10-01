@@ -398,6 +398,8 @@ class JITAILog(models.Model):
         ('run_in', 'Run-in period'),
         ('distress_baseline', 'Distress override (baseline screen)'),
         ('distress_momentary', 'Distress override (check-in)'),
+        ('cooldown', 'Cooldown active'),
+        ('daily_cap', 'Daily cap reached'),
     ]
     suppression_reason = models.CharField(
         max_length=32, choices=SUPPRESSION_CHOICES, blank=True, default='', db_index=True
