@@ -411,6 +411,21 @@ draw, after the run-in gate (run-in is named first when both apply):
   coping prompts until staff mark the contact documented (Django Admin action "Mark contact
   documented" sets `contact_documented_at`); randomization then resumes. Only the signal
   codes are stored, never a score or the free-text disclosure.
+
+  `analytics/baseline_survey_scoring/qualtrics.py`'s `read_export` matches a Qualtrics export's
+  columns by question text, not by its literal header. A real export uses Qualtrics' three-row-header
+  shape — short internal codes (`Q0`, `Q1`, ...) as the actual column names, the human-readable
+  question text one row below, an `ImportId` row below that — and matching runs against that text
+  row, not the short codes (which match nothing). Grid questions also repeat a shared instruction in
+  front of every sub-item's text (`"Instruction: - Item text"`); `resolve_columns` retries on the text
+  after the last `" - "` when the direct match fails, since no registered item text contains one.
+  `99` is treated as "no selection" (`MISSING_TOKENS`), not a literal score, on every column this
+  pipeline scores — all bounded Likert/categorical scales, so 99 is never a legitimate real answer.
+  **Known remaining gap, confirmed against a real export (2026-09-29):** `scoff_3`, `pgsi_2`,
+  `pgsi_7`, and `hunger_vital_sign_2` don't match that export's current wording at all (unrelated to
+  the above — just stale registered text), which blanks `scoff_positive`, `pgsi_problem_gambling` and
+  `hunger_positive` entirely the same way one missing item always does. Needs the current wording
+  confirmed against the live survey before fixing, not guessed from one export.
 - **momentary** (`source='momentary'`): raised when a submitted check-in has ANY of
   `B1_valence == 1` (scale floor), `B2_stress == 7` (scale ceiling), `B1_affect_sad == 5`, or
   `B1_affect_anxious == 5` (both scale ceilings) — exact values, confirmed by Dr. Chang
