@@ -17,6 +17,11 @@ class ParticipantEnrollmentForm(forms.Form):
         label='Labfront participant ID', max_length=64,
         help_text='Copy the actual participant ID from Labfront after setting up their Garmin connection.',
     )
+    study_id = forms.CharField(
+        label='Study ID', max_length=32, required=False,
+        help_text="e.g. RS01. The value Qualtrics' pid embedded-data field carries for this "
+                 "participant's baseline survey link. Leave blank if not assigned yet.",
+    )
 
     def __init__(self, *args, participant=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -47,6 +52,17 @@ class ParticipantEnrollmentForm(forms.Form):
         if devices.exists():
             raise ValidationError('This Labfront participant ID is already linked to another account.')
         return participant_id
+
+    def clean_study_id(self):
+        study_id = self.cleaned_data.get('study_id', '').strip()
+        if not study_id:
+            return ''
+        existing = User.objects.filter(study_id__iexact=study_id)
+        if self.participant is not None:
+            existing = existing.exclude(pk=self.participant.pk)
+        if existing.exists():
+            raise ValidationError('That Study ID is already in use by another account.')
+        return study_id
 
     def generate_credentials(self):
         while True:
@@ -83,8 +99,11 @@ class ParticipantEnrollmentForm(forms.Form):
         device.is_active = True
         device.save()
         participant.is_enrolled = True
+        if data.get('study_id'):
+            participant.study_id = data['study_id']
         # User.save stamps the first enrollment date without resetting an existing one.
-        participant.save(update_fields=['is_enrolled'])
+        update_fields = ['is_enrolled'] + (['study_id'] if data.get('study_id') else [])
+        participant.save(update_fields=update_fields)
         if self.participant is None:
             self.generated_credentials = {'email': email, 'password': password}
         return participant, device, created

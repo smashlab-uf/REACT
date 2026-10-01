@@ -4,7 +4,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from app.baseline_import import BaselineImportError, import_baseline_flags
 
-ID_FIELD_CHOICES = ('email', 'user_id')
+ID_FIELD_CHOICES = ('email', 'user_id', 'study_id')
 
 
 class Command(BaseCommand):
@@ -23,13 +23,15 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('--file', required=True, type=Path,
                             help='Path to the Qualtrics export (.csv or .xlsx).')
-        parser.add_argument('--id-column', default='participant_id',
+        parser.add_argument('--id-column', default='pid',
                             help="Column in the export identifying the participant. "
-                                 "Defaults to 'participant_id'.")
-        parser.add_argument('--id-field', default='user_id', choices=ID_FIELD_CHOICES,
+                                 "Defaults to 'pid', Qualtrics' embedded-data field "
+                                 "auto-populated from the participant's personalized "
+                                 "distribution link (confirmed 2026-10-01).")
+        parser.add_argument('--id-field', default='study_id', choices=ID_FIELD_CHOICES,
                             help="User field --id-column values are matched against. "
-                                 "Defaults to 'user_id' (confirmed: participant_id maps "
-                                 "to User.user_id).")
+                                 "Defaults to 'study_id', matched case/whitespace- "
+                                 "insensitively against the export's 'pid' column.")
         parser.add_argument('--dry-run', action='store_true',
                             help='Report what would be created without writing.')
 

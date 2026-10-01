@@ -109,8 +109,10 @@ python manage.py backfill_thresholds --dry-run     # fill JITAILog.threshold_at_
 python manage.py import_baseline_distress_flags --dry-run --file export.csv
                                                    # score a Qualtrics baseline export for Section 11
                                                    #   signals, write DistressFlag(source='baseline').
-                                                   #   Defaults --id-column=participant_id
-                                                   #   --id-field=user_id; both still overridable.
+                                                   #   Defaults --id-column=pid --id-field=study_id
+                                                   #   (Qualtrics' embedded-data pid field matched
+                                                   #   against User.study_id); both still overridable
+                                                   #   to user_id/email for an older export.
 # The dashboard tests do NOT run from backend/: the label 'dashboard' resolves to the directory
 # backend/dashboard/ there, so bare `manage.py test` (and CI) skips them. Run them from the repo root:
 python3 backend/manage.py test dashboard --settings=project.test_settings
@@ -198,7 +200,8 @@ docs/superpowers/  # schema design specs/plans from the original REACT model bui
 The **Django Models** section below is a simplified design reference and is intentionally leaner than
 what is deployed. The live schema is richer — e.g. `JITAILog` has **36** columns (the message-arm
 randomization and routing audit landed in migrations `0042`–`0043`, and
-`threshold_at_decision` / `threshold_source` in `0046`); `EMA` carries `ema_type`,
+`threshold_at_decision` / `threshold_source` in `0046`); `User` carries `study_id` (migration
+`0051`, see the baseline-import section below); `EMA` carries `ema_type`,
 outcome-window fields and `served_sub_item_ids`; there are additional tables (`EMAItemResponse`,
 `EngagementLog`, `PhoneTelemetry`, `EventDay`, `CheckinReminder`, `WearableSync`, `DistressFlag`); and four derived
 `dashboard_*` monitoring tables. For the actual deployed schema,
@@ -403,8 +406,11 @@ draw, after the run-in gate (run-in is named first when both apply):
   `analytics/baseline_survey_scoring/` (`scoring.py`'s `phq9_self_harm_positive`,
   `phq9_severity_alert`, `scoff_positive`, `audit_c_alert`, `pgsi_problem_gambling`,
   `hunger_positive`, mapped to signal codes by `section11.py`) and turned into
-  `DistressFlag` rows by `manage.py import_baseline_distress_flags --file ... --id-column ...
-  --id-field user_id` (backend/; the export's `participant_id` is the numeric `user_id`). Re-running the same export is a no-op: a row is skipped
+  `DistressFlag` rows by `manage.py import_baseline_distress_flags --file ...` (backend/).
+  Matching defaults to the export's `pid` column against `User.study_id` — confirmed 2026-10-01
+  against a real export that `pid` is a genuine Qualtrics embedded-data field, auto-populated from
+  each participant's personalized distribution link rather than typed by them. `--id-column`/
+  `--id-field` (`user_id` or `email`) still override this for an older export. Re-running the same export is a no-op: a row is skipped
   once a `DistressFlag` with that exact signal set already exists for the user. `free_text_risk`
   is not produced by this pipeline at all — there is no free-text column in
   `analytics/baseline_survey_scoring/definitions.py` — and stays a manual staff process. Pauses
@@ -446,7 +452,16 @@ flagged on that screen, and it lists rows with a blank screening item, unrecogni
 unmatched IDs. Creation is all-or-nothing, and every flag it creates gets an Admin log entry
 showing who imported it. Only staff with the add-flag permission can use it. The loader is
 `qualtrics.read_export` (path or file-like; returns the frame plus diagnostics; `load_export`
-wraps it and prints).
+wraps it and prints). The Admin button form has the same `id_column`/`id_field` override as the
+management command (defaulting to `pid`/`study_id`), so a staff member can switch to matching by
+numeric user ID or email for an older export without touching the command line.
+
+`User.study_id` (migration `0051`) is the crosswalk field this matches against: a free-text code
+(e.g. `RS01`), normalized to `strip().upper()` both on `User.save()` and at importer lookup time
+so a stray space or lowercase code in an export still resolves. It is deliberately kept separate
+from `user_id` rather than reused as a foreign key target, for the same reason `DistressFlag`
+stores only signal codes — it's a crosswalk, not a join key into anything sensitive. Set on
+`ParticipantEnrollmentForm` (optional, validated unique case-insensitively) or in Django Admin.
 
 A suppressed decision point is logged with `send_prompt=False`, `randomization_draw` and
 `randomization_probability` both null, `status` and `delivery_status` both `'suppressed'` (never
