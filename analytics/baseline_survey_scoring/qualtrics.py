@@ -21,7 +21,7 @@ import pandas as pd
 import definitions as D
 
 
-MISSING_TOKENS = {"", "-99", "-999", "na", "n/a", "nan", "none", "null",
+MISSING_TOKENS = {"", "-99", "-999", "99", "na", "n/a", "nan", "none", "null",
                   "prefer not to say", "prefer not to answer", "."}
 
 
@@ -640,6 +640,14 @@ def resolve_columns(
             resolved[header] = overrides[header]
             continue
         target = NORMALIZED_ITEM_LOOKUP.get(normalize(header))
+        if target is None and " - " in header:
+            # Qualtrics grid questions repeat the shared instruction in front of
+            # every sub-item's text ("Instruction: - Item text"); items are
+            # registered by their own text alone, so retry on the tail after the
+            # last separator before giving up. No registered item text contains
+            # " - " itself (checked), so this never clips real content.
+            tail = header.rsplit(" - ", 1)[-1]
+            target = NORMALIZED_ITEM_LOOKUP.get(normalize(tail))
         if target is None:
             unmatched.append(header)
         else:
@@ -700,12 +708,25 @@ def read_export(source, overrides: Optional[Dict[str, str]] = None) -> Tuple[pd.
             raw = pd.read_csv(path, dtype=object, keep_default_na=False, encoding="utf-8-sig")
 
     # Qualtrics writes two metadata rows under the header. The first cell of the
-    # second one is the ImportId JSON blob, which is how it is recognised.
+    # second one is the ImportId JSON blob, which is how it is recognised. The
+    # literal column names at this point are short internal codes (Q0, Q1, ...)
+    # that match nothing we register; the human-readable question text lives in
+    # the row right below them, which is what matching actually has to run
+    # against. A two-row export (no ImportId row) already has descriptive text
+    # as its column names, so it is its own "text row".
     if len(raw) >= 2 and raw.iloc[1].astype(str).str.contains("ImportId").any():
+        question_text_row = raw.iloc[0].tolist()
         raw = raw.iloc[2:].reset_index(drop=True)
+    else:
+        question_text_row = list(raw.columns)
 
-    resolved, unmatched = resolve_columns(list(raw.columns), overrides)
-    frame = raw.rename(columns=resolved)
+    resolved, unmatched = resolve_columns(question_text_row, overrides)
+    rename_map = {
+        short_name: resolved[text]
+        for short_name, text in zip(raw.columns, question_text_row)
+        if text in resolved
+    }
+    frame = raw.rename(columns=rename_map)
     frame = frame.loc[:, ~frame.columns.duplicated()]
 
     options_by_column = dict(zip(ITEM_TABLE["column"], ITEM_TABLE["options"]))

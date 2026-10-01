@@ -157,6 +157,41 @@ def _in_run_in(user, moment):
     return study_day is None or study_day < RUN_IN_DAYS
 
 
+def _protocol_override_reason(user, moment):
+    """Run-in + distress override only, shared with _evaluate_user below, which
+    already enforces cooldown/daily-cap itself via apply_decision_rules upstream
+    of this check and so doesn't need the full _decision_point_safeguards below.
+    """
+    if _in_run_in(user, moment):
+        return 'run_in'
+    distress_flag = active_distress_flag(user)
+    if distress_flag is not None:
+        return f'distress_{distress_flag.source}'
+    return ''
+
+
+def _decision_point_safeguards(user, moment):
+    """Full recheck (run-in, distress, cooldown, daily cap) for callers that
+    write a JITAILog outside of _evaluate_user, e.g. JITAILogView.post, which
+    has no MSSD decision frame to have already enforced these against.
+    """
+    reason = _protocol_override_reason(user, moment)
+    if reason:
+        return False, reason
+    last_sent = (
+        JITAILog.objects.filter(user=user, send_prompt=True)
+        .order_by('-triggered_at').first()
+    )
+    if last_sent and (moment - last_sent.triggered_at).total_seconds() / 60 < JITAI_COOLDOWN_MINUTES:
+        return False, 'cooldown'
+    sent_today = JITAILog.objects.filter(
+        user=user, send_prompt=True, triggered_at__date=moment.date(),
+    ).count()
+    if sent_today >= DAILY_PROMPT_CAP:
+        return False, 'daily_cap'
+    return True, ''
+
+
 def _evaluate_user(user, p):
 
     latest_new_ema = (
@@ -191,14 +226,11 @@ def _evaluate_user(user, p):
 
     suppression_reason = ''
     if eligible:
-        if _in_run_in(user, latest_new_ema.sent_at):
-            suppression_reason = 'run_in'
+        suppression_reason = _protocol_override_reason(user, latest_new_ema.sent_at)
+        if suppression_reason == 'run_in':
             trigger_reason = 'run-in period'
-        else:
-            distress_flag = active_distress_flag(user)
-            if distress_flag is not None:
-                suppression_reason = f'distress_{distress_flag.source}'
-                trigger_reason = f'distress override ({distress_flag.source})'
+        elif suppression_reason:
+            trigger_reason = f'distress override ({suppression_reason[len("distress_"):]})'
         if suppression_reason:
             eligible = False
 

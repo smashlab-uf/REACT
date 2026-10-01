@@ -16,6 +16,12 @@ class User(models.Model):
     push_token = models.CharField(max_length=128, blank=True, null=True)
     is_enrolled = models.BooleanField(default=False)
     enrolled_at = models.DateTimeField(null=True, blank=True)
+    # The Qualtrics baseline survey's "pid" embedded-data field (auto-populated
+    # from the participant's personalized distribution link, confirmed
+    # 2026-10-01 -- not typed by the participant). Crosswalk only: never a
+    # foreign key target, kept separate from user_id for the reasons recorded
+    # in CLAUDE.md's distress-override section.
+    study_id = models.CharField(max_length=32, unique=True, null=True, blank=True)
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['user_id', 'first_name', 'last_name', 'birthdate', 'gender', 'password']
@@ -36,6 +42,8 @@ class User(models.Model):
         unenrolling and re-enrolling them, must not shift their day 0 and
         renumber the study days of data already collected.
         """
+        if self.study_id:
+            self.study_id = self.study_id.strip().upper()
         if self.is_enrolled and self.enrolled_at is None:
             self.enrolled_at = timezone.now()
             update_fields = kwargs.get('update_fields')
@@ -390,6 +398,8 @@ class JITAILog(models.Model):
         ('run_in', 'Run-in period'),
         ('distress_baseline', 'Distress override (baseline screen)'),
         ('distress_momentary', 'Distress override (check-in)'),
+        ('cooldown', 'Cooldown active'),
+        ('daily_cap', 'Daily cap reached'),
     ]
     suppression_reason = models.CharField(
         max_length=32, choices=SUPPRESSION_CHOICES, blank=True, default='', db_index=True

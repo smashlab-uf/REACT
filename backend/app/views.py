@@ -59,7 +59,7 @@ from drf_yasg import openapi
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
+from rest_framework.permissions import AllowAny, BasePermission, IsAdminUser, IsAuthenticated
 
 
 def _get_app_user(request):
@@ -834,10 +834,31 @@ class EMAResponseView(APIView):
 class JITAILogView(APIView):
     permission_classes = [IsAuthenticated]
 
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [IsAdminUser()]
+        return super().get_permissions()
+
     def post(self, request):
+        from app.tasks import _decision_point_safeguards
+
         serializer = JITAILogSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        eligible, suppression_reason = _decision_point_safeguards(
+            serializer.validated_data['user'], django_timezone.now(),
+        )
+        if not eligible:
+            serializer.validated_data.update({
+                'send_prompt': False,
+                'status': 'suppressed',
+                'delivery_status': 'suppressed',
+                'suppression_reason': suppression_reason,
+                'randomization_probability': None,
+                'randomization_draw': None,
+            })
+
         log = serializer.save()
         return Response(JITAILogSerializer(log).data, status=status.HTTP_201_CREATED)
 

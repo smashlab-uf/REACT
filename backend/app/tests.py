@@ -142,6 +142,34 @@ class UserLegacyFieldsTest(TestCase):
                              msg=f"Legacy field '{legacy}' still in UserSerializer")
 
 
+class UserStudyIdTests(TestCase):
+
+    def test_study_id_defaults_to_null(self):
+        user = make_user(email='study-id-null@test.com')
+        self.assertIsNone(user.study_id)
+
+    def test_many_users_with_no_study_id_coexist(self):
+        make_user(email='sid1@test.com')
+        make_user(email='sid2@test.com')
+        self.assertEqual(User.objects.filter(study_id__isnull=True).count(), 2)
+
+    def test_study_id_is_normalized_to_stripped_uppercase_on_save(self):
+        user = make_user(email='sid-norm@test.com')
+        user.study_id = ' rs01 '
+        user.save()
+        user.refresh_from_db()
+        self.assertEqual(user.study_id, 'RS01')
+
+    def test_study_id_must_be_unique_regardless_of_case(self):
+        from django.db import IntegrityError, transaction
+        make_user(email='sid-first@test.com', study_id='RS02')
+        dupe = make_user(email='sid-second@test.com')
+        dupe.study_id = 'rs02'
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                dupe.save()
+
+
 # ---------------------------------------------------------------------------
 # API: POST /user/ — CreateUserView
 # ---------------------------------------------------------------------------
@@ -653,6 +681,18 @@ class JITAILogModelTests(TestCase):
         )
         user.delete()
         self.assertEqual(JITAILog.objects.count(), 0)
+
+    def test_cooldown_and_daily_cap_are_valid_suppression_reason_choices(self):
+        user = make_user()
+        for reason in ('cooldown', 'daily_cap'):
+            log = JITAILog(
+                user=user, prompt_id='TEMPLATE_001', trigger_reason='hr_elevated',
+                send_prompt=False, status='suppressed', delivery_status='suppressed',
+                suppression_reason=reason,
+            )
+            log.full_clean()
+            log.save()
+            self.assertEqual(JITAILog.objects.get(pk=log.pk).suppression_reason, reason)
 
 
 # ---------------------------------------------------------------------------
@@ -1262,11 +1302,20 @@ class EMAEndpointTests(TestCase):
 class JITAIEndpointTests(TestCase):
 
     def setUp(self):
-        self.user = make_user(email='jitai@ufl.edu')
+        self.user = make_user(
+            email='jitai@ufl.edu', is_enrolled=True,
+            enrolled_at=timezone.now() - timedelta(days=RUN_IN_DAYS + 1),
+        )
         self.client = authenticated_client(self.user)
+        self.staff = AuthUser.objects.create_superuser(
+            'jitai-admin', 'jitai-admin@example.com', 'adminpass123',
+        )
+        self.staff_client = APIClient()
+        refresh = RefreshToken.for_user(self.staff)
+        self.staff_client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
 
     def test_post_creates_jitai_log_and_returns_201(self):
-        response = self.client.post('/jitai/', {
+        response = self.staff_client.post('/jitai/', {
             'user': self.user.user_id,
             'prompt_id': 'TEMPLATE_HR_HIGH',
             'trigger_reason': 'hr_elevated+stress_high',
@@ -1277,6 +1326,7 @@ class JITAIEndpointTests(TestCase):
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         self.assertEqual(JITAILog.objects.count(), 1)
+        self.assertTrue(JITAILog.objects.get().send_prompt)
 
     def test_post_without_auth_returns_401(self):
         response = APIClient().post('/jitai/', {
@@ -1285,6 +1335,162 @@ class JITAIEndpointTests(TestCase):
             'trigger_reason': 'hr_elevated',
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_post_as_non_staff_participant_returns_403(self):
+        response = self.client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+        self.assertEqual(JITAILog.objects.count(), 0)
+
+    def test_post_during_run_in_is_forced_suppressed(self):
+        fresh_user = make_user(
+            email='jitai-runin@ufl.edu', is_enrolled=True, enrolled_at=timezone.now(),
+        )
+        response = self.staff_client.post('/jitai/', {
+            'user': fresh_user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.get(user=fresh_user)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.status, 'suppressed')
+        self.assertEqual(log.suppression_reason, 'run_in')
+
+    def test_post_with_active_distress_flag_is_forced_suppressed(self):
+        DistressFlag.objects.create(
+            user=self.user, source='momentary', signals=['b2_stress_ceiling'],
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.get(user=self.user)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'distress_momentary')
+
+    def test_post_within_cooldown_window_is_forced_suppressed(self):
+        JITAILog.objects.create(
+            user=self.user, prompt_id='T0', trigger_reason='hr_elevated',
+            send_prompt=True, status='delivered', delivery_status='delivered',
+        )
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'cooldown')
+
+    def test_post_past_daily_cap_is_forced_suppressed(self):
+        old_enough = timezone.now() - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES + 5)
+        for i in range(study_config.DAILY_PROMPT_CAP):
+            log = JITAILog.objects.create(
+                user=self.user, prompt_id=f'T{i}', trigger_reason='hr_elevated',
+                send_prompt=True, status='delivered', delivery_status='delivered',
+            )
+            JITAILog.objects.filter(pk=log.pk).update(triggered_at=old_enough)
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T_over_cap',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'daily_cap')
+
+    def test_prior_suppressed_decision_does_not_trigger_cooldown(self):
+        JITAILog.objects.create(
+            user=self.user, prompt_id='T0', trigger_reason='run-in period',
+            send_prompt=False, status='suppressed', delivery_status='suppressed',
+            suppression_reason='run_in',
+        )
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.suppression_reason, '')
+
+    def test_decision_allowed_once_cooldown_window_has_fully_elapsed(self):
+        just_past_cooldown = timezone.now() - timedelta(
+            minutes=study_config.JITAI_COOLDOWN_MINUTES, seconds=5,
+        )
+        log = JITAILog.objects.create(
+            user=self.user, prompt_id='T0', trigger_reason='hr_elevated',
+            send_prompt=True, status='delivered', delivery_status='delivered',
+        )
+        JITAILog.objects.filter(pk=log.pk).update(triggered_at=just_past_cooldown)
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.suppression_reason, '')
+
+    def test_cooldown_takes_priority_over_daily_cap_when_both_apply(self):
+        just_within_cooldown = timezone.now() - timedelta(
+            minutes=study_config.JITAI_COOLDOWN_MINUTES - 1,
+        )
+        for i in range(study_config.DAILY_PROMPT_CAP):
+            log = JITAILog.objects.create(
+                user=self.user, prompt_id=f'T{i}', trigger_reason='hr_elevated',
+                send_prompt=True, status='delivered', delivery_status='delivered',
+            )
+            JITAILog.objects.filter(pk=log.pk).update(triggered_at=just_within_cooldown)
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T_over_cap_and_cooldown',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'cooldown')
+
+    def test_run_in_takes_priority_over_cooldown_in_safeguards(self):
+        fresh_user = make_user(
+            email='jitai-runin-cooldown@ufl.edu', is_enrolled=True, enrolled_at=timezone.now(),
+        )
+        recent = timezone.now() - timedelta(minutes=1)
+        log = JITAILog.objects.create(
+            user=fresh_user, prompt_id='T0', trigger_reason='hr_elevated',
+            send_prompt=True, status='delivered', delivery_status='delivered',
+        )
+        JITAILog.objects.filter(pk=log.pk).update(triggered_at=recent)
+        response = self.staff_client.post('/jitai/', {
+            'user': fresh_user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=fresh_user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'run_in')
 
     def test_get_returns_jitai_history(self):
         JITAILog.objects.create(
@@ -1310,7 +1516,7 @@ class JITAIEndpointTests(TestCase):
         self.assertEqual(rows['cooldown active']['suppression_reason'], '')
 
     def test_post_cannot_set_the_suppression_label(self):
-        response = self.client.post('/jitai/', {
+        response = self.staff_client.post('/jitai/', {
             'user': self.user.user_id, 'prompt_id': 'T1', 'trigger_reason': 'hr_elevated',
             'send_prompt': True, 'suppression_reason': 'run_in',
         }, format='json')
@@ -1323,7 +1529,7 @@ class JITAIEndpointTests(TestCase):
         self.assertEqual(len(response.data), 0)
 
     def test_send_prompt_false_is_stored(self):
-        self.client.post('/jitai/', {
+        self.staff_client.post('/jitai/', {
             'user': self.user.user_id,
             'prompt_id': 'TEMPLATE_001',
             'trigger_reason': 'cooldown',
@@ -3991,6 +4197,34 @@ class EnrollForNotificationsTests(TestCase):
         self.assertEqual(existing.labfront_participant_id, 'LABFRONT-REAL')
 
 
+class UserAdminStudyIdTests(TestCase):
+    def setUp(self):
+        from django.urls import reverse
+        self.staff = AuthUser.objects.create_superuser('sid-admin', 'sid-admin@example.com', 'adminpass123')
+        self.client.force_login(self.staff)
+        self.user = make_user(email='admin-study-id@example.com', study_id='RS08')
+        self.changelist = reverse('admin:app_user_changelist')
+        self.change_url = reverse('admin:app_user_change', args=[self.user.user_id])
+
+    def test_study_id_is_shown_on_the_changelist(self):
+        response = self.client.get(self.changelist)
+        self.assertContains(response, 'RS08')
+
+    def test_study_id_is_searchable(self):
+        response = self.client.get(self.changelist, {'q': 'RS08'})
+        self.assertContains(response, self.user.email)
+
+    def test_study_id_is_editable_on_the_change_form(self):
+        response = self.client.post(self.change_url, {
+            'email': self.user.email, 'first_name': 'Alex', 'last_name': 'Participant',
+            'birthdate': '2000-01-01', 'gender': 'other', 'study_id': 'rs09',
+            'is_enrolled': '', 'push_token': '',
+        }, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.study_id, 'RS09')
+
+
 class UserAdminEnrollActionTests(TestCase):
     def setUp(self):
         from django.urls import reverse
@@ -4406,6 +4640,17 @@ class ImportBaselineDistressFlagsCommandTests(TestCase):
 
         self.assertTrue(DistressFlag.objects.filter(user=self.flagged).exists())
 
+    def test_id_field_study_id_matches_case_and_whitespace_insensitively(self):
+        self.flagged.study_id = 'RS31'
+        self.flagged.save()
+        row = {f'phq9_{i}': 0 for i in range(1, 10)}
+        row['phq9_9'] = 1
+        row['pid'] = ' rs31 '
+        path = self._write_csv([row])
+        self._run(path, id_column='pid', id_field='study_id')
+
+        self.assertTrue(DistressFlag.objects.filter(user=self.flagged).exists())
+
     def test_non_numeric_identifier_under_user_id_is_reported(self):
         path = self._write_csv([self._phq9_self_harm_row('not-a-number')])
         output = self._run(path, id_field='user_id')
@@ -4454,8 +4699,13 @@ class ImportBaselineDistressFlagsCommandTests(TestCase):
 
         self.assertFalse(DistressFlag.objects.exists())
 
-    def test_defaults_match_users_by_user_id_with_no_flags_passed(self):
-        path = self._write_csv([self._phq9_self_harm_row(str(self.flagged.user_id))])
+    def test_defaults_match_users_by_study_id_with_no_flags_passed(self):
+        self.flagged.study_id = 'RS30'
+        self.flagged.save()
+        row = {f'phq9_{i}': 0 for i in range(1, 10)}
+        row['phq9_9'] = 1
+        row['pid'] = self.flagged.study_id
+        path = self._write_csv([row])
         self._run(path, id_column=None, id_field=None)
 
         self.assertTrue(DistressFlag.objects.filter(user=self.flagged).exists())
@@ -4721,7 +4971,7 @@ class DistressFlagWindowTests(TestCase):
         self.assertNotEqual(older, newer)
 
 
-def _full_screen_row(participant_id, **overrides):
+def _full_screen_row(identifier, **overrides):
     import sys
     from django.conf import settings
     path = str(settings.REPO_ROOT / 'analytics' / 'baseline_survey_scoring')
@@ -4729,7 +4979,7 @@ def _full_screen_row(participant_id, **overrides):
         sys.path.insert(0, path)
     from section11 import REQUIRED_SCREEN_COLUMNS
     row = {column: 0 for column in REQUIRED_SCREEN_COLUMNS}
-    row['participant_id'] = participant_id
+    row['pid'] = identifier
     row.update(overrides)
     return row
 
@@ -4752,7 +5002,8 @@ class BaselineImportFunctionTests(TestCase):
         return import_baseline_flags(_csv_bytes(rows), **kwargs)
 
     def test_a_dry_run_reports_the_plan_and_writes_nothing(self):
-        report = self._run([_full_screen_row(self.user.user_id, phq9_9=1)], dry_run=True)
+        report = self._run([_full_screen_row(self.user.user_id, phq9_9=1)],
+                           dry_run=True, id_field='user_id')
         self.assertEqual(report.planned, [{'user_id': self.user.user_id, 'email': self.user.email,
                                            'signals': ['phq9_self_harm']}])
         self.assertEqual(report.created, [])
@@ -4761,14 +5012,14 @@ class BaselineImportFunctionTests(TestCase):
     def test_a_real_run_writes_the_flag_and_calls_the_hook_once_per_flag(self):
         seen = []
         report = self._run([_full_screen_row(self.user.user_id, phq9_9=1)],
-                           dry_run=False, on_create=seen.append)
+                           dry_run=False, on_create=seen.append, id_field='user_id')
         self.assertEqual(len(report.created), 1)
         self.assertEqual([flag.user_id for flag in seen], [self.user.user_id])
         self.assertEqual(DistressFlag.objects.get().signals, ['phq9_self_harm'])
 
     def test_columns_missing_from_the_export_are_reported(self):
         import pandas as pd
-        rows = [{'participant_id': self.user.user_id, 'phq9_1': 0}]
+        rows = [{'pid': self.user.user_id, 'phq9_1': 0}]
         report = self._run(rows, dry_run=True)
         self.assertIn('scoff_1', report.missing_screen_columns)
         self.assertNotIn('phq9_1', report.missing_screen_columns)
@@ -4784,14 +5035,14 @@ class BaselineImportFunctionTests(TestCase):
         self.assertEqual(report.incomplete, [str(self.user.user_id)])
 
     def test_commit_is_refused_when_a_screen_is_missing_and_completeness_is_required(self):
-        rows = [{'participant_id': self.user.user_id, **{f'phq9_{i}': (1 if i == 9 else 0) for i in range(1, 10)}}]
+        rows = [{'pid': self.user.user_id, **{f'phq9_{i}': (1 if i == 9 else 0) for i in range(1, 10)}}]
         report = self._run(rows, dry_run=False, require_complete_screens=True)
         self.assertTrue(report.refused)
         self.assertEqual(report.created, [])
         self.assertFalse(DistressFlag.objects.exists())
 
     def test_a_dry_run_is_never_refused_only_warned(self):
-        rows = [{'participant_id': self.user.user_id, 'phq9_9': 1}]
+        rows = [{'pid': self.user.user_id, 'phq9_9': 1}]
         report = self._run(rows, dry_run=True, require_complete_screens=True)
         self.assertFalse(report.refused)
         self.assertTrue(report.missing_screen_columns)
@@ -4816,8 +5067,35 @@ class BaselineImportFunctionTests(TestCase):
             if calls['n'] == 2:
                 raise RuntimeError('simulated')
         with self.assertRaises(RuntimeError):
-            self._run(rows, dry_run=False, on_create=boom)
+            self._run(rows, dry_run=False, on_create=boom, id_field='user_id')
         self.assertFalse(DistressFlag.objects.exists())
+
+    def test_study_id_is_the_default_match_field(self):
+        self.user.study_id = 'RS10'
+        self.user.save()
+        rows = [_full_screen_row('rs10', phq9_9=1)]
+        report = self._run(rows, dry_run=True)
+        self.assertEqual(report.planned, [{'user_id': self.user.user_id, 'email': self.user.email,
+                                           'signals': ['phq9_self_harm']}])
+
+    def test_study_id_matching_is_case_and_whitespace_insensitive(self):
+        self.user.study_id = 'RS11'
+        self.user.save()
+        rows = [_full_screen_row(' rs11 ', phq9_9=1)]
+        report = self._run(rows, dry_run=True)
+        self.assertEqual(len(report.planned), 1)
+
+    def test_blank_study_id_is_reported_not_matched(self):
+        rows = [_full_screen_row('', phq9_9=1)]
+        report = self._run(rows, dry_run=True)
+        self.assertEqual(report.planned, [])
+        self.assertEqual(len(report.bad_identifier), 1)
+
+    def test_a_study_id_with_no_matching_user_is_reported_as_unmatched(self):
+        rows = [_full_screen_row('RS99', phq9_9=1)]
+        report = self._run(rows, dry_run=True)
+        self.assertEqual(report.planned, [])
+        self.assertEqual(len(report.unmatched), 1)
 
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
@@ -4825,20 +5103,22 @@ class BaselineImportAdminTests(TestCase):
     URL = '/admin/app/distressflag/import-baseline/'
 
     def setUp(self):
-        self.participant = make_user(email='admin-import@ufl.edu')
+        self.participant = make_user(email='admin-import@ufl.edu', study_id='RS20')
         self.staff = AuthUser.objects.create_superuser('importer', 'importer@test.com', 'pw')
         self.client.force_login(self.staff)
 
-    def _upload(self, rows, name='export.csv', preview=True, raw=None):
+    def _upload(self, rows, name='export.csv', preview=True, raw=None,
+                id_column='pid', id_field='study_id'):
         from django.core.files.uploadedfile import SimpleUploadedFile
         content = raw if raw is not None else _csv_bytes(rows).getvalue()
-        data = {'file': SimpleUploadedFile(name, content, content_type='text/csv')}
+        data = {'file': SimpleUploadedFile(name, content, content_type='text/csv'),
+                'id_column': id_column, 'id_field': id_field}
         if preview:
             data['preview'] = 'on'
         return self.client.post(self.URL, data)
 
     def _flagged_rows(self):
-        return [_full_screen_row(self.participant.user_id, phq9_9=1)]
+        return [_full_screen_row(self.participant.study_id, phq9_9=1)]
 
     def test_the_changelist_offers_the_import_button(self):
         response = self.client.get('/admin/app/distressflag/')
@@ -4850,6 +5130,27 @@ class BaselineImportAdminTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'type="file"')
         self.assertRegex(response.content.decode(), r'name="preview"[^>]*checked')
+
+    def test_the_form_defaults_to_pid_and_study_id(self):
+        response = self.client.get(self.URL)
+        self.assertRegex(response.content.decode(), r'name="id_column"[^>]*value="pid"')
+        self.assertRegex(
+            response.content.decode(),
+            r'<option value="study_id" selected>[^<]*</option>',
+        )
+
+    def test_the_import_can_be_run_with_user_id_explicitly(self):
+        rows = [_full_screen_row(self.participant.user_id, phq9_9=1)]
+        response = self._upload(rows, preview=False, id_column='pid', id_field='user_id')
+        self.assertContains(response, 'Created 1')
+        flag = DistressFlag.objects.get()
+        self.assertEqual(flag.user_id, self.participant.user_id)
+
+    def test_an_unsupported_id_field_choice_is_rejected(self):
+        response = self._upload(self._flagged_rows(), preview=False, id_field='bogus')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'valid choice')
+        self.assertFalse(DistressFlag.objects.exists())
 
     def test_a_preview_shows_the_plan_and_writes_nothing(self):
         response = self._upload(self._flagged_rows())
@@ -4915,21 +5216,21 @@ class BaselineImportAdminTests(TestCase):
         self.assertContains(response, 'empty')
         self.assertFalse(DistressFlag.objects.exists())
 
-    def test_a_missing_participant_id_column_is_reported(self):
-        rows = [{k: v for k, v in _full_screen_row(1).items() if k != 'participant_id'}]
+    def test_a_missing_pid_column_is_reported(self):
+        rows = [{k: v for k, v in _full_screen_row(1).items() if k != 'pid'}]
         response = self._upload(rows, preview=False)
         self.assertContains(response, "not found in the export")
         self.assertFalse(DistressFlag.objects.exists())
 
     def test_a_real_import_is_refused_when_a_screen_is_missing_from_the_export(self):
-        rows = [{'participant_id': self.participant.user_id, **{f'phq9_{i}': (1 if i == 9 else 0) for i in range(1, 10)}}]
+        rows = [{'pid': self.participant.study_id, **{f'phq9_{i}': (1 if i == 9 else 0) for i in range(1, 10)}}]
         response = self._upload(rows, preview=False)
         self.assertContains(response, 'Nothing was written')
         self.assertContains(response, 'scoff_1')
         self.assertFalse(DistressFlag.objects.exists())
 
     def test_a_preview_of_the_same_incomplete_export_still_warns(self):
-        rows = [{'participant_id': self.participant.user_id, 'phq9_9': 1}]
+        rows = [{'pid': self.participant.study_id, 'phq9_9': 1}]
         response = self._upload(rows, preview=True)
         self.assertContains(response, 'scoff_1')
         self.assertContains(response, 'nothing was written')

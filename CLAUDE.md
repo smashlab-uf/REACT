@@ -109,8 +109,10 @@ python manage.py backfill_thresholds --dry-run     # fill JITAILog.threshold_at_
 python manage.py import_baseline_distress_flags --dry-run --file export.csv
                                                    # score a Qualtrics baseline export for Section 11
                                                    #   signals, write DistressFlag(source='baseline').
-                                                   #   Defaults --id-column=participant_id
-                                                   #   --id-field=user_id; both still overridable.
+                                                   #   Defaults --id-column=pid --id-field=study_id
+                                                   #   (Qualtrics' embedded-data pid field matched
+                                                   #   against User.study_id); both still overridable
+                                                   #   to user_id/email for an older export.
 # The dashboard tests do NOT run from backend/: the label 'dashboard' resolves to the directory
 # backend/dashboard/ there, so bare `manage.py test` (and CI) skips them. Run them from the repo root:
 python3 backend/manage.py test dashboard --settings=project.test_settings
@@ -198,7 +200,8 @@ docs/superpowers/  # schema design specs/plans from the original REACT model bui
 The **Django Models** section below is a simplified design reference and is intentionally leaner than
 what is deployed. The live schema is richer — e.g. `JITAILog` has **36** columns (the message-arm
 randomization and routing audit landed in migrations `0042`–`0043`, and
-`threshold_at_decision` / `threshold_source` in `0046`); `EMA` carries `ema_type`,
+`threshold_at_decision` / `threshold_source` in `0046`); `User` carries `study_id` (migration
+`0051`, see the baseline-import section below); `EMA` carries `ema_type`,
 outcome-window fields and `served_sub_item_ids`; there are additional tables (`EMAItemResponse`,
 `EngagementLog`, `PhoneTelemetry`, `EventDay`, `CheckinReminder`, `WearableSync`, `DistressFlag`); and four derived
 `dashboard_*` monitoring tables. For the actual deployed schema,
@@ -306,7 +309,7 @@ but that file doesn't exist in the repo — don't chase it.)
 | GET | `/ema/next/` | Fetch the next EMA prompt for the mobile app to show |
 | POST | `/ema/responses/` | Submit an EMA response from the mobile app |
 | GET | `/ema/{user_id}/` | Fetch EMA history (dashboard/admin use) |
-| POST | `/jitai/` | Internal — Celery logs a triggered intervention |
+| POST | `/jitai/` | Staff-only. Not used by Celery — `_evaluate_user` writes `JITAILog` rows via the ORM directly; this is a manual/admin write path, gated by `IsAdminUser` and re-validated through `_decision_point_safeguards` (see below) |
 | GET | `/jitai/{user_id}/` | Fetch JITAI history (dashboard/admin use) |
 | POST | `/jitai/receipt/` | Mobile app reports delivery/open of a JITAI push (`jitai_log_id`) |
 | POST | `/telemetry/ingest/` | Internal — Celery bulk-ingest wearable data |
@@ -403,14 +406,32 @@ draw, after the run-in gate (run-in is named first when both apply):
   `analytics/baseline_survey_scoring/` (`scoring.py`'s `phq9_self_harm_positive`,
   `phq9_severity_alert`, `scoff_positive`, `audit_c_alert`, `pgsi_problem_gambling`,
   `hunger_positive`, mapped to signal codes by `section11.py`) and turned into
-  `DistressFlag` rows by `manage.py import_baseline_distress_flags --file ... --id-column ...
-  --id-field user_id` (backend/; the export's `participant_id` is the numeric `user_id`). Re-running the same export is a no-op: a row is skipped
+  `DistressFlag` rows by `manage.py import_baseline_distress_flags --file ...` (backend/).
+  Matching defaults to the export's `pid` column against `User.study_id` — confirmed 2026-10-01
+  against a real export that `pid` is a genuine Qualtrics embedded-data field, auto-populated from
+  each participant's personalized distribution link rather than typed by them. `--id-column`/
+  `--id-field` (`user_id` or `email`) still override this for an older export. Re-running the same export is a no-op: a row is skipped
   once a `DistressFlag` with that exact signal set already exists for the user. `free_text_risk`
   is not produced by this pipeline at all — there is no free-text column in
   `analytics/baseline_survey_scoring/definitions.py` — and stays a manual staff process. Pauses
   coping prompts until staff mark the contact documented (Django Admin action "Mark contact
   documented" sets `contact_documented_at`); randomization then resumes. Only the signal
   codes are stored, never a score or the free-text disclosure.
+
+  `analytics/baseline_survey_scoring/qualtrics.py`'s `read_export` matches a Qualtrics export's
+  columns by question text, not by its literal header. A real export uses Qualtrics' three-row-header
+  shape — short internal codes (`Q0`, `Q1`, ...) as the actual column names, the human-readable
+  question text one row below, an `ImportId` row below that — and matching runs against that text
+  row, not the short codes (which match nothing). Grid questions also repeat a shared instruction in
+  front of every sub-item's text (`"Instruction: - Item text"`); `resolve_columns` retries on the text
+  after the last `" - "` when the direct match fails, since no registered item text contains one.
+  `99` is treated as "no selection" (`MISSING_TOKENS`), not a literal score, on every column this
+  pipeline scores — all bounded Likert/categorical scales, so 99 is never a legitimate real answer.
+  **Known remaining gap, confirmed against a real export (2026-09-29):** `scoff_3`, `pgsi_2`,
+  `pgsi_7`, and `hunger_vital_sign_2` don't match that export's current wording at all (unrelated to
+  the above — just stale registered text), which blanks `scoff_positive`, `pgsi_problem_gambling` and
+  `hunger_positive` entirely the same way one missing item always does. Needs the current wording
+  confirmed against the live survey before fixing, not guessed from one export.
 - **momentary** (`source='momentary'`): raised when a submitted check-in has ANY of
   `B1_valence == 1` (scale floor), `B2_stress == 7` (scale ceiling), `B1_affect_sad == 5`, or
   `B1_affect_anxious == 5` (both scale ceilings) — exact values, confirmed by Dr. Chang
@@ -431,12 +452,24 @@ flagged on that screen, and it lists rows with a blank screening item, unrecogni
 unmatched IDs. Creation is all-or-nothing, and every flag it creates gets an Admin log entry
 showing who imported it. Only staff with the add-flag permission can use it. The loader is
 `qualtrics.read_export` (path or file-like; returns the frame plus diagnostics; `load_export`
-wraps it and prints).
+wraps it and prints). The Admin button form has the same `id_column`/`id_field` override as the
+management command (defaulting to `pid`/`study_id`), so a staff member can switch to matching by
+numeric user ID or email for an older export without touching the command line.
+
+`User.study_id` (migration `0051`) is the crosswalk field this matches against: a free-text code
+(e.g. `RS01`), normalized to `strip().upper()` both on `User.save()` and at importer lookup time
+so a stray space or lowercase code in an export still resolves. It is deliberately kept separate
+from `user_id` rather than reused as a foreign key target, for the same reason `DistressFlag`
+stores only signal codes — it's a crosswalk, not a join key into anything sensitive. Set on
+`ParticipantEnrollmentForm` (optional, validated unique case-insensitively) or in Django Admin.
 
 A suppressed decision point is logged with `send_prompt=False`, `randomization_draw` and
 `randomization_probability` both null, `status` and `delivery_status` both `'suppressed'` (never
 `not_sent`, which stays for ordinary ineligible or randomized-out decisions), and
-`JITAILog.suppression_reason` set (`run_in`, `distress_baseline`, `distress_momentary`). That
+`JITAILog.suppression_reason` set (`run_in`, `distress_baseline`, `distress_momentary`, plus
+`cooldown` and `daily_cap` — the latter two are only ever produced by `POST /jitai/`'s own
+safeguard recheck below, never by `_evaluate_user`, which already enforces cooldown/daily-cap
+upstream via `apply_decision_rules` on the MSSD frame). That
 column, not `trigger_reason`, is what the randomization audit and the timeline read, so a
 suppressed row is never mistaken for a dropped prompt or an engine defect. It is exposed on the
 JITAI API, on the monitor's decision events (outcome "suppressed (run-in)" / "suppressed
@@ -445,7 +478,17 @@ JITAI API, on the monitor's decision events (outcome "suppressed (run-in)" / "su
 they stay in `decision_points_n` and out of `eligible_n`. Migration `0049` backfilled rows
 written before the label existed (`run-in period` rows from commit `ded0498` got
 `suppression_reason='run_in'`, and every suppressed row was relabeled `'suppressed'`); without
-it the cohort audit reads those legacy rows as "eligible but no draw". `POST /ema/responses/` returns `resource_card` (null when no override
+it the cohort audit reads those legacy rows as "eligible but no draw".
+
+`backend/app/tasks.py`'s `_protocol_override_reason` (run-in + distress) and
+`_decision_point_safeguards` (run-in + distress + cooldown + daily cap) are the single
+implementations of "is this user currently protected right now" — `_evaluate_user` calls the
+former (it already handles cooldown/cap itself via the MSSD frame), and `JITAILogView.post`
+calls the latter as a full defense-in-depth recheck, since a direct POST has no decision frame
+that would otherwise have enforced any of this. `POST /jitai/` is staff-only (`IsAdminUser`) for
+the same reason: nothing in the real pipeline calls it over HTTP, so a write through it always
+gets this safeguard check regardless of what the caller's payload sets `send_prompt`/`status`
+to. `POST /ema/responses/` returns `resource_card` (null when no override
 is active) after any check-in submitted under an active override. Card contents are
 `RESOURCE_CARD_RESOURCES` in `distress.py`: the seven resources from the study's resource document
 (the same seven as the baseline block), with digits-only contacts so tap-to-call works, and the

@@ -13,7 +13,9 @@
 <div id="content-main">
   <p>Upload the Qualtrics baseline export as a CSV. Screens are scored and a baseline flag is created for
   each participant who screens positive. The file is read in memory and never saved; only the signal codes
-  are stored. The export's <code>participant_id</code> column must hold each participant's numeric user ID.</p>
+  are stored. By default the export's <code>pid</code> column (Qualtrics' embedded-data field for the
+  participant's distribution link) is matched against each participant's Study ID; change the fields below
+  to match an older export by numeric user ID or email instead.</p>
 
   <form method="post" enctype="multipart/form-data">
     {% csrf_token %}
@@ -23,6 +25,17 @@
         {{ form.file.errors }}
         <label for="{{ form.file.id_for_label }}">{{ form.file.label }}:</label>
         {{ form.file }}
+      </div>
+      <div class="form-row">
+        {{ form.id_column.errors }}
+        <label for="{{ form.id_column.id_for_label }}">{{ form.id_column.label }}:</label>
+        {{ form.id_column }}
+        <div class="help">{{ form.id_column.help_text }}</div>
+      </div>
+      <div class="form-row">
+        {{ form.id_field.errors }}
+        <label for="{{ form.id_field.id_for_label }}">{{ form.id_field.label }}:</label>
+        {{ form.id_field }}
       </div>
       <div class="form-row">
         {{ form.preview.errors }}
