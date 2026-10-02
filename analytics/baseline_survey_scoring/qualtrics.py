@@ -413,21 +413,19 @@ ITEM_TEXT["byaacq"] = [
 
 ITEM_TEXT["pgsi"] = [
     "Have you bet more than you could really afford to lose?",
-    "Still thinking about the last 12 months, have you needed to gamble with larger amounts of "
-    "money to get the same feeling of excitement?",
+    "Have you needed to gamble with larger amounts of money to get the same feeling of excitement?",
     "When you gambled, did you go back another day to try to win back the money you lost?",
     "Have you borrowed money or sold anything to get money to gamble?",
     "Have you felt that you might have a problem with gambling?",
     "Has gambling caused you any health problems, including stress or anxiety?",
-    "Have people criticized your betting or told you that you had a gambling problem, regardless of "
-    "whether or not you thought it was true?",
+    "Have people criticized your betting or told you that you had a gambling problem?",
     "Has your gambling caused any financial problems for you or your household?",
     "Have you felt guilty about the way you gamble or what happens when you gamble?",
 ]
 
 ITEM_TEXT["hunger_vital_sign"] = [
     "Within the past 12 months we worried whether our food would run out before we got money to buy more.",
-    "Within the past 12 months the food we bought just didn't last and we didn't have money to get more.",
+    "Within the past 12 months the food we bought just did not last and we did not have money to get more.",
 ]
 
 ITEM_TEXT["asrs"] = [
@@ -485,7 +483,7 @@ ITEM_TEXT["phq9"] = [
 ITEM_TEXT["scoff"] = [
     "Do you make yourself Sick because you feel uncomfortably full?",
     "Do you worry you have lost Control over how much you eat?",
-    "Have you recently lost more than Fifteen pounds in a 3 month period?",
+    "Have you recently lost more than about 14 pounds in a 3-month period?",
     "Do you believe yourself to be Fat when others say you are too thin?",
     "Would you say that Food dominates your life?",
 ]

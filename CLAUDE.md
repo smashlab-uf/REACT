@@ -427,11 +427,15 @@ draw, after the run-in gate (run-in is named first when both apply):
   after the last `" - "` when the direct match fails, since no registered item text contains one.
   `99` is treated as "no selection" (`MISSING_TOKENS`), not a literal score, on every column this
   pipeline scores — all bounded Likert/categorical scales, so 99 is never a legitimate real answer.
-  **Known remaining gap, confirmed against a real export (2026-09-29):** `scoff_3`, `pgsi_2`,
-  `pgsi_7`, and `hunger_vital_sign_2` don't match that export's current wording at all (unrelated to
-  the above — just stale registered text), which blanks `scoff_positive`, `pgsi_problem_gambling` and
-  `hunger_positive` entirely the same way one missing item always does. Needs the current wording
-  confirmed against the live survey before fixing, not guessed from one export.
+  **Resolved 2026-10-01:** `scoff_3`, `pgsi_2`, `pgsi_7`, and `hunger_vital_sign_2` didn't match a
+  real export's current wording (confirmed 2026-09-29), which blanked `scoff_positive`,
+  `pgsi_problem_gambling` and `hunger_positive` entirely the same way one missing item always does.
+  `qualtrics.py`'s `ITEM_TEXT` now carries each item's current live wording: `scoff_3`'s threshold
+  changed from "Fifteen pounds" to "about 14 pounds"; `pgsi_2` and `pgsi_7` dropped their old leading/
+  trailing clauses and `pgsi_2` is now a grid item (resolved via the stem-stripping fallback, not a
+  direct match); `hunger_vital_sign_2` is a spelling-only change (`didn't` → `did not`). Re-running
+  the same real export now scores two additional rows that previously fell silently into "no positive
+  signal" because these screens were blank.
 - **momentary** (`source='momentary'`): raised when a submitted check-in has ANY of
   `B1_valence == 1` (scale floor), `B2_stress == 7` (scale ceiling), `B1_affect_sad == 5`, or
   `B1_affect_anxious == 5` (both scale ceilings) — exact values, confirmed by Dr. Chang
@@ -467,9 +471,8 @@ A suppressed decision point is logged with `send_prompt=False`, `randomization_d
 `randomization_probability` both null, `status` and `delivery_status` both `'suppressed'` (never
 `not_sent`, which stays for ordinary ineligible or randomized-out decisions), and
 `JITAILog.suppression_reason` set (`run_in`, `distress_baseline`, `distress_momentary`, plus
-`cooldown` and `daily_cap` — the latter two are only ever produced by `POST /jitai/`'s own
-safeguard recheck below, never by `_evaluate_user`, which already enforces cooldown/daily-cap
-upstream via `apply_decision_rules` on the MSSD frame). That
+`cooldown` and `daily_cap` — as of 2026-10, both `_evaluate_user` and `POST /jitai/`'s safeguard
+recheck can produce these two, via the shared `_cooldown_cap_reason` helper described below). That
 column, not `trigger_reason`, is what the randomization audit and the timeline read, so a
 suppressed row is never mistaken for a dropped prompt or an engine defect. It is exposed on the
 JITAI API, on the monitor's decision events (outcome "suppressed (run-in)" / "suppressed
