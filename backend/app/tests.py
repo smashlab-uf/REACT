@@ -1471,6 +1471,37 @@ class JITAIEndpointTests(TestCase):
         self.assertFalse(log.send_prompt)
         self.assertEqual(log.suppression_reason, 'cooldown')
 
+    def test_post_past_daily_cap_counts_eastern_day_across_utc_midnight(self):
+        eastern = ZoneInfo('America/New_York')
+        User.objects.filter(pk=self.user.pk).update(
+            enrolled_at=datetime(2026, 1, 15, tzinfo=eastern) - timedelta(days=RUN_IN_DAYS + 30),
+        )
+        sent_times_eastern = [
+            datetime(2026, 1, 15, 10, 0, tzinfo=eastern),
+            datetime(2026, 1, 15, 13, 0, tzinfo=eastern),
+            datetime(2026, 1, 15, 16, 0, tzinfo=eastern),
+            datetime(2026, 1, 15, 21, 0, tzinfo=eastern),   # -> 2026-01-16 02:00 UTC
+        ]
+        for i, t in enumerate(sent_times_eastern):
+            log = JITAILog.objects.create(
+                user=self.user, prompt_id=f'T{i}', trigger_reason='prompt sent',
+                send_prompt=True, status='delivered', delivery_status='delivered',
+            )
+            JITAILog.objects.filter(pk=log.pk).update(triggered_at=t)
+
+        new_decision_eastern = datetime(2026, 1, 15, 22, 30, tzinfo=eastern)  # -> 2026-01-16 03:30 UTC
+        with patch('app.views.django_timezone.now', return_value=new_decision_eastern):
+            response = self.staff_client.post('/jitai/', {
+                'user': self.user.user_id,
+                'prompt_id': 'T_over_cap_eastern',
+                'trigger_reason': 'hr_elevated+stress_high',
+                'send_prompt': True,
+            }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'daily_cap')
+
     def test_run_in_takes_priority_over_cooldown_in_safeguards(self):
         fresh_user = make_user(
             email='jitai-runin-cooldown@ufl.edu', is_enrolled=True, enrolled_at=timezone.now(),
@@ -3613,6 +3644,199 @@ class EvaluateUserMRTTests(TestCase):
         self.assertIsNone(log.message_arm)
         self.assertIsNone(log.arm_randomization_draw)
         self.assertIsNone(log.arm_randomization_probability)
+
+
+class EvaluateUserCooldownCapTests(TestCase):
+    """Regression coverage for the real-send-history cooldown/daily-cap check
+    added to _evaluate_user (previously it trusted apply_decision_rules's own
+    internal, eligibility-based, UTC-day simulation instead of real JITAILog
+    history)."""
+
+    def setUp(self):
+        self.user = make_user(
+            email='cooldowncap@test.com',
+            is_enrolled=True,
+            enrolled_at=timezone.now() - timedelta(days=RUN_IN_DAYS + 30),
+            push_token='ExponentPushToken[abc123]',
+        )
+        WearableDevice.objects.create(
+            user=self.user,
+            labfront_participant_id='labfront-cdcap-001',
+            is_active=True,
+        )
+
+    def _make_new_ema(self, sent_at):
+        ema_obj = EMA.objects.create(
+            user=self.user, prompt_id='default', status='completed',
+            responded_at=timezone.now(), mood=4, stress=4, energy=4,
+        )
+        EMA.objects.filter(pk=ema_obj.pk).update(sent_at=sent_at)
+        ema_obj.refresh_from_db()
+        EMAItemResponse.objects.create(ema=ema_obj, item_id='B1', sub_item_id='B1_valence', response_type='likert', value_numeric=4)
+        EMAItemResponse.objects.create(ema=ema_obj, item_id='B1', sub_item_id='B1_arousal', response_type='likert', value_numeric=4)
+        EMAItemResponse.objects.create(ema=ema_obj, item_id='B2', sub_item_id='B2_stress', response_type='likert', value_numeric=4)
+        return ema_obj
+
+    def _make_prior_send(self, triggered_at):
+        log = JITAILog.objects.create(
+            user=self.user, prompt_id='T0', trigger_reason='prompt sent',
+            send_prompt=True, status='delivered', delivery_status='delivered',
+        )
+        JITAILog.objects.filter(pk=log.pk).update(triggered_at=triggered_at)
+        return log
+
+    def _eligible_df(self, ema):
+        import pandas as pd
+        return pd.DataFrame([{
+            'user_id': self.user.user_id,
+            'timestamp': pd.Timestamp(ema.sent_at),
+            'ema': 4.0,
+            'observed_mssd': 2.5,
+            'send_prompt': True,
+            'decision_reason': 'prompt sent',
+            'user_threshold': 1.0,
+        }])
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_real_sent_history_within_cooldown_suppresses_new_decision(self, mock_mssd, mock_rules, mock_send):
+        new_ema = self._make_new_ema(timezone.now())
+        self._make_prior_send(new_ema.sent_at - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES - 1))
+        mock_mssd.return_value = self._eligible_df(new_ema)
+        mock_rules.return_value = self._eligible_df(new_ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.status, 'suppressed')
+        self.assertEqual(log.suppression_reason, 'cooldown')
+        self.assertEqual(log.trigger_reason, 'cooldown active')
+        self.assertIsNone(log.randomization_draw)
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.3)
+    def test_randomized_out_prior_decision_does_not_trigger_cooldown(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        # Finding-A regression: an eligible-but-never-sent prior decision must
+        # not consume a real cooldown slot, since no prompt actually went out.
+        new_ema = self._make_new_ema(timezone.now())
+        prior = JITAILog.objects.create(
+            user=self.user, prompt_id='', trigger_reason='prompt sent',
+            send_prompt=False, status='not_sent', delivery_status='not_sent',
+        )
+        JITAILog.objects.filter(pk=prior.pk).update(
+            triggered_at=new_ema.sent_at - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES - 1),
+        )
+        mock_mssd.return_value = self._eligible_df(new_ema)
+        mock_rules.return_value = self._eligible_df(new_ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.suppression_reason, '')
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_four_real_sends_on_eastern_day_block_a_fifth_even_when_last_send_crosses_utc_midnight(self, mock_mssd, mock_rules, mock_send):
+        eastern = ZoneInfo('America/New_York')
+        User.objects.filter(pk=self.user.pk).update(
+            enrolled_at=datetime(2026, 1, 15, tzinfo=eastern) - timedelta(days=RUN_IN_DAYS + 30),
+        )
+        self.user.refresh_from_db()
+        sent_times_eastern = [
+            datetime(2026, 1, 15, 10, 0, tzinfo=eastern),
+            datetime(2026, 1, 15, 13, 0, tzinfo=eastern),
+            datetime(2026, 1, 15, 16, 0, tzinfo=eastern),
+            datetime(2026, 1, 15, 21, 0, tzinfo=eastern),   # -> 2026-01-16 02:00 UTC
+        ]
+        for t in sent_times_eastern:
+            self._make_prior_send(t)
+
+        new_decision_eastern = datetime(2026, 1, 15, 22, 30, tzinfo=eastern)  # -> 2026-01-16 03:30 UTC
+        new_ema = self._make_new_ema(new_decision_eastern)
+        mock_mssd.return_value = self._eligible_df(new_ema)
+        mock_rules.return_value = self._eligible_df(new_ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.status, 'suppressed')
+        self.assertEqual(log.suppression_reason, 'daily_cap')
+        self.assertEqual(log.trigger_reason, 'daily cap reached')
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_cooldown_takes_priority_over_daily_cap_in_evaluate_user(self, mock_mssd, mock_rules, mock_send):
+        new_ema = self._make_new_ema(timezone.now())
+        just_within_cooldown = new_ema.sent_at - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES - 1)
+        for _ in range(study_config.DAILY_PROMPT_CAP):
+            self._make_prior_send(just_within_cooldown)
+        mock_mssd.return_value = self._eligible_df(new_ema)
+        mock_rules.return_value = self._eligible_df(new_ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'cooldown')
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_run_in_still_takes_priority_over_new_cooldown_check(self, mock_mssd, mock_rules, mock_send):
+        fresh_user = make_user(
+            email='cooldowncap-runin@test.com', is_enrolled=True, enrolled_at=timezone.now(),
+            push_token='ExponentPushToken[abc123]',
+        )
+        WearableDevice.objects.create(
+            user=fresh_user, labfront_participant_id='labfront-cdcap-002', is_active=True,
+        )
+        new_ema = EMA.objects.create(
+            user=fresh_user, prompt_id='default', status='completed',
+            responded_at=timezone.now(), mood=4, stress=4, energy=4,
+        )
+        EMAItemResponse.objects.create(ema=new_ema, item_id='B1', sub_item_id='B1_valence', response_type='likert', value_numeric=4)
+        EMAItemResponse.objects.create(ema=new_ema, item_id='B1', sub_item_id='B1_arousal', response_type='likert', value_numeric=4)
+        EMAItemResponse.objects.create(ema=new_ema, item_id='B2', sub_item_id='B2_stress', response_type='likert', value_numeric=4)
+
+        recent_log = JITAILog.objects.create(
+            user=fresh_user, prompt_id='T0', trigger_reason='prompt sent',
+            send_prompt=True, status='delivered', delivery_status='delivered',
+        )
+        JITAILog.objects.filter(pk=recent_log.pk).update(triggered_at=new_ema.sent_at - timedelta(minutes=1))
+
+        import pandas as pd
+        eligible_df = pd.DataFrame([{
+            'user_id': fresh_user.user_id,
+            'timestamp': pd.Timestamp(new_ema.sent_at),
+            'ema': 4.0,
+            'observed_mssd': 2.5,
+            'send_prompt': True,
+            'decision_reason': 'prompt sent',
+            'user_threshold': 1.0,
+        }])
+        mock_mssd.return_value = eligible_df
+        mock_rules.return_value = eligible_df
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(fresh_user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'run_in')
 
 
 class DecisionEngineEligibilityTests(TestCase):

@@ -298,6 +298,71 @@ class ThreeRowHeaderTests(unittest.TestCase):
         self.assertEqual(frame['phq9_9'].tolist(), [1.0])
 
 
+class UpdatedLiveSurveyWordingTests(unittest.TestCase):
+    """scoff_3, pgsi_2, pgsi_7 and hunger_vital_sign_2 did not match a real
+    export (confirmed 2026-09-29) -- the live survey's current wording for
+    each, confirmed against that export, replaced the stale registered text
+    2026-10-01. Pins the new wording so a future registration drift is caught
+    the same way."""
+
+    def test_scoff_3_matches_the_current_fourteen_pound_wording(self):
+        header = 'Have you recently lost more than about 14 pounds in a 3-month period?'
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertEqual(resolved.get(header), D.SCOFF[2])
+        self.assertEqual(unmatched, [])
+
+    def test_scoff_3_no_longer_matches_the_old_fifteen_pound_wording(self):
+        header = 'Have you recently lost more than Fifteen pounds in a 3 month period?'
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertNotIn(header, resolved)
+        self.assertEqual(unmatched, [header])
+
+    def test_pgsi_2_matches_the_current_wording_directly(self):
+        header = 'Have you needed to gamble with larger amounts of money to get the same feeling of excitement?'
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertEqual(resolved.get(header), D.PGSI[1])
+
+    def test_pgsi_2_matches_via_the_grid_stem_fallback(self):
+        header = ('Thinking about the last 12 months: - Have you needed to gamble with larger '
+                   'amounts of money to get the same feeling of excitement?')
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertEqual(resolved.get(header), D.PGSI[1])
+
+    def test_pgsi_7_matches_the_shortened_current_wording(self):
+        header = 'Have people criticized your betting or told you that you had a gambling problem?'
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertEqual(resolved.get(header), D.PGSI[6])
+
+    def test_hunger_vital_sign_2_matches_the_spelled_out_wording(self):
+        header = ('Within the past 12 months the food we bought just did not last and we did not '
+                   'have money to get more.')
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertEqual(resolved.get(header), D.HUNGER_VITAL_SIGN[1])
+
+    def test_a_real_shaped_export_with_current_wording_leaves_none_of_the_four_missing(self):
+        codes = ['Q60', 'Q38e_2', 'Q38e_7', 'Q41']
+        texts = [
+            'Have you recently lost more than about 14 pounds in a 3-month period?',
+            'Thinking about the last 12 months: - Have you needed to gamble with larger amounts '
+            'of money to get the same feeling of excitement?',
+            'Thinking about the last 12 months: - Have people criticized your betting or told '
+            'you that you had a gambling problem?',
+            'Within the past 12 months the food we bought just did not last and we did not have '
+            'money to get more.',
+        ]
+        import_row = [f'{{"ImportId":"{c}"}}' for c in codes]
+        lines = [
+            ','.join(codes),
+            ','.join(f'"{t}"' for t in texts),
+            ','.join(import_row),
+            '0,0,0,0',
+        ]
+        source = io.BytesIO(('\n'.join(lines) + '\n').encode('utf-8'))
+        frame, _ = qualtrics.read_export(source)
+        for column in (D.SCOFF[2], D.PGSI[1], D.PGSI[6], D.HUNGER_VITAL_SIGN[1]):
+            self.assertIn(column, frame.columns, column)
+
+
 class ResolveColumnsStemFallbackTests(unittest.TestCase):
 
     def test_a_stem_prefixed_header_resolves_via_the_tail(self):
