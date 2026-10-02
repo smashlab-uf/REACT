@@ -480,15 +480,23 @@ written before the label existed (`run-in period` rows from commit `ded0498` got
 `suppression_reason='run_in'`, and every suppressed row was relabeled `'suppressed'`); without
 it the cohort audit reads those legacy rows as "eligible but no draw".
 
-`backend/app/tasks.py`'s `_protocol_override_reason` (run-in + distress) and
-`_decision_point_safeguards` (run-in + distress + cooldown + daily cap) are the single
-implementations of "is this user currently protected right now" — `_evaluate_user` calls the
-former (it already handles cooldown/cap itself via the MSSD frame), and `JITAILogView.post`
-calls the latter as a full defense-in-depth recheck, since a direct POST has no decision frame
-that would otherwise have enforced any of this. `POST /jitai/` is staff-only (`IsAdminUser`) for
-the same reason: nothing in the real pipeline calls it over HTTP, so a write through it always
-gets this safeguard check regardless of what the caller's payload sets `send_prompt`/`status`
-to. `POST /ema/responses/` returns `resource_card` (null when no override
+`backend/app/tasks.py`'s `_protocol_override_reason` (run-in + distress) and `_cooldown_cap_reason`
+(real `JITAILog(send_prompt=True)` history, Eastern days via `dashboard/data/windows.py`'s
+`participant_day_bounds`) are the two shared building blocks of "is this user currently protected
+right now," composed in that order by both `_evaluate_user` and `_decision_point_safeguards`.
+Until 2026-10, `_evaluate_user` instead trusted `apply_decision_rules`'s own internal cap/cooldown
+simulation — which counted eligible decision points rather than actual sends, and bucketed by UTC
+day rather than Eastern — and `_decision_point_safeguards` had its own independent, also-UTC-day
+cooldown/cap query. Both bugs are fixed: `apply_decision_rules`'s `decision_reason` is now read
+only for MSSD-threshold eligibility (`MSSD_ELIGIBLE_REASONS` in `tasks.py` — "prompt sent",
+"cooldown active", and "daily cap reached" all mean the gate passed; its own cap/cooldown verdict
+is no longer trusted for production), and `_cooldown_cap_reason` is the one place real cooldown/
+cap enforcement happens. `_decision_point_safeguards` calls `_protocol_override_reason` then
+`_cooldown_cap_reason` as a full defense-in-depth recheck for `JITAILogView.post`, since a direct
+POST has no decision frame that would otherwise have enforced any of this. `POST /jitai/` is
+staff-only (`IsAdminUser`) for the same reason: nothing in the real pipeline calls it over HTTP, so
+a write through it always gets this safeguard check regardless of what the caller's payload sets
+`send_prompt`/`status` to. `POST /ema/responses/` returns `resource_card` (null when no override
 is active) after any check-in submitted under an active override. Card contents are
 `RESOURCE_CARD_RESOURCES` in `distress.py`: the seven resources from the study's resource document
 (the same seven as the baseline block), with digits-only contacts so tap-to-call works, and the
@@ -612,11 +620,14 @@ move it, because `Alert.SEVERITY_CHOICES` has no `high`.
 item completeness measurable at all. `/ema/next/` returns the list, the client may echo it back,
 and the server recomputes the same set on submit when it does not.
 
-One engine defect the monitor deliberately surfaces rather than works around, documented in
-`analytics/analysis-resources/production_schema.md`: `apply_decision_rules` counts its **daily
-cap over UTC days** while everything else is Eastern. The run-in gate lives in `_evaluate_user`
-(study day `< RUN_IN_DAYS` from `enrolled_at`, fail-closed when `enrolled_at` is null); the
-`runin_violation` alert is now the regression tripwire for it.
+`apply_decision_rules`'s own internal cap/cooldown simulation still counts **UTC days**, documented
+in `analytics/analysis-resources/production_schema.md` — this remains true and is fine for its only
+remaining consumer, Tien's synthetic-data/sensitivity-analysis pipeline (pure pandas, no real-world
+randomization feeding back into it). It no longer describes production enforcement: as of 2026-10,
+`_evaluate_user`/`_decision_point_safeguards` both call the shared `_cooldown_cap_reason` helper,
+which counts actual `JITAILog(send_prompt=True)` rows against Eastern-day boundaries. The run-in
+gate lives in `_evaluate_user` (study day `< RUN_IN_DAYS` from `enrolled_at`, fail-closed when
+`enrolled_at` is null); the `runin_violation` alert is now the regression tripwire for it.
 
 `analytics/reconcile_monitoring.py` is what keeps the ORM implementation and
 `analytics/scripts.py` in step. Run it after changing any metric definition.

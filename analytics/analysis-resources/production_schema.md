@@ -474,11 +474,19 @@ them.
    study day 0, although week 1 is meant to be a non-interventional baseline used only to
    establish each participant's within-person MSSD threshold. `runin_violation_n` counts the
    prompts this produces and a critical alert fires. Nothing in the pipeline prevents it yet.
-2. **The daily cap is counted in UTC.** `decision_engine.apply_decision_rules` groups by
-   `row["timestamp"].date()` on UTC-aware timestamps, while every other boundary in the system
-   is America/New_York. The two disagree for prompts between 19:00 Eastern and midnight, so an
-   evening prompt can belong to the next day for cap purposes. The monitoring layer scores
-   Eastern days throughout and does not work around this.
+2. **`apply_decision_rules`'s own internal cap simulation is counted in UTC.**
+   `decision_engine.apply_decision_rules` groups by `row["timestamp"].date()` on UTC-aware
+   timestamps, while every other boundary in the system is America/New_York. This remains true of
+   the engine function itself and is fine for its only remaining consumer — Tien's synthetic-data/
+   sensitivity-analysis pipeline, pure pandas with no real-world randomization feeding back into
+   it. **As of 2026-10, this no longer affects live production enforcement**: `_evaluate_user` and
+   `_decision_point_safeguards` (`backend/app/tasks.py`) both call a shared `_cooldown_cap_reason`
+   helper that counts actual `JITAILog(send_prompt=True)` rows against Eastern-day boundaries
+   (`dashboard/data/windows.py::participant_day_bounds`), ignoring `apply_decision_rules`'s own
+   cap/cooldown verdict entirely. A second, previously-undocumented defect was found and fixed in
+   the same change: `_decision_point_safeguards` had its own independent cooldown/cap query that
+   was also bucketing by UTC day, despite CLAUDE.md describing it as the correct reference
+   implementation — both are now the one shared, Eastern-day implementation.
 
 ---
 
