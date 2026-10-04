@@ -231,8 +231,14 @@ class CheckinReminder(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     sent_at = models.DateTimeField(auto_now_add=True)
     # Which of the day's fixed check-in slots (0-indexed) this reminder was
-    # for — one reminder per slot, at most, per Dr. Chang 2026-08-21.
-    daily_count_at_send = models.PositiveSmallIntegerField()
+    # for — one reminder per slot, at most, per Dr. Chang 2026-08-21. Null for
+    # an outcome-window reminder, which is keyed by jitai_log instead.
+    daily_count_at_send = models.PositiveSmallIntegerField(null=True, blank=True)
+    # Set when this reminder inserted the outcome check-in for an available
+    # decision point (protocol §9.2), in either arm; one per decision point.
+    jitai_log = models.ForeignKey(
+        'JITAILog', on_delete=models.SET_NULL, null=True, blank=True, related_name='outcome_reminders'
+    )
 
     class Meta:
         ordering = ['-sent_at']

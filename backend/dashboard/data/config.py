@@ -134,6 +134,10 @@ def arm_randomization_p():
     return float(os.environ.get(ARM_RANDOMIZATION_P_ENV, ARM_RANDOMIZATION_P_DEFAULT))
 
 OUTCOME_WINDOW_HOURS = 2
+# PROVISIONAL, pending PI sign-off: the outcome check-in after an available
+# decision point opens this long after decision_made_at, identically in both
+# arms, so a delivered prompt cannot pull the measurement earlier.
+OUTCOME_CHECK_IN_DELAY_MINUTES = 60
 
 
 BENCHMARKS = {

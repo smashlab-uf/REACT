@@ -22,9 +22,9 @@ EASTERN = ZoneInfo('America/New_York')
 def eastern_today():
     return timezone.now().astimezone(EASTERN).date()
 
-from app.ema_catalog import EMA_RESPONSE_WINDOW_MINUTES
+from app.ema_catalog import EMA_RESPONSE_WINDOW_MINUTES, POST_PROMPT_CHECK_IN_DAILY_CAP
 from dashboard.data import config as study_config
-from dashboard.data.config import RUN_IN_DAYS
+from dashboard.data.config import OUTCOME_CHECK_IN_DELAY_MINUTES, RUN_IN_DAYS
 from app.models import (
     CheckinReminder, DistressFlag, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, HRVSample,
     JITAILog, PhoneTelemetry, StressSample, User, WearableDevice,
@@ -3044,14 +3044,94 @@ class SendCheckinRemindersTests(TestCase):
         now = self._at(9, 35)
         mock_now.return_value = now
         user = self._make_enrolled_user()
-        JITAILog.objects.create(
-            user=user, prompt_id='p', trigger_reason='t',
-            push_sent_at=now - timedelta(minutes=10), send_prompt=True,
-        )
+        self._decision(user, now - timedelta(minutes=10), draw=0.9)
 
         send_checkin_reminders()
 
         MockPushClient.return_value.publish.assert_not_called()
+
+    def _decision(self, user, decided_at, draw, p=0.5, point='ema_1'):
+        return JITAILog.objects.create(
+            user=user, prompt_id='', trigger_reason='prompt sent', decision_point_id=point,
+            decision_made_at=decided_at, randomization_probability=p, randomization_draw=draw,
+            send_prompt=draw is not None and draw < p,
+        )
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_outcome_reminder_sent_once_in_either_arm(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        now = self._at(10, 40)
+        mock_now.return_value = now
+        MockPushClient.return_value.publish.return_value = MagicMock()
+        for i, draw in enumerate((0.2, 0.9)):
+            user = self._make_enrolled_user(email=f'arm{i}@ufl.edu')
+            log = self._decision(user, now - timedelta(minutes=65), draw=draw, point=f'ema_{i}')
+
+            send_checkin_reminders()
+            send_checkin_reminders()
+
+            reminders = CheckinReminder.objects.filter(user=user)
+            self.assertEqual(reminders.count(), 1)
+            self.assertEqual(reminders.get().jitai_log, log)
+            self.assertIsNone(reminders.get().daily_count_at_send)
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_outcome_reminder_waits_for_check_in_delay(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        now = self._at(10, 40)
+        mock_now.return_value = now
+        user = self._make_enrolled_user()
+        self._decision(user, now - timedelta(minutes=30), draw=0.9)
+
+        send_checkin_reminders()
+
+        MockPushClient.return_value.publish.assert_not_called()
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_outcome_reminder_skipped_once_outcome_answered(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        now = self._at(10, 40)
+        mock_now.return_value = now
+        user = self._make_enrolled_user()
+        log = self._decision(user, now - timedelta(minutes=65), draw=0.9)
+        EMA.objects.create(user=user, prompt_id='o', status='completed', ema_type='post_prompt', source_jitai_log=log)
+
+        send_checkin_reminders()
+
+        MockPushClient.return_value.publish.assert_not_called()
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_outcome_reminder_respects_daily_outcome_cap(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        now = self._at(10, 40)
+        mock_now.return_value = now
+        user = self._make_enrolled_user()
+        self._decision(user, now - timedelta(minutes=65), draw=0.9)
+        for i in range(POST_PROMPT_CHECK_IN_DAILY_CAP):
+            ema = EMA.objects.create(user=user, prompt_id=f'cap{i}', status='completed', ema_type='post_prompt')
+            EMA.objects.filter(pk=ema.pk).update(sent_at=self._at(9, i))
+
+        send_checkin_reminders()
+
+        MockPushClient.return_value.publish.assert_not_called()
+
+    @patch('app.tasks.django_timezone.now')
+    @patch('app.notification_service.PushClient')
+    def test_unavailable_decision_does_not_suppress_slot_reminder(self, MockPushClient, mock_now):
+        from app.tasks import send_checkin_reminders
+        now = self._at(9, 35)
+        mock_now.return_value = now
+        MockPushClient.return_value.publish.return_value = MagicMock()
+        user = self._make_enrolled_user()
+        self._decision(user, now - timedelta(minutes=10), draw=None)
+
+        send_checkin_reminders()
+
+        self.assertEqual(CheckinReminder.objects.get(user=user).daily_count_at_send, 0)
 
     @patch('app.tasks.django_timezone.now')
     @patch('app.notification_service.PushClient')
@@ -3633,14 +3713,18 @@ class EMARotationEndpointTests(TestCase):
         self.assertEqual(data['jitai_log_id'], jitai_log.id)
         self.assertEqual([item['item_id'] for item in data['items']], ['C0'])
 
-    def test_next_returns_post_prompt_items_during_outcome_window(self):
-        jitai_log = JITAILog.objects.create(
-            user=self.user,
-            prompt_id='JITAI-EMA-1',
-            trigger_reason='test',
-            push_sent_at=timezone.now() - timedelta(minutes=10),
-            send_prompt=True,
+    def _decision(self, minutes_ago, draw, p=0.5, point='ema_1', user=None):
+        decided_at = timezone.now() - timedelta(minutes=minutes_ago)
+        sent = draw is not None and draw < p
+        return JITAILog.objects.create(
+            user=user or self.user, prompt_id='JITAI-EMA-1' if sent else '', trigger_reason='prompt sent',
+            decision_point_id=point, decision_made_at=decided_at, randomization_probability=p,
+            randomization_draw=draw, send_prompt=sent,
+            push_sent_at=decided_at + timedelta(seconds=5) if sent else None,
         )
+
+    def test_next_returns_post_prompt_items_during_outcome_window(self):
+        jitai_log = self._decision(minutes_ago=65, draw=0.2)
         EMA.objects.create(
             user=self.user, prompt_id='EMA-C0-1', status='completed',
             ema_type='prompt_feedback', source_jitai_log=jitai_log,
@@ -3665,14 +3749,7 @@ class EMARotationEndpointTests(TestCase):
         self.assertLessEqual(expires, after + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
 
     def test_post_prompt_response_window_is_independent_of_outcome_window(self):
-        push_sent_at = timezone.now() - timedelta(minutes=10)
-        jitai_log = JITAILog.objects.create(
-            user=self.user,
-            prompt_id='JITAI-EMA-WINDOW',
-            trigger_reason='test',
-            push_sent_at=push_sent_at,
-            send_prompt=True,
-        )
+        jitai_log = self._decision(minutes_ago=65, draw=0.2)
         EMA.objects.create(
             user=self.user, prompt_id='EMA-C0-WINDOW', status='completed',
             ema_type='prompt_feedback', source_jitai_log=jitai_log,
@@ -3683,14 +3760,78 @@ class EMARotationEndpointTests(TestCase):
         after = timezone.now()
 
         # The response window is 30 minutes from now; the outcome window stays
-        # 2 hours from the push. Aliasing the two is the bug this guards.
+        # 2 hours from the decision. Aliasing the two is the bug this guards.
         expires = parse_datetime(data['expires_at'])
         self.assertGreaterEqual(expires, before + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
         self.assertLessEqual(expires, after + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
 
         outcome_end = parse_datetime(data['outcome_window_end'])
-        self.assertEqual(outcome_end, push_sent_at + timedelta(hours=2))
+        self.assertEqual(outcome_end, jitai_log.decision_made_at + timedelta(hours=2))
         self.assertLess(expires, outcome_end)
+
+    def test_control_arm_decision_gets_outcome_check_in_after_delay(self):
+        jitai_log = self._decision(minutes_ago=65, draw=0.9)
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertTrue(data['should_show'])
+        self.assertEqual(data['ema_type'], 'post_prompt')
+        self.assertEqual(data['jitai_log_id'], jitai_log.id)
+        self.assertEqual(parse_datetime(data['outcome_window_start']), jitai_log.decision_made_at)
+        self.assertEqual([item['item_id'] for item in data['items']], ['B1', 'B2', 'B4', 'B5', 'B6', 'B7'])
+
+    def test_outcome_check_in_pending_before_delay_in_both_arms(self):
+        for i, draw in enumerate((0.2, 0.9)):
+            user = make_user(email=f'pending{i}@test.com')
+            jitai_log = self._decision(minutes_ago=20, draw=draw, point=f'ema_p{i}', user=user)
+            if jitai_log.send_prompt:
+                EMA.objects.create(user=user, prompt_id=f'C0-{i}', status='completed',
+                                   ema_type='prompt_feedback', source_jitai_log=jitai_log)
+
+            data = authenticated_client(user).get('/ema/next/').json()
+
+            self.assertFalse(data['should_show'])
+            self.assertEqual(data['reason'], 'outcome_window_pending')
+            self.assertEqual(
+                parse_datetime(data['outcome_check_in_opens_at']),
+                jitai_log.decision_made_at + timedelta(minutes=OUTCOME_CHECK_IN_DELAY_MINUTES),
+            )
+
+    def test_unavailable_decision_opens_no_outcome_window(self):
+        self._decision(minutes_ago=65, draw=None)
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertEqual(data['ema_type'], 'scheduled_check_in')
+        self.assertFalse(data['outcome_window_active'])
+
+    def test_distress_suppressed_decision_opens_no_outcome_window(self):
+        jitai_log = self._decision(minutes_ago=65, draw=None)
+        JITAILog.objects.filter(pk=jitai_log.pk).update(
+            suppression_reason='distress_momentary', status='suppressed', randomization_probability=None,
+        )
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertEqual(data['ema_type'], 'scheduled_check_in')
+        self.assertFalse(data['outcome_window_active'])
+
+    def test_outcome_window_closes_two_hours_after_decision(self):
+        self._decision(minutes_ago=125, draw=0.9)
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertEqual(data['ema_type'], 'scheduled_check_in')
+
+    def test_extra_check_in_served_after_outcome_reminder(self):
+        jitai_log = self._decision(minutes_ago=65, draw=0.9)
+        CheckinReminder.objects.create(user=self.user, jitai_log=jitai_log)
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertTrue(data['should_show'])
+        self.assertEqual(data['ema_type'], 'extra_check_in')
+        self.assertEqual(data['jitai_log_id'], jitai_log.id)
 
     def test_submitted_ema_persists_response_window(self):
         response = self.client.post('/ema/responses/', {

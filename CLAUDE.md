@@ -17,8 +17,10 @@ REACT adds:
 - A more sophisticated JITAI decision engine driven by real-time biometric signals
 - A researcher dashboard for study monitoring
 
-Target deployment: ~300 participants across a UF football season (late August through late
-November/early December, ~12–14 weeks).
+Target deployment: a phased rollout across a UF football season (late August through late
+November/early December, ~12–14 weeks). Phase 1 enrolls 5 participants, followed by two waves of 40, so
+about 80–85 in total. The power calculation uses N = 80 to allow for dropout. `N_TARGET = 40` in
+`dashboard/data/config.py` is one wave.
 
 ---
 
@@ -159,8 +161,20 @@ Two push types reach the device (details in `mobile/README.md`): a **visible che
 (`send_checkin_reminders`, which divides 9–21 participant-local time into six fixed two-hour
 slots and fires at most one reminder per slot, 30 min after it opens, only where no check-in
 has landed and never as a catch-up; there is no cooldown, and the 120 minutes sometimes quoted
-as one is just the slot length) and a **silent JITAI prompt** (`evaluate_jitai_triggers`, sent only after a
-newly completed EMA passes eligibility + randomization). The MSSD trigger math is isolated in
+as one is just the slot length; it also sends the **outcome check-in reminder** described below) and a
+**silent JITAI prompt** (`evaluate_jitai_triggers`, sent only after a
+newly completed EMA passes eligibility + randomization).
+
+**Every available decision point opens a time-locked outcome window, sent or not**
+(`_latest_outcome_window` in `app/views.py`, protocol §9.2).
+- For the first `OUTCOME_CHECK_IN_DELAY_MINUTES` (60, provisional) `/ema/next/` serves nothing but the C0
+  rating after a delivered prompt, and slot reminders are held back.
+- From +60 min to +2 h it serves the outcome check-in, linked by `source_jitai_log`. One reminder goes out if
+  that check-in is unanswered at +60 min.
+- Both arms get the same timing, so the proximal outcome is measured the same way whatever the assignment.
+  Do not re-anchor this on `push_sent_at`.
+
+The MSSD trigger math is isolated in
 `backend/decision_engine/decision_engine.py` (`calculate_mssd`, `apply_decision_rules`) and is
 regression-tested against a golden CSV (`scenario_test_outputs.csv`) in that directory.
 

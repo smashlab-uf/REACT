@@ -19,7 +19,8 @@ from app.notification_service import (
     send_jitai_prompt,
 )
 from app.distress import active_distress_flag
-from app.views import _latest_active_jitai, _today_scheduled_check_in_count
+from app.ema_catalog import POST_PROMPT_CHECK_IN_DAILY_CAP
+from app.views import _latest_outcome_window, _today_post_prompt_count, _today_scheduled_check_in_count
 from dashboard.data.config import (
     CHECKIN_REMINDER_DELAY_MINUTES,
     DAILY_PROMPT_CAP,
@@ -353,10 +354,12 @@ def _maybe_send_reminder(user, now):
     if not user.push_token:
         return
 
-    # No reminder within 30 min of an intervention prompt ("one buzz at a
-    # time") — the 2-hour active-outcome-window check below is a superset
-    # of that 30-minute guard.
-    if _latest_active_jitai(user) is not None:
+    # While any available decision point's outcome window is open, in either
+    # arm, the only reminder is the one that inserts its outcome check-in
+    # (protocol §9.2). This also keeps "one buzz at a time" after a prompt.
+    window = _latest_outcome_window(user, now)
+    if window is not None:
+        _maybe_send_outcome_reminder(user, now, window)
         return
 
     participant_now = now.astimezone(PARTICIPANT_TZ)
@@ -386,3 +389,20 @@ def _maybe_send_reminder(user, now):
         if send_checkin_reminder(user):
             CheckinReminder.objects.create(user=user, daily_count_at_send=slot_index)
         return  # one buzz at a time per tick
+
+
+def _maybe_send_outcome_reminder(user, now, window):
+    if now < window.opens_at:
+        return
+    if CheckinReminder.objects.filter(jitai_log=window.jitai_log).exists():
+        return
+    answered = EMA.objects.filter(
+        source_jitai_log=window.jitai_log, status='completed',
+        ema_type__in=['post_prompt', 'extra_check_in'],
+    ).exists()
+    if answered:
+        return
+    if _today_post_prompt_count(user, now) >= POST_PROMPT_CHECK_IN_DAILY_CAP:
+        return
+    if send_checkin_reminder(user):
+        CheckinReminder.objects.create(user=user, jitai_log=window.jitai_log)
