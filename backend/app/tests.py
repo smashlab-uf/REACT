@@ -2156,8 +2156,17 @@ class LegacyRouteTests(TestCase):
 # Task: evaluate_jitai_triggers
 # ---------------------------------------------------------------------------
 
+class NoRealCheckinPushMixin:
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch('app.tasks.send_checkin_reminder')
+        self.mock_checkin_push = patcher.start()
+        self.addCleanup(patcher.stop)
+
+
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class EvaluateJITAITriggersTests(TestCase):
+class EvaluateJITAITriggersTests(NoRealCheckinPushMixin, TestCase):
 
     def _make_enrolled_user(self, email='jitai_task@ufl.edu'):
         user = make_user(email=email, push_token='ExponentPushToken[test123]')
@@ -3373,9 +3382,10 @@ class JITAILogMRTSchemaTests(TestCase):
 
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class EvaluateUserMRTTests(TestCase):
+class EvaluateUserMRTTests(NoRealCheckinPushMixin, TestCase):
 
     def setUp(self):
+        super().setUp()
         self.user = make_user(
             email='mrteval@test.com',
             is_enrolled=True,
@@ -3449,6 +3459,66 @@ class EvaluateUserMRTTests(TestCase):
         self.assertEqual(log.randomization_probability, 0.5)
         self.assertIsNotNone(log.decision_point_id)
         mock_send.assert_called_once()
+
+    @patch('app.tasks.send_checkin_reminder')
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.8)
+    def test_randomized_out_decision_sends_checkin_notification(
+        self, mock_rand, mock_mssd, mock_rules, mock_send, mock_reminder
+    ):
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        mock_send.assert_not_called()
+        mock_reminder.assert_called_once_with(self.user)
+        log = JITAILog.objects.get(user=self.user)
+        self.assertEqual(log.status, 'not_sent')
+        self.assertIsNone(log.push_sent_at)
+
+    @patch('app.tasks.send_checkin_reminder')
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    def test_sent_decision_does_not_also_send_checkin_notification(
+        self, mock_rand, mock_mssd, mock_rules, mock_send, mock_reminder
+    ):
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        mock_send.assert_called_once()
+        mock_reminder.assert_not_called()
+
+    @patch('app.tasks.send_checkin_reminder')
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.8)
+    def test_suppressed_decision_sends_no_checkin_notification(
+        self, mock_rand, mock_mssd, mock_rules, mock_send, mock_reminder
+    ):
+        self.user.enrolled_at = timezone.now() - timedelta(days=1)
+        self.user.save()
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        mock_send.assert_not_called()
+        mock_reminder.assert_not_called()
+        self.assertEqual(JITAILog.objects.get(user=self.user).suppression_reason, 'run_in')
 
     @patch('app.tasks.send_jitai_prompt')
     @patch('app.tasks.apply_decision_rules')
@@ -3646,13 +3716,14 @@ class EvaluateUserMRTTests(TestCase):
         self.assertIsNone(log.arm_randomization_probability)
 
 
-class EvaluateUserCooldownCapTests(TestCase):
+class EvaluateUserCooldownCapTests(NoRealCheckinPushMixin, TestCase):
     """Regression coverage for the real-send-history cooldown/daily-cap check
     added to _evaluate_user (previously it trusted apply_decision_rules's own
     internal, eligibility-based, UTC-day simulation instead of real JITAILog
     history)."""
 
     def setUp(self):
+        super().setUp()
         self.user = make_user(
             email='cooldowncap@test.com',
             is_enrolled=True,

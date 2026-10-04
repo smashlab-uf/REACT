@@ -388,6 +388,8 @@ def _evaluate_user(user, p):
                 user.user_id,
             )
             mark_delivery_failed(jitai_log, 'missing push token')
+    elif draw is not None and user.push_token:
+        send_checkin_reminder(user)
 
 
 @shared_task
