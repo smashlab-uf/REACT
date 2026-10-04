@@ -2167,8 +2167,17 @@ class LegacyRouteTests(TestCase):
 # Task: evaluate_jitai_triggers
 # ---------------------------------------------------------------------------
 
+class NoRealCheckinPushMixin:
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch('app.tasks.send_checkin_reminder')
+        self.mock_checkin_push = patcher.start()
+        self.addCleanup(patcher.stop)
+
+
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class EvaluateJITAITriggersTests(TestCase):
+class EvaluateJITAITriggersTests(NoRealCheckinPushMixin, TestCase):
 
     def _make_enrolled_user(self, email='jitai_task@ufl.edu'):
         user = make_user(email=email, push_token='ExponentPushToken[test123]')
@@ -3384,9 +3393,10 @@ class JITAILogMRTSchemaTests(TestCase):
 
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class EvaluateUserMRTTests(TestCase):
+class EvaluateUserMRTTests(NoRealCheckinPushMixin, TestCase):
 
     def setUp(self):
+        super().setUp()
         self.user = make_user(
             email='mrteval@test.com',
             is_enrolled=True,
@@ -3460,6 +3470,66 @@ class EvaluateUserMRTTests(TestCase):
         self.assertEqual(log.randomization_probability, 0.5)
         self.assertIsNotNone(log.decision_point_id)
         mock_send.assert_called_once()
+
+    @patch('app.tasks.send_checkin_reminder')
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.8)
+    def test_randomized_out_decision_sends_checkin_notification(
+        self, mock_rand, mock_mssd, mock_rules, mock_send, mock_reminder
+    ):
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        mock_send.assert_not_called()
+        mock_reminder.assert_called_once_with(self.user)
+        log = JITAILog.objects.get(user=self.user)
+        self.assertEqual(log.status, 'not_sent')
+        self.assertIsNone(log.push_sent_at)
+
+    @patch('app.tasks.send_checkin_reminder')
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    def test_sent_decision_does_not_also_send_checkin_notification(
+        self, mock_rand, mock_mssd, mock_rules, mock_send, mock_reminder
+    ):
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        mock_send.assert_called_once()
+        mock_reminder.assert_not_called()
+
+    @patch('app.tasks.send_checkin_reminder')
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.8)
+    def test_suppressed_decision_sends_no_checkin_notification(
+        self, mock_rand, mock_mssd, mock_rules, mock_send, mock_reminder
+    ):
+        self.user.enrolled_at = timezone.now() - timedelta(days=1)
+        self.user.save()
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        mock_send.assert_not_called()
+        mock_reminder.assert_not_called()
+        self.assertEqual(JITAILog.objects.get(user=self.user).suppression_reason, 'run_in')
 
     @patch('app.tasks.send_jitai_prompt')
     @patch('app.tasks.apply_decision_rules')
@@ -3657,13 +3727,14 @@ class EvaluateUserMRTTests(TestCase):
         self.assertIsNone(log.arm_randomization_probability)
 
 
-class EvaluateUserCooldownCapTests(TestCase):
+class EvaluateUserCooldownCapTests(NoRealCheckinPushMixin, TestCase):
     """Regression coverage for the real-send-history cooldown/daily-cap check
     added to _evaluate_user (previously it trusted apply_decision_rules's own
     internal, eligibility-based, UTC-day simulation instead of real JITAILog
     history)."""
 
     def setUp(self):
+        super().setUp()
         self.user = make_user(
             email='cooldowncap@test.com',
             is_enrolled=True,
@@ -4057,6 +4128,81 @@ class EMARotationEndpointTests(TestCase):
         self.assertTrue(data['outcome_window_active'])
         self.assertEqual(data['jitai_log_id'], jitai_log.id)
         self.assertEqual([item['item_id'] for item in data['items']], ['B1', 'B2', 'B4', 'B5', 'B6', 'B7'])
+
+    def _randomized_log(self, send_prompt, message_arm=None, draw=0.9, minutes_ago=10):
+        jitai_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='JITAI-EMA-1',
+            trigger_reason='test',
+            send_prompt=send_prompt,
+            randomization_draw=draw,
+            message_arm=message_arm,
+        )
+        JITAILog.objects.filter(pk=jitai_log.pk).update(
+            triggered_at=timezone.now() - timedelta(minutes=minutes_ago)
+        )
+        jitai_log.refresh_from_db()
+        return jitai_log
+
+    def test_outcome_window_opens_for_randomized_out_decision(self):
+        jitai_log = self._randomized_log(send_prompt=False)
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertTrue(data['should_show'])
+        self.assertTrue(data['outcome_window_active'])
+        self.assertEqual(data['ema_type'], 'post_prompt')
+        self.assertEqual(data['jitai_log_id'], jitai_log.id)
+        self.assertEqual(parse_datetime(data['outcome_window_start']), jitai_log.triggered_at)
+        self.assertEqual(
+            parse_datetime(data['outcome_window_end']),
+            jitai_log.triggered_at + timedelta(hours=study_config.OUTCOME_WINDOW_HOURS),
+        )
+
+    def test_outcome_window_skips_prompt_feedback_for_unsent_decision(self):
+        self._randomized_log(send_prompt=False)
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertNotEqual(data['ema_type'], 'prompt_feedback')
+
+    def test_outcome_window_opens_for_unsent_decision_of_either_arm_label(self):
+        for arm in ('coping', 'control'):
+            JITAILog.objects.all().delete()
+            jitai_log = self._randomized_log(send_prompt=False, message_arm=arm)
+
+            data = self.client.get('/ema/next/').json()
+
+            self.assertTrue(data['outcome_window_active'], arm)
+            self.assertEqual(data['jitai_log_id'], jitai_log.id, arm)
+
+    def test_outcome_window_does_not_open_for_suppressed_decision(self):
+        jitai_log = self._randomized_log(send_prompt=False, draw=None)
+        JITAILog.objects.filter(pk=jitai_log.pk).update(suppression_reason='run_in')
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertFalse(data['outcome_window_active'])
+        self.assertEqual(data['ema_type'], 'scheduled_check_in')
+
+    def test_outcome_window_closes_after_window_hours(self):
+        self._randomized_log(send_prompt=False, minutes_ago=study_config.OUTCOME_WINDOW_HOURS * 60 + 5)
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertFalse(data['outcome_window_active'])
+
+    def test_outcome_window_one_response_per_unsent_window(self):
+        jitai_log = self._randomized_log(send_prompt=False)
+        EMA.objects.create(
+            user=self.user, prompt_id=f'EMA-JITAI-{jitai_log.id}', status='completed',
+            ema_type='post_prompt', source_jitai_log=jitai_log,
+        )
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertFalse(data['should_show'])
+        self.assertEqual(data['reason'], 'outcome_window_already_completed')
 
     def test_scheduled_check_in_advertises_response_window(self):
         before = timezone.now()
