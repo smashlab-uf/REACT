@@ -7,7 +7,8 @@ from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
 from django.db import transaction
-from django.db.models import Count, Exists, OuterRef, Subquery
+from django.db.models import Count, Exists, OuterRef, Q, Subquery
+from django.db.models.functions import Coalesce
 from .ema_catalog import (
     AFTERNOON_START_HOUR,
     EMA_RESPONSE_WINDOW_MINUTES,
@@ -224,13 +225,23 @@ def _select_scheduled_items(user, now, daily_count):
     return item_ids
 
 
+def _outcome_window_anchor(jitai_log):
+    return jitai_log.push_sent_at or jitai_log.triggered_at
+
+
 def _latest_active_jitai(user):
     now = django_timezone.now()
     window_start = now - timedelta(hours=OUTCOME_WINDOW_HOURS)
     return (
         JITAILog.objects
-        .filter(user=user, send_prompt=True, push_sent_at__gte=window_start, push_sent_at__lte=now)
-        .order_by('-push_sent_at', '-decision_made_at', '-id')
+        .filter(user=user)
+        .filter(
+            Q(send_prompt=True, push_sent_at__isnull=False)
+            | Q(randomization_draw__isnull=False)
+        )
+        .annotate(window_anchor=Coalesce('push_sent_at', 'triggered_at'))
+        .filter(window_anchor__gte=window_start, window_anchor__lte=now)
+        .order_by('-window_anchor', '-decision_made_at', '-id')
         .first()
     )
 
@@ -687,7 +698,7 @@ class EMANextView(APIView):
         active_jitai = _latest_active_jitai(app_user)
 
         if active_jitai is not None:
-            outcome_start = active_jitai.push_sent_at
+            outcome_start = _outcome_window_anchor(active_jitai)
             outcome_end = outcome_start + timedelta(hours=OUTCOME_WINDOW_HOURS)
             has_window_response = EMA.objects.filter(
                 user=app_user,

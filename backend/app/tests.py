@@ -4085,6 +4085,81 @@ class EMARotationEndpointTests(TestCase):
         self.assertEqual(data['jitai_log_id'], jitai_log.id)
         self.assertEqual([item['item_id'] for item in data['items']], ['B1', 'B2', 'B4', 'B5', 'B6', 'B7'])
 
+    def _randomized_log(self, send_prompt, message_arm=None, draw=0.9, minutes_ago=10):
+        jitai_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='JITAI-EMA-1',
+            trigger_reason='test',
+            send_prompt=send_prompt,
+            randomization_draw=draw,
+            message_arm=message_arm,
+        )
+        JITAILog.objects.filter(pk=jitai_log.pk).update(
+            triggered_at=timezone.now() - timedelta(minutes=minutes_ago)
+        )
+        jitai_log.refresh_from_db()
+        return jitai_log
+
+    def test_outcome_window_opens_for_randomized_out_decision(self):
+        jitai_log = self._randomized_log(send_prompt=False)
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertTrue(data['should_show'])
+        self.assertTrue(data['outcome_window_active'])
+        self.assertEqual(data['ema_type'], 'post_prompt')
+        self.assertEqual(data['jitai_log_id'], jitai_log.id)
+        self.assertEqual(parse_datetime(data['outcome_window_start']), jitai_log.triggered_at)
+        self.assertEqual(
+            parse_datetime(data['outcome_window_end']),
+            jitai_log.triggered_at + timedelta(hours=study_config.OUTCOME_WINDOW_HOURS),
+        )
+
+    def test_outcome_window_skips_prompt_feedback_for_unsent_decision(self):
+        self._randomized_log(send_prompt=False)
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertNotEqual(data['ema_type'], 'prompt_feedback')
+
+    def test_outcome_window_opens_for_unsent_decision_of_either_arm_label(self):
+        for arm in ('coping', 'control'):
+            JITAILog.objects.all().delete()
+            jitai_log = self._randomized_log(send_prompt=False, message_arm=arm)
+
+            data = self.client.get('/ema/next/').json()
+
+            self.assertTrue(data['outcome_window_active'], arm)
+            self.assertEqual(data['jitai_log_id'], jitai_log.id, arm)
+
+    def test_outcome_window_does_not_open_for_suppressed_decision(self):
+        jitai_log = self._randomized_log(send_prompt=False, draw=None)
+        JITAILog.objects.filter(pk=jitai_log.pk).update(suppression_reason='run_in')
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertFalse(data['outcome_window_active'])
+        self.assertEqual(data['ema_type'], 'scheduled_check_in')
+
+    def test_outcome_window_closes_after_window_hours(self):
+        self._randomized_log(send_prompt=False, minutes_ago=study_config.OUTCOME_WINDOW_HOURS * 60 + 5)
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertFalse(data['outcome_window_active'])
+
+    def test_outcome_window_one_response_per_unsent_window(self):
+        jitai_log = self._randomized_log(send_prompt=False)
+        EMA.objects.create(
+            user=self.user, prompt_id=f'EMA-JITAI-{jitai_log.id}', status='completed',
+            ema_type='post_prompt', source_jitai_log=jitai_log,
+        )
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertFalse(data['should_show'])
+        self.assertEqual(data['reason'], 'outcome_window_already_completed')
+
     def test_scheduled_check_in_advertises_response_window(self):
         before = timezone.now()
         data = self.client.get('/ema/next/').json()
