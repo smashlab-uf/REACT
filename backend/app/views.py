@@ -498,15 +498,21 @@ class TelemetryIngestView(APIView):
         request_body=TelemetryIngestSerializer,
     )
     def post(self, request):
+        forbidden_fields = {'jitai_logs', 'user_id'} & set(request.data.keys())
+        if forbidden_fields:
+            return Response(
+                {field: ["This field is not accepted by telemetry ingest."] for field in sorted(forbidden_fields)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         serializer = TelemetryIngestSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         data = serializer.validated_data
-        try:
-            user = User.objects.get(user_id=data["user_id"])
-        except User.DoesNotExist:
-            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        user = _get_app_user(request)
+        if user is None:
+            return Response({"error": "Authenticated app user not found."}, status=status.HTTP_404_NOT_FOUND)
 
         device_payload = data.get("wearable_device") or {}
         synced_at = device_payload.get("last_synced_at") if device_payload else None
@@ -525,7 +531,6 @@ class TelemetryIngestView(APIView):
             "stress_samples": 0,
             "hrv_samples": 0,
             "emas": 0,
-            "jitai_logs": 0,
             "phone_events": 0,
             "engagement_events": 0,
         }
@@ -545,19 +550,6 @@ class TelemetryIngestView(APIView):
         for ema in data.get("emas", []):
             EMA.objects.create(user=user, **ema)
             created_counts["emas"] += 1
-
-        for log in data.get("jitai_logs", []):
-            ema_id = log.pop("ema", None)
-            if ema_id is not None:
-                try:
-                    log["ema"] = EMA.objects.get(id=ema_id, user=user)
-                except EMA.DoesNotExist:
-                    return Response(
-                        {"error": f"EMA {ema_id} not found for user."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-            JITAILog.objects.create(user=user, **log)
-            created_counts["jitai_logs"] += 1
 
         for event in data.get("phone_events", []):
             PhoneTelemetry.objects.create(user=user, **event)

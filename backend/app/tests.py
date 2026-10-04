@@ -851,7 +851,6 @@ class TelemetryIngestViewTests(TestCase):
 
     def _payload(self):
         return {
-            'user_id': self.user.user_id,
             'wearable_device': {
                 'labfront_participant_id': 'LABFRONT-001',
                 'is_active': True,
@@ -884,16 +883,6 @@ class TelemetryIngestViewTests(TestCase):
                     'status': 'completed',
                 }
             ],
-            'jitai_logs': [
-                {
-                    'prompt_id': 'JITAI_TEMPLATE_01',
-                    'trigger_reason': 'hr_elevated+stress_high',
-                    'hr_at_trigger': 105,
-                    'stress_at_trigger': 72,
-                    'observed_mssd': 0.72,
-                    'send_prompt': True,
-                }
-            ],
             'phone_events': [
                 {
                     'session_id': 'SESSION_ABC',
@@ -920,7 +909,7 @@ class TelemetryIngestViewTests(TestCase):
         self.assertEqual(HeartRateSample.objects.count(), 1)
         self.assertEqual(StressSample.objects.count(), 1)
         self.assertEqual(EMA.objects.count(), 1)
-        self.assertEqual(JITAILog.objects.count(), 1)
+        self.assertEqual(JITAILog.objects.count(), 0)
         self.assertEqual(PhoneTelemetry.objects.count(), 1)
         self.assertEqual(EngagementLog.objects.count(), 1)
         self.assertEqual(response.data['counts']['heart_rate_samples'], 1)
@@ -931,24 +920,46 @@ class TelemetryIngestViewTests(TestCase):
         self.assertEqual(HRVSample.objects.get().beat_count, 288)
         self.assertEqual(response.data['counts']['phone_events'], 1)
         self.assertEqual(response.data['counts']['engagement_events'], 1)
-        self.assertAlmostEqual(JITAILog.objects.get().observed_mssd, 0.72)
-        self.assertTrue(JITAILog.objects.get().send_prompt)
 
-    def test_missing_user_id_returns_400(self):
+    def test_user_id_in_body_is_rejected(self):
+        other_user = make_user(email='other-telemetry@example.com')
         payload = self._payload()
-        payload.pop('user_id')
+        payload['user_id'] = other_user.user_id
 
         response = self.client.post('/telemetry/ingest/', payload, format='json')
 
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+        self.assertIn('user_id', response.data)
+        self.assertEqual(HeartRateSample.objects.count(), 0)
 
-    def test_unknown_user_returns_404(self):
+    def test_unknown_user_id_in_body_is_rejected(self):
         payload = self._payload()
         payload['user_id'] = 99999
 
         response = self.client.post('/telemetry/ingest/', payload, format='json')
 
-        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+        self.assertIn('user_id', response.data)
+        self.assertEqual(HeartRateSample.objects.count(), 0)
+
+    def test_jitai_logs_are_not_allowed_from_telemetry_ingest(self):
+        payload = self._payload()
+        payload['jitai_logs'] = [
+            {
+                'prompt_id': 'JITAI_TEMPLATE_01',
+                'trigger_reason': 'hr_elevated+stress_high',
+                'observed_mssd': 0.72,
+                'randomization_probability': 0.5,
+                'randomization_draw': 0.25,
+                'send_prompt': True,
+            }
+        ]
+
+        response = self.client.post('/telemetry/ingest/', payload, format='json')
+
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+        self.assertIn('jitai_logs', response.data)
+        self.assertEqual(JITAILog.objects.count(), 0)
 
     def test_bpm_out_of_range_returns_400(self):
         payload = self._payload()
@@ -3938,44 +3949,6 @@ class JITAILogSerializerMRTFieldsTests(TestCase):
         ]:
             self.assertIn(field, data)
         self.assertEqual(data['delivery_status'], 'accepted_by_expo')
-
-    def test_telemetry_jitai_serializer_accepts_new_fields(self):
-        from app.serializers import TelemetryJITAILogSerializer
-        data = {
-            'prompt_id': 'default',
-            'trigger_reason': 'test',
-            'decision_point_id': 'ema_42',
-            'randomization_probability': 0.5,
-            'randomization_draw': 0.2,
-            'delivery_status': 'accepted_by_expo',
-            'delivery_error': '',
-            'receipt_platform': 'ios',
-            'receipt_app_state': 'foreground',
-        }
-        ser = TelemetryJITAILogSerializer(data=data)
-        self.assertTrue(ser.is_valid(), ser.errors)
-
-    def test_telemetry_jitai_serializer_new_fields_are_optional(self):
-        from app.serializers import TelemetryJITAILogSerializer
-        data = {
-            'prompt_id': 'default',
-            'trigger_reason': 'test',
-        }
-        ser = TelemetryJITAILogSerializer(data=data)
-        self.assertTrue(ser.is_valid(), ser.errors)
-
-    def test_telemetry_jitai_serializer_probability_range_validation(self):
-        from app.serializers import TelemetryJITAILogSerializer
-        data = {
-            'prompt_id': 'default',
-            'trigger_reason': 'test',
-            'randomization_probability': 1.5,
-        }
-        ser = TelemetryJITAILogSerializer(data=data)
-        self.assertFalse(ser.is_valid())
-        self.assertIn('randomization_probability', ser.errors)
-
-
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS, DASHBOARD_API_KEY='dashboard-test-key')
 class DashboardAPIKeyAccessTests(TestCase):

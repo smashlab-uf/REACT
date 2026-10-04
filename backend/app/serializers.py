@@ -173,28 +173,6 @@ class TelemetryEMASerializer(serializers.Serializer):
     stress = serializers.IntegerField(min_value=1, max_value=7, required=False, allow_null=True)
 
 
-class TelemetryJITAILogSerializer(serializers.Serializer):
-    prompt_id = serializers.CharField(max_length=64)
-    trigger_reason = serializers.CharField(max_length=128)
-    hr_at_trigger = serializers.IntegerField(min_value=0, required=False, allow_null=True)
-    stress_at_trigger = serializers.IntegerField(min_value=0, max_value=100, required=False, allow_null=True)
-    ema = serializers.IntegerField(required=False, allow_null=True)
-    observed_mssd = serializers.FloatField(required=False, allow_null=True)
-    decision_point_id = serializers.CharField(max_length=64, required=False, allow_null=True)
-    randomization_probability = serializers.FloatField(min_value=0.0, max_value=1.0, required=False, allow_null=True)
-    randomization_draw = serializers.FloatField(min_value=0.0, max_value=1.0, required=False, allow_null=True)
-    send_prompt = serializers.BooleanField(required=False, default=True)
-    status = serializers.ChoiceField(choices=JITAILog.STATUS_CHOICES, required=False, default='pending')
-    decision_made_at = serializers.DateTimeField(required=False)
-    push_sent_at = serializers.DateTimeField(required=False, allow_null=True)
-    device_received_at = serializers.DateTimeField(required=False, allow_null=True)
-    receipt_reported_at = serializers.DateTimeField(required=False, allow_null=True)
-    delivery_status = serializers.ChoiceField(choices=JITAILog.DELIVERY_STATUS_CHOICES, required=False, default='pending')
-    delivery_error = serializers.CharField(required=False, allow_blank=True)
-    receipt_platform = serializers.CharField(max_length=16, required=False, allow_blank=True)
-    receipt_app_state = serializers.CharField(max_length=32, required=False, allow_blank=True)
-
-
 class TelemetryPhoneEventSerializer(serializers.Serializer):
     session_id = serializers.CharField(max_length=64)
     event_type = serializers.ChoiceField(choices=PhoneTelemetry._meta.get_field('event_type').choices)
@@ -221,13 +199,11 @@ class TelemetryEngagementEventSerializer(serializers.Serializer):
 
 
 class TelemetryIngestSerializer(serializers.Serializer):
-    user_id = serializers.IntegerField()
     wearable_device = TelemetryWearableDeviceSerializer(required=False)
     heart_rate_samples = TelemetryHeartRateSampleSerializer(many=True, required=False, default=list)
     stress_samples = TelemetryStressSampleSerializer(many=True, required=False, default=list)
     hrv_samples = TelemetryHRVSampleSerializer(many=True, required=False, default=list)
     emas = TelemetryEMASerializer(many=True, required=False, default=list)
-    jitai_logs = TelemetryJITAILogSerializer(many=True, required=False, default=list)
     phone_events = TelemetryPhoneEventSerializer(many=True, required=False, default=list)
     engagement_events = TelemetryEngagementEventSerializer(many=True, required=False, default=list)
 
