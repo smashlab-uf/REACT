@@ -1,14 +1,14 @@
+from collections import namedtuple
 from datetime import timedelta
 
-from dashboard.data.config import OUTCOME_WINDOW_HOURS, PARTICIPANT_TZ
+from dashboard.data.config import OUTCOME_CHECK_IN_DELAY_MINUTES, OUTCOME_WINDOW_HOURS, PARTICIPANT_TZ
 from dashboard.data.windows import participant_day_bounds
 from .distress import active_distress_flag, raise_momentary_flag, resource_card
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
 from django.db import transaction
-from django.db.models import Count, Exists, OuterRef, Q, Subquery
-from django.db.models.functions import Coalesce
+from django.db.models import Count, Exists, OuterRef, Subquery
 from .ema_catalog import (
     AFTERNOON_START_HOUR,
     EMA_RESPONSE_WINDOW_MINUTES,
@@ -225,24 +225,39 @@ def _select_scheduled_items(user, now, daily_count):
     return item_ids
 
 
-def _outcome_window_anchor(jitai_log):
-    return jitai_log.push_sent_at or jitai_log.triggered_at
+OutcomeWindow = namedtuple('OutcomeWindow', ['jitai_log', 'start', 'opens_at', 'end'])
 
 
-def _latest_active_jitai(user):
-    now = django_timezone.now()
-    window_start = now - timedelta(hours=OUTCOME_WINDOW_HOURS)
-    return (
+def _latest_outcome_window(user, now=None):
+    """The time-locked outcome window of the participant's latest available
+    decision point (protocol §9.2), whatever the randomized assignment.
+
+    Anchored on decision_made_at rather than push_sent_at, and opened for
+    both arms, so the proximal outcome is measured the same way whether or
+    not a prompt was sent. Unavailable decision points were never randomized
+    and open no window.
+    """
+    now = now or django_timezone.now()
+    jitai_log = (
         JITAILog.objects
-        .filter(user=user)
         .filter(
-            Q(send_prompt=True, push_sent_at__isnull=False)
-            | Q(randomization_draw__isnull=False)
+            user=user,
+            decision_point_id__startswith='ema_',
+            randomization_draw__isnull=False,
+            decision_made_at__gte=now - timedelta(hours=OUTCOME_WINDOW_HOURS),
+            decision_made_at__lte=now,
         )
-        .annotate(window_anchor=Coalesce('push_sent_at', 'triggered_at'))
-        .filter(window_anchor__gte=window_start, window_anchor__lte=now)
-        .order_by('-window_anchor', '-decision_made_at', '-id')
+        .order_by('-decision_made_at', '-id')
         .first()
+    )
+    if jitai_log is None:
+        return None
+    start = jitai_log.decision_made_at
+    return OutcomeWindow(
+        jitai_log=jitai_log,
+        start=start,
+        opens_at=start + timedelta(minutes=OUTCOME_CHECK_IN_DELAY_MINUTES),
+        end=start + timedelta(hours=OUTCOME_WINDOW_HOURS),
     )
 
 
@@ -687,11 +702,21 @@ class EMANextView(APIView):
                 'served_sub_item_ids': _served_sub_item_ids(feedback_items),
             })
 
-        active_jitai = _latest_active_jitai(app_user)
+        window = _latest_outcome_window(app_user, now)
 
-        if active_jitai is not None:
-            outcome_start = _outcome_window_anchor(active_jitai)
-            outcome_end = outcome_start + timedelta(hours=OUTCOME_WINDOW_HOURS)
+        if window is not None:
+            active_jitai = window.jitai_log
+            outcome_start = window.start
+            outcome_end = window.end
+            if now < window.opens_at:
+                return Response({
+                    'should_show': False,
+                    'reason': 'outcome_window_pending',
+                    'outcome_window_active': True,
+                    'outcome_window_start': outcome_start,
+                    'outcome_window_end': outcome_end,
+                    'outcome_check_in_opens_at': window.opens_at,
+                })
             has_window_response = EMA.objects.filter(
                 user=app_user,
                 source_jitai_log=active_jitai,
@@ -708,7 +733,7 @@ class EMANextView(APIView):
                 })
 
             post_prompt_count = _today_post_prompt_count(app_user, now)
-            ema_type = 'post_prompt' if post_prompt_count < POST_PROMPT_CHECK_IN_DAILY_CAP else 'extra_check_in'
+            ema_type = 'extra_check_in' if active_jitai.outcome_reminders.exists() else 'post_prompt'
             if post_prompt_count >= POST_PROMPT_CHECK_IN_DAILY_CAP:
                 return Response({
                     'should_show': False,
