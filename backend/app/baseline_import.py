@@ -50,7 +50,7 @@ def _coerce_user_id(identifier):
         return int(as_float) if as_float.is_integer() else None
 
 
-def import_baseline_flags(source, id_column='participant_id', id_field='user_id',
+def import_baseline_flags(source, id_column='pid', id_field='study_id',
                           dry_run=False, require_complete_screens=False, on_create=None):
     qualtrics, scoring, section11 = _scoring_modules()
 
@@ -96,6 +96,14 @@ def import_baseline_flags(source, id_column='participant_id', id_field='user_id'
         if id_field == 'user_id':
             lookup_value = _coerce_user_id(identifier)
             if lookup_value is None:
+                report.bad_identifier.append((identifier, codes))
+                continue
+        elif id_field == 'study_id':
+            # User.save() normalizes study_id to strip().upper(); match the
+            # same way so a stray space or lowercase code in the export still
+            # resolves, rather than silently landing in unmatched.
+            lookup_value = str(identifier).strip().upper()
+            if not lookup_value:
                 report.bad_identifier.append((identifier, codes))
                 continue
 

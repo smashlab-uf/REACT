@@ -58,6 +58,7 @@ class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
     list_display = (
         "user_id",
         "email",
+        "study_id",
         "first_name",
         "last_name",
         "gender",
@@ -65,12 +66,12 @@ class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
         "has_push_token",
     )
     list_filter = ("gender", "is_enrolled")
-    search_fields = ("email", "first_name", "last_name")
+    search_fields = ("email", "first_name", "last_name", "study_id")
     ordering = ("email",)
     readonly_fields = ("password", "enrolled_at")
     fieldsets = (
         ("Profile", {
-            "fields": ("email", "first_name", "last_name", "birthdate", "gender"),
+            "fields": ("email", "study_id", "first_name", "last_name", "birthdate", "gender"),
         }),
         ("Enrollment", {
             "fields": ("is_enrolled", "enrolled_at"),
@@ -306,9 +307,22 @@ class DistressFlagAdminForm(forms.ModelForm):
 
 MAX_BASELINE_UPLOAD_BYTES = 5 * 1024 * 1024
 
+BASELINE_ID_FIELD_CHOICES = [
+    ("study_id", "Study ID (e.g. RS01)"),
+    ("user_id", "Numeric user ID"),
+    ("email", "Email"),
+]
+
 
 class BaselineImportForm(forms.Form):
     file = forms.FileField(label="Qualtrics export (.csv)")
+    id_column = forms.CharField(
+        label="ID column", initial="pid",
+        help_text="Column in the export identifying the participant.",
+    )
+    id_field = forms.ChoiceField(
+        label="Match against", choices=BASELINE_ID_FIELD_CHOICES, initial="study_id",
+    )
     preview = forms.BooleanField(label="Preview only (write nothing)", required=False, initial=True)
 
     def clean_file(self):
@@ -364,7 +378,10 @@ class DistressFlagAdmin(ReadableAdminMixin, admin.ModelAdmin):
 
             try:
                 report = import_baseline_flags(
-                    form.cleaned_data["file"], dry_run=preview,
+                    form.cleaned_data["file"],
+                    id_column=form.cleaned_data["id_column"],
+                    id_field=form.cleaned_data["id_field"],
+                    dry_run=preview,
                     require_complete_screens=True, on_create=log_created,
                 )
             except BaselineImportError as error:

@@ -116,6 +116,36 @@ class ParticipantEnrollmentAdminTests(TestCase):
         self.assertContains(response, 'already linked to another account')
         self.assertFalse(User.objects.filter(email=self.data['email']).exists())
 
+    def test_study_id_is_optional_and_normalized_on_enrollment(self):
+        response = self.client.post(self.url, {**self.data, 'study_id': ' rs05 '}, follow=True)
+        credentials = response.context['credentials']
+        user = User.objects.get(email=credentials['email'])
+        self.assertEqual(user.study_id, 'RS05')
+
+    def test_study_id_left_blank_stays_null(self):
+        response = self.client.post(self.url, self.data, follow=True)
+        credentials = response.context['credentials']
+        user = User.objects.get(email=credentials['email'])
+        self.assertIsNone(user.study_id)
+
+    def test_duplicate_study_id_is_rejected_with_a_clean_error_not_a_500(self):
+        User.objects.create(
+            email='existing-study-id@example.com', birthdate='2000-01-01',
+            gender='other', study_id='RS06',
+        )
+        response = self.client.post(self.url, {**self.data, 'study_id': 'rs06'})
+        self.assertContains(response, 'already in use')
+        self.assertFalse(User.objects.filter(email=self.data['email']).exists())
+
+    def test_study_id_can_be_added_to_an_existing_participant(self):
+        user = self.make_participant()
+        url = reverse('admin:app_user_enroll_labfront', args=[user.pk])
+        self.client.post(url, {
+            'labfront_participant_id': 'real-labfront-id', 'study_id': 'RS07',
+        })
+        user.refresh_from_db()
+        self.assertEqual(user.study_id, 'RS07')
+
     def test_existing_real_labfront_link_is_not_overwritten(self):
         user = self.make_participant()
         WearableDevice.objects.create(user=user, labfront_participant_id='original-real-id')

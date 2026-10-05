@@ -19,8 +19,7 @@ from app.notification_service import (
     send_jitai_prompt,
 )
 from app.distress import active_distress_flag
-from app.ema_catalog import POST_PROMPT_CHECK_IN_DAILY_CAP
-from app.views import _latest_outcome_window, _today_post_prompt_count, _today_scheduled_check_in_count
+from app.views import _latest_active_jitai, _today_scheduled_check_in_count
 from dashboard.data.config import (
     CHECKIN_REMINDER_DELAY_MINUTES,
     DAILY_PROMPT_CAP,
@@ -52,6 +51,13 @@ logger = logging.getLogger(__name__)
 # calm-to-excited rating. Averaged the same way the old mood/stress/energy
 # fields were, so Tien's calibration stays comparable.
 SIGNAL_SUB_ITEMS = {'mood': 'B1_valence', 'stress': 'B2_stress', 'energy': 'B1_arousal'}
+
+# apply_decision_rules's own decision_reason values that all mean "the MSSD
+# threshold gate passed." "cooldown active" and "daily cap reached" come from
+# the engine's internal, eligibility-history-based, UTC-day simulation of
+# cap/cooldown (see its docstring) — production does not trust that verdict
+# (see _cooldown_cap_reason below) and treats all three as mere eligibility.
+MSSD_ELIGIBLE_REASONS = {'prompt sent', 'cooldown active', 'daily cap reached'}
 
 
 @shared_task
@@ -158,6 +164,56 @@ def _in_run_in(user, moment):
     return study_day is None or study_day < RUN_IN_DAYS
 
 
+def _protocol_override_reason(user, moment):
+    """Run-in + distress override only. Does NOT cover cooldown/daily-cap —
+    callers needing the full picture also call _cooldown_cap_reason below.
+    """
+    if _in_run_in(user, moment):
+        return 'run_in'
+    distress_flag = active_distress_flag(user)
+    if distress_flag is not None:
+        return f'distress_{distress_flag.source}'
+    return ''
+
+
+def _cooldown_cap_reason(user, moment):
+    """Real-send-history cooldown/daily-cap check, Eastern days, actual sends
+    only. The single implementation of "has this user already gotten enough
+    today," shared by _evaluate_user (production pipeline) and
+    _decision_point_safeguards (the manual POST /jitai/ recheck) — replacing
+    two formerly-independent implementations that both bucketed by UTC day.
+    Returns '', 'cooldown', or 'daily_cap'.
+    """
+    last_sent = (
+        JITAILog.objects.filter(user=user, send_prompt=True)
+        .order_by('-triggered_at').first()
+    )
+    if last_sent and (moment - last_sent.triggered_at).total_seconds() / 60 < JITAI_COOLDOWN_MINUTES:
+        return 'cooldown'
+
+    day_start, day_end = participant_day_bounds(moment.astimezone(PARTICIPANT_TZ).date())
+    sent_today = JITAILog.objects.filter(
+        user=user, send_prompt=True, triggered_at__gte=day_start, triggered_at__lt=day_end,
+    ).count()
+    if sent_today >= DAILY_PROMPT_CAP:
+        return 'daily_cap'
+    return ''
+
+
+def _decision_point_safeguards(user, moment):
+    """Full recheck (run-in, distress, cooldown, daily cap) for callers that
+    write a JITAILog outside of _evaluate_user, e.g. JITAILogView.post, which
+    has no MSSD decision frame to have already enforced these against.
+    """
+    reason = _protocol_override_reason(user, moment)
+    if reason:
+        return False, reason
+    reason = _cooldown_cap_reason(user, moment)
+    if reason:
+        return False, reason
+    return True, ''
+
+
 def _evaluate_user(user, p):
 
     latest_new_ema = (
@@ -181,26 +237,31 @@ def _evaluate_user(user, p):
         return
 
     row = match.iloc[0]
-    eligible = bool(row['send_prompt'])
+    decision_reason_str = str(row['decision_reason'])
+    eligible = decision_reason_str in MSSD_ELIGIBLE_REASONS
     raw_mssd = row['observed_mssd']
     observed_mssd = None if pd.isna(raw_mssd) else float(raw_mssd)
     
     raw_threshold = row['user_threshold']
     threshold_at_decision = None if pd.isna(raw_threshold) else float(raw_threshold)
-    trigger_reason = str(row['decision_reason'])
+    trigger_reason = 'prompt sent' if eligible else decision_reason_str
     trigger_signal = None
 
     suppression_reason = ''
     if eligible:
-        if _in_run_in(user, latest_new_ema.sent_at):
-            suppression_reason = 'run_in'
+        suppression_reason = _protocol_override_reason(user, latest_new_ema.sent_at)
+        if suppression_reason == 'run_in':
             trigger_reason = 'run-in period'
-        else:
-            distress_flag = active_distress_flag(user)
-            if distress_flag is not None:
-                suppression_reason = f'distress_{distress_flag.source}'
-                trigger_reason = f'distress override ({distress_flag.source})'
+        elif suppression_reason:
+            trigger_reason = f'distress override ({suppression_reason[len("distress_"):]})'
         if suppression_reason:
+            eligible = False
+
+    if eligible:
+        cap_reason = _cooldown_cap_reason(user, latest_new_ema.sent_at)
+        if cap_reason:
+            suppression_reason = cap_reason
+            trigger_reason = 'cooldown active' if cap_reason == 'cooldown' else 'daily cap reached'
             eligible = False
 
     raw_rmssd = row.get('rmssd_ms')
@@ -327,6 +388,8 @@ def _evaluate_user(user, p):
                 user.user_id,
             )
             mark_delivery_failed(jitai_log, 'missing push token')
+    elif draw is not None and user.push_token:
+        send_checkin_reminder(user)
 
 
 @shared_task
@@ -354,12 +417,10 @@ def _maybe_send_reminder(user, now):
     if not user.push_token:
         return
 
-    # While any available decision point's outcome window is open, in either
-    # arm, the only reminder is the one that inserts its outcome check-in
-    # (protocol §9.2). This also keeps "one buzz at a time" after a prompt.
-    window = _latest_outcome_window(user, now)
-    if window is not None:
-        _maybe_send_outcome_reminder(user, now, window)
+    # No reminder within 30 min of an intervention prompt ("one buzz at a
+    # time") — the 2-hour active-outcome-window check below is a superset
+    # of that 30-minute guard.
+    if _latest_active_jitai(user) is not None:
         return
 
     participant_now = now.astimezone(PARTICIPANT_TZ)
@@ -389,20 +450,3 @@ def _maybe_send_reminder(user, now):
         if send_checkin_reminder(user):
             CheckinReminder.objects.create(user=user, daily_count_at_send=slot_index)
         return  # one buzz at a time per tick
-
-
-def _maybe_send_outcome_reminder(user, now, window):
-    if now < window.opens_at:
-        return
-    if CheckinReminder.objects.filter(jitai_log=window.jitai_log).exists():
-        return
-    answered = EMA.objects.filter(
-        source_jitai_log=window.jitai_log, status='completed',
-        ema_type__in=['post_prompt', 'extra_check_in'],
-    ).exists()
-    if answered:
-        return
-    if _today_post_prompt_count(user, now) >= POST_PROMPT_CHECK_IN_DAILY_CAP:
-        return
-    if send_checkin_reminder(user):
-        CheckinReminder.objects.create(user=user, jitai_log=window.jitai_log)

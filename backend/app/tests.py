@@ -22,9 +22,9 @@ EASTERN = ZoneInfo('America/New_York')
 def eastern_today():
     return timezone.now().astimezone(EASTERN).date()
 
-from app.ema_catalog import EMA_RESPONSE_WINDOW_MINUTES, POST_PROMPT_CHECK_IN_DAILY_CAP
+from app.ema_catalog import EMA_RESPONSE_WINDOW_MINUTES
 from dashboard.data import config as study_config
-from dashboard.data.config import OUTCOME_CHECK_IN_DELAY_MINUTES, RUN_IN_DAYS
+from dashboard.data.config import RUN_IN_DAYS
 from app.models import (
     CheckinReminder, DistressFlag, EMA, EMAItemResponse, EngagementLog, EventDay, HeartRateSample, HRVSample,
     JITAILog, PhoneTelemetry, StressSample, User, WearableDevice,
@@ -140,6 +140,34 @@ class UserLegacyFieldsTest(TestCase):
                        'goal_to_lose_weight', 'goal_to_feel_better'):
             self.assertNotIn(legacy, serializer_fields,
                              msg=f"Legacy field '{legacy}' still in UserSerializer")
+
+
+class UserStudyIdTests(TestCase):
+
+    def test_study_id_defaults_to_null(self):
+        user = make_user(email='study-id-null@test.com')
+        self.assertIsNone(user.study_id)
+
+    def test_many_users_with_no_study_id_coexist(self):
+        make_user(email='sid1@test.com')
+        make_user(email='sid2@test.com')
+        self.assertEqual(User.objects.filter(study_id__isnull=True).count(), 2)
+
+    def test_study_id_is_normalized_to_stripped_uppercase_on_save(self):
+        user = make_user(email='sid-norm@test.com')
+        user.study_id = ' rs01 '
+        user.save()
+        user.refresh_from_db()
+        self.assertEqual(user.study_id, 'RS01')
+
+    def test_study_id_must_be_unique_regardless_of_case(self):
+        from django.db import IntegrityError, transaction
+        make_user(email='sid-first@test.com', study_id='RS02')
+        dupe = make_user(email='sid-second@test.com')
+        dupe.study_id = 'rs02'
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                dupe.save()
 
 
 # ---------------------------------------------------------------------------
@@ -654,6 +682,18 @@ class JITAILogModelTests(TestCase):
         user.delete()
         self.assertEqual(JITAILog.objects.count(), 0)
 
+    def test_cooldown_and_daily_cap_are_valid_suppression_reason_choices(self):
+        user = make_user()
+        for reason in ('cooldown', 'daily_cap'):
+            log = JITAILog(
+                user=user, prompt_id='TEMPLATE_001', trigger_reason='hr_elevated',
+                send_prompt=False, status='suppressed', delivery_status='suppressed',
+                suppression_reason=reason,
+            )
+            log.full_clean()
+            log.save()
+            self.assertEqual(JITAILog.objects.get(pk=log.pk).suppression_reason, reason)
+
 
 # ---------------------------------------------------------------------------
 # Serializer: WearableDevice
@@ -811,7 +851,6 @@ class TelemetryIngestViewTests(TestCase):
 
     def _payload(self):
         return {
-            'user_id': self.user.user_id,
             'wearable_device': {
                 'labfront_participant_id': 'LABFRONT-001',
                 'is_active': True,
@@ -844,16 +883,6 @@ class TelemetryIngestViewTests(TestCase):
                     'status': 'completed',
                 }
             ],
-            'jitai_logs': [
-                {
-                    'prompt_id': 'JITAI_TEMPLATE_01',
-                    'trigger_reason': 'hr_elevated+stress_high',
-                    'hr_at_trigger': 105,
-                    'stress_at_trigger': 72,
-                    'observed_mssd': 0.72,
-                    'send_prompt': True,
-                }
-            ],
             'phone_events': [
                 {
                     'session_id': 'SESSION_ABC',
@@ -880,7 +909,7 @@ class TelemetryIngestViewTests(TestCase):
         self.assertEqual(HeartRateSample.objects.count(), 1)
         self.assertEqual(StressSample.objects.count(), 1)
         self.assertEqual(EMA.objects.count(), 1)
-        self.assertEqual(JITAILog.objects.count(), 1)
+        self.assertEqual(JITAILog.objects.count(), 0)
         self.assertEqual(PhoneTelemetry.objects.count(), 1)
         self.assertEqual(EngagementLog.objects.count(), 1)
         self.assertEqual(response.data['counts']['heart_rate_samples'], 1)
@@ -891,24 +920,46 @@ class TelemetryIngestViewTests(TestCase):
         self.assertEqual(HRVSample.objects.get().beat_count, 288)
         self.assertEqual(response.data['counts']['phone_events'], 1)
         self.assertEqual(response.data['counts']['engagement_events'], 1)
-        self.assertAlmostEqual(JITAILog.objects.get().observed_mssd, 0.72)
-        self.assertTrue(JITAILog.objects.get().send_prompt)
 
-    def test_missing_user_id_returns_400(self):
+    def test_user_id_in_body_is_rejected(self):
+        other_user = make_user(email='other-telemetry@example.com')
         payload = self._payload()
-        payload.pop('user_id')
+        payload['user_id'] = other_user.user_id
 
         response = self.client.post('/telemetry/ingest/', payload, format='json')
 
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+        self.assertIn('user_id', response.data)
+        self.assertEqual(HeartRateSample.objects.count(), 0)
 
-    def test_unknown_user_returns_404(self):
+    def test_unknown_user_id_in_body_is_rejected(self):
         payload = self._payload()
         payload['user_id'] = 99999
 
         response = self.client.post('/telemetry/ingest/', payload, format='json')
 
-        self.assertEqual(response.status_code, http_status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+        self.assertIn('user_id', response.data)
+        self.assertEqual(HeartRateSample.objects.count(), 0)
+
+    def test_jitai_logs_are_not_allowed_from_telemetry_ingest(self):
+        payload = self._payload()
+        payload['jitai_logs'] = [
+            {
+                'prompt_id': 'JITAI_TEMPLATE_01',
+                'trigger_reason': 'hr_elevated+stress_high',
+                'observed_mssd': 0.72,
+                'randomization_probability': 0.5,
+                'randomization_draw': 0.25,
+                'send_prompt': True,
+            }
+        ]
+
+        response = self.client.post('/telemetry/ingest/', payload, format='json')
+
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+        self.assertIn('jitai_logs', response.data)
+        self.assertEqual(JITAILog.objects.count(), 0)
 
     def test_bpm_out_of_range_returns_400(self):
         payload = self._payload()
@@ -1262,11 +1313,20 @@ class EMAEndpointTests(TestCase):
 class JITAIEndpointTests(TestCase):
 
     def setUp(self):
-        self.user = make_user(email='jitai@ufl.edu')
+        self.user = make_user(
+            email='jitai@ufl.edu', is_enrolled=True,
+            enrolled_at=timezone.now() - timedelta(days=RUN_IN_DAYS + 1),
+        )
         self.client = authenticated_client(self.user)
+        self.staff = AuthUser.objects.create_superuser(
+            'jitai-admin', 'jitai-admin@example.com', 'adminpass123',
+        )
+        self.staff_client = APIClient()
+        refresh = RefreshToken.for_user(self.staff)
+        self.staff_client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
 
     def test_post_creates_jitai_log_and_returns_201(self):
-        response = self.client.post('/jitai/', {
+        response = self.staff_client.post('/jitai/', {
             'user': self.user.user_id,
             'prompt_id': 'TEMPLATE_HR_HIGH',
             'trigger_reason': 'hr_elevated+stress_high',
@@ -1277,6 +1337,7 @@ class JITAIEndpointTests(TestCase):
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         self.assertEqual(JITAILog.objects.count(), 1)
+        self.assertTrue(JITAILog.objects.get().send_prompt)
 
     def test_post_without_auth_returns_401(self):
         response = APIClient().post('/jitai/', {
@@ -1285,6 +1346,193 @@ class JITAIEndpointTests(TestCase):
             'trigger_reason': 'hr_elevated',
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_401_UNAUTHORIZED)
+
+    def test_post_as_non_staff_participant_returns_403(self):
+        response = self.client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_403_FORBIDDEN)
+        self.assertEqual(JITAILog.objects.count(), 0)
+
+    def test_post_during_run_in_is_forced_suppressed(self):
+        fresh_user = make_user(
+            email='jitai-runin@ufl.edu', is_enrolled=True, enrolled_at=timezone.now(),
+        )
+        response = self.staff_client.post('/jitai/', {
+            'user': fresh_user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.get(user=fresh_user)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.status, 'suppressed')
+        self.assertEqual(log.suppression_reason, 'run_in')
+
+    def test_post_with_active_distress_flag_is_forced_suppressed(self):
+        DistressFlag.objects.create(
+            user=self.user, source='momentary', signals=['b2_stress_ceiling'],
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.get(user=self.user)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'distress_momentary')
+
+    def test_post_within_cooldown_window_is_forced_suppressed(self):
+        JITAILog.objects.create(
+            user=self.user, prompt_id='T0', trigger_reason='hr_elevated',
+            send_prompt=True, status='delivered', delivery_status='delivered',
+        )
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'cooldown')
+
+    def test_post_past_daily_cap_is_forced_suppressed(self):
+        old_enough = timezone.now() - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES + 5)
+        for i in range(study_config.DAILY_PROMPT_CAP):
+            log = JITAILog.objects.create(
+                user=self.user, prompt_id=f'T{i}', trigger_reason='hr_elevated',
+                send_prompt=True, status='delivered', delivery_status='delivered',
+            )
+            JITAILog.objects.filter(pk=log.pk).update(triggered_at=old_enough)
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T_over_cap',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'daily_cap')
+
+    def test_prior_suppressed_decision_does_not_trigger_cooldown(self):
+        JITAILog.objects.create(
+            user=self.user, prompt_id='T0', trigger_reason='run-in period',
+            send_prompt=False, status='suppressed', delivery_status='suppressed',
+            suppression_reason='run_in',
+        )
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.suppression_reason, '')
+
+    def test_decision_allowed_once_cooldown_window_has_fully_elapsed(self):
+        just_past_cooldown = timezone.now() - timedelta(
+            minutes=study_config.JITAI_COOLDOWN_MINUTES, seconds=5,
+        )
+        log = JITAILog.objects.create(
+            user=self.user, prompt_id='T0', trigger_reason='hr_elevated',
+            send_prompt=True, status='delivered', delivery_status='delivered',
+        )
+        JITAILog.objects.filter(pk=log.pk).update(triggered_at=just_past_cooldown)
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.suppression_reason, '')
+
+    def test_cooldown_takes_priority_over_daily_cap_when_both_apply(self):
+        just_within_cooldown = timezone.now() - timedelta(
+            minutes=study_config.JITAI_COOLDOWN_MINUTES - 1,
+        )
+        for i in range(study_config.DAILY_PROMPT_CAP):
+            log = JITAILog.objects.create(
+                user=self.user, prompt_id=f'T{i}', trigger_reason='hr_elevated',
+                send_prompt=True, status='delivered', delivery_status='delivered',
+            )
+            JITAILog.objects.filter(pk=log.pk).update(triggered_at=just_within_cooldown)
+        response = self.staff_client.post('/jitai/', {
+            'user': self.user.user_id,
+            'prompt_id': 'T_over_cap_and_cooldown',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'cooldown')
+
+    def test_post_past_daily_cap_counts_eastern_day_across_utc_midnight(self):
+        eastern = ZoneInfo('America/New_York')
+        User.objects.filter(pk=self.user.pk).update(
+            enrolled_at=datetime(2026, 1, 15, tzinfo=eastern) - timedelta(days=RUN_IN_DAYS + 30),
+        )
+        sent_times_eastern = [
+            datetime(2026, 1, 15, 10, 0, tzinfo=eastern),
+            datetime(2026, 1, 15, 13, 0, tzinfo=eastern),
+            datetime(2026, 1, 15, 16, 0, tzinfo=eastern),
+            datetime(2026, 1, 15, 21, 0, tzinfo=eastern),   # -> 2026-01-16 02:00 UTC
+        ]
+        for i, t in enumerate(sent_times_eastern):
+            log = JITAILog.objects.create(
+                user=self.user, prompt_id=f'T{i}', trigger_reason='prompt sent',
+                send_prompt=True, status='delivered', delivery_status='delivered',
+            )
+            JITAILog.objects.filter(pk=log.pk).update(triggered_at=t)
+
+        new_decision_eastern = datetime(2026, 1, 15, 22, 30, tzinfo=eastern)  # -> 2026-01-16 03:30 UTC
+        with patch('app.views.django_timezone.now', return_value=new_decision_eastern):
+            response = self.staff_client.post('/jitai/', {
+                'user': self.user.user_id,
+                'prompt_id': 'T_over_cap_eastern',
+                'trigger_reason': 'hr_elevated+stress_high',
+                'send_prompt': True,
+            }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'daily_cap')
+
+    def test_run_in_takes_priority_over_cooldown_in_safeguards(self):
+        fresh_user = make_user(
+            email='jitai-runin-cooldown@ufl.edu', is_enrolled=True, enrolled_at=timezone.now(),
+        )
+        recent = timezone.now() - timedelta(minutes=1)
+        log = JITAILog.objects.create(
+            user=fresh_user, prompt_id='T0', trigger_reason='hr_elevated',
+            send_prompt=True, status='delivered', delivery_status='delivered',
+        )
+        JITAILog.objects.filter(pk=log.pk).update(triggered_at=recent)
+        response = self.staff_client.post('/jitai/', {
+            'user': fresh_user.user_id,
+            'prompt_id': 'T1',
+            'trigger_reason': 'hr_elevated+stress_high',
+            'send_prompt': True,
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = JITAILog.objects.filter(user=fresh_user).latest('triggered_at')
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'run_in')
 
     def test_get_returns_jitai_history(self):
         JITAILog.objects.create(
@@ -1310,7 +1558,7 @@ class JITAIEndpointTests(TestCase):
         self.assertEqual(rows['cooldown active']['suppression_reason'], '')
 
     def test_post_cannot_set_the_suppression_label(self):
-        response = self.client.post('/jitai/', {
+        response = self.staff_client.post('/jitai/', {
             'user': self.user.user_id, 'prompt_id': 'T1', 'trigger_reason': 'hr_elevated',
             'send_prompt': True, 'suppression_reason': 'run_in',
         }, format='json')
@@ -1323,7 +1571,7 @@ class JITAIEndpointTests(TestCase):
         self.assertEqual(len(response.data), 0)
 
     def test_send_prompt_false_is_stored(self):
-        self.client.post('/jitai/', {
+        self.staff_client.post('/jitai/', {
             'user': self.user.user_id,
             'prompt_id': 'TEMPLATE_001',
             'trigger_reason': 'cooldown',
@@ -1919,8 +2167,17 @@ class LegacyRouteTests(TestCase):
 # Task: evaluate_jitai_triggers
 # ---------------------------------------------------------------------------
 
+class NoRealCheckinPushMixin:
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch('app.tasks.send_checkin_reminder')
+        self.mock_checkin_push = patcher.start()
+        self.addCleanup(patcher.stop)
+
+
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class EvaluateJITAITriggersTests(TestCase):
+class EvaluateJITAITriggersTests(NoRealCheckinPushMixin, TestCase):
 
     def _make_enrolled_user(self, email='jitai_task@ufl.edu'):
         user = make_user(email=email, push_token='ExponentPushToken[test123]')
@@ -3044,94 +3301,14 @@ class SendCheckinRemindersTests(TestCase):
         now = self._at(9, 35)
         mock_now.return_value = now
         user = self._make_enrolled_user()
-        self._decision(user, now - timedelta(minutes=10), draw=0.9)
-
-        send_checkin_reminders()
-
-        MockPushClient.return_value.publish.assert_not_called()
-
-    def _decision(self, user, decided_at, draw, p=0.5, point='ema_1'):
-        return JITAILog.objects.create(
-            user=user, prompt_id='', trigger_reason='prompt sent', decision_point_id=point,
-            decision_made_at=decided_at, randomization_probability=p, randomization_draw=draw,
-            send_prompt=draw is not None and draw < p,
+        JITAILog.objects.create(
+            user=user, prompt_id='p', trigger_reason='t',
+            push_sent_at=now - timedelta(minutes=10), send_prompt=True,
         )
 
-    @patch('app.tasks.django_timezone.now')
-    @patch('app.notification_service.PushClient')
-    def test_outcome_reminder_sent_once_in_either_arm(self, MockPushClient, mock_now):
-        from app.tasks import send_checkin_reminders
-        now = self._at(10, 40)
-        mock_now.return_value = now
-        MockPushClient.return_value.publish.return_value = MagicMock()
-        for i, draw in enumerate((0.2, 0.9)):
-            user = self._make_enrolled_user(email=f'arm{i}@ufl.edu')
-            log = self._decision(user, now - timedelta(minutes=65), draw=draw, point=f'ema_{i}')
-
-            send_checkin_reminders()
-            send_checkin_reminders()
-
-            reminders = CheckinReminder.objects.filter(user=user)
-            self.assertEqual(reminders.count(), 1)
-            self.assertEqual(reminders.get().jitai_log, log)
-            self.assertIsNone(reminders.get().daily_count_at_send)
-
-    @patch('app.tasks.django_timezone.now')
-    @patch('app.notification_service.PushClient')
-    def test_outcome_reminder_waits_for_check_in_delay(self, MockPushClient, mock_now):
-        from app.tasks import send_checkin_reminders
-        now = self._at(10, 40)
-        mock_now.return_value = now
-        user = self._make_enrolled_user()
-        self._decision(user, now - timedelta(minutes=30), draw=0.9)
-
         send_checkin_reminders()
 
         MockPushClient.return_value.publish.assert_not_called()
-
-    @patch('app.tasks.django_timezone.now')
-    @patch('app.notification_service.PushClient')
-    def test_outcome_reminder_skipped_once_outcome_answered(self, MockPushClient, mock_now):
-        from app.tasks import send_checkin_reminders
-        now = self._at(10, 40)
-        mock_now.return_value = now
-        user = self._make_enrolled_user()
-        log = self._decision(user, now - timedelta(minutes=65), draw=0.9)
-        EMA.objects.create(user=user, prompt_id='o', status='completed', ema_type='post_prompt', source_jitai_log=log)
-
-        send_checkin_reminders()
-
-        MockPushClient.return_value.publish.assert_not_called()
-
-    @patch('app.tasks.django_timezone.now')
-    @patch('app.notification_service.PushClient')
-    def test_outcome_reminder_respects_daily_outcome_cap(self, MockPushClient, mock_now):
-        from app.tasks import send_checkin_reminders
-        now = self._at(10, 40)
-        mock_now.return_value = now
-        user = self._make_enrolled_user()
-        self._decision(user, now - timedelta(minutes=65), draw=0.9)
-        for i in range(POST_PROMPT_CHECK_IN_DAILY_CAP):
-            ema = EMA.objects.create(user=user, prompt_id=f'cap{i}', status='completed', ema_type='post_prompt')
-            EMA.objects.filter(pk=ema.pk).update(sent_at=self._at(9, i))
-
-        send_checkin_reminders()
-
-        MockPushClient.return_value.publish.assert_not_called()
-
-    @patch('app.tasks.django_timezone.now')
-    @patch('app.notification_service.PushClient')
-    def test_unavailable_decision_does_not_suppress_slot_reminder(self, MockPushClient, mock_now):
-        from app.tasks import send_checkin_reminders
-        now = self._at(9, 35)
-        mock_now.return_value = now
-        MockPushClient.return_value.publish.return_value = MagicMock()
-        user = self._make_enrolled_user()
-        self._decision(user, now - timedelta(minutes=10), draw=None)
-
-        send_checkin_reminders()
-
-        self.assertEqual(CheckinReminder.objects.get(user=user).daily_count_at_send, 0)
 
     @patch('app.tasks.django_timezone.now')
     @patch('app.notification_service.PushClient')
@@ -3216,9 +3393,10 @@ class JITAILogMRTSchemaTests(TestCase):
 
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
-class EvaluateUserMRTTests(TestCase):
+class EvaluateUserMRTTests(NoRealCheckinPushMixin, TestCase):
 
     def setUp(self):
+        super().setUp()
         self.user = make_user(
             email='mrteval@test.com',
             is_enrolled=True,
@@ -3292,6 +3470,66 @@ class EvaluateUserMRTTests(TestCase):
         self.assertEqual(log.randomization_probability, 0.5)
         self.assertIsNotNone(log.decision_point_id)
         mock_send.assert_called_once()
+
+    @patch('app.tasks.send_checkin_reminder')
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.8)
+    def test_randomized_out_decision_sends_checkin_notification(
+        self, mock_rand, mock_mssd, mock_rules, mock_send, mock_reminder
+    ):
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        mock_send.assert_not_called()
+        mock_reminder.assert_called_once_with(self.user)
+        log = JITAILog.objects.get(user=self.user)
+        self.assertEqual(log.status, 'not_sent')
+        self.assertIsNone(log.push_sent_at)
+
+    @patch('app.tasks.send_checkin_reminder')
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    def test_sent_decision_does_not_also_send_checkin_notification(
+        self, mock_rand, mock_mssd, mock_rules, mock_send, mock_reminder
+    ):
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        mock_send.assert_called_once()
+        mock_reminder.assert_not_called()
+
+    @patch('app.tasks.send_checkin_reminder')
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.8)
+    def test_suppressed_decision_sends_no_checkin_notification(
+        self, mock_rand, mock_mssd, mock_rules, mock_send, mock_reminder
+    ):
+        self.user.enrolled_at = timezone.now() - timedelta(days=1)
+        self.user.save()
+        ema = self._latest_ema()
+        mock_mssd.return_value = self._eligible_df(ema)
+        mock_rules.return_value = self._eligible_df(ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        mock_send.assert_not_called()
+        mock_reminder.assert_not_called()
+        self.assertEqual(JITAILog.objects.get(user=self.user).suppression_reason, 'run_in')
 
     @patch('app.tasks.send_jitai_prompt')
     @patch('app.tasks.apply_decision_rules')
@@ -3489,6 +3727,200 @@ class EvaluateUserMRTTests(TestCase):
         self.assertIsNone(log.arm_randomization_probability)
 
 
+class EvaluateUserCooldownCapTests(NoRealCheckinPushMixin, TestCase):
+    """Regression coverage for the real-send-history cooldown/daily-cap check
+    added to _evaluate_user (previously it trusted apply_decision_rules's own
+    internal, eligibility-based, UTC-day simulation instead of real JITAILog
+    history)."""
+
+    def setUp(self):
+        super().setUp()
+        self.user = make_user(
+            email='cooldowncap@test.com',
+            is_enrolled=True,
+            enrolled_at=timezone.now() - timedelta(days=RUN_IN_DAYS + 30),
+            push_token='ExponentPushToken[abc123]',
+        )
+        WearableDevice.objects.create(
+            user=self.user,
+            labfront_participant_id='labfront-cdcap-001',
+            is_active=True,
+        )
+
+    def _make_new_ema(self, sent_at):
+        ema_obj = EMA.objects.create(
+            user=self.user, prompt_id='default', status='completed',
+            responded_at=timezone.now(), mood=4, stress=4, energy=4,
+        )
+        EMA.objects.filter(pk=ema_obj.pk).update(sent_at=sent_at)
+        ema_obj.refresh_from_db()
+        EMAItemResponse.objects.create(ema=ema_obj, item_id='B1', sub_item_id='B1_valence', response_type='likert', value_numeric=4)
+        EMAItemResponse.objects.create(ema=ema_obj, item_id='B1', sub_item_id='B1_arousal', response_type='likert', value_numeric=4)
+        EMAItemResponse.objects.create(ema=ema_obj, item_id='B2', sub_item_id='B2_stress', response_type='likert', value_numeric=4)
+        return ema_obj
+
+    def _make_prior_send(self, triggered_at):
+        log = JITAILog.objects.create(
+            user=self.user, prompt_id='T0', trigger_reason='prompt sent',
+            send_prompt=True, status='delivered', delivery_status='delivered',
+        )
+        JITAILog.objects.filter(pk=log.pk).update(triggered_at=triggered_at)
+        return log
+
+    def _eligible_df(self, ema):
+        import pandas as pd
+        return pd.DataFrame([{
+            'user_id': self.user.user_id,
+            'timestamp': pd.Timestamp(ema.sent_at),
+            'ema': 4.0,
+            'observed_mssd': 2.5,
+            'send_prompt': True,
+            'decision_reason': 'prompt sent',
+            'user_threshold': 1.0,
+        }])
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_real_sent_history_within_cooldown_suppresses_new_decision(self, mock_mssd, mock_rules, mock_send):
+        new_ema = self._make_new_ema(timezone.now())
+        self._make_prior_send(new_ema.sent_at - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES - 1))
+        mock_mssd.return_value = self._eligible_df(new_ema)
+        mock_rules.return_value = self._eligible_df(new_ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.status, 'suppressed')
+        self.assertEqual(log.suppression_reason, 'cooldown')
+        self.assertEqual(log.trigger_reason, 'cooldown active')
+        self.assertIsNone(log.randomization_draw)
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.3)
+    def test_randomized_out_prior_decision_does_not_trigger_cooldown(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        # Finding-A regression: an eligible-but-never-sent prior decision must
+        # not consume a real cooldown slot, since no prompt actually went out.
+        new_ema = self._make_new_ema(timezone.now())
+        prior = JITAILog.objects.create(
+            user=self.user, prompt_id='', trigger_reason='prompt sent',
+            send_prompt=False, status='not_sent', delivery_status='not_sent',
+        )
+        JITAILog.objects.filter(pk=prior.pk).update(
+            triggered_at=new_ema.sent_at - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES - 1),
+        )
+        mock_mssd.return_value = self._eligible_df(new_ema)
+        mock_rules.return_value = self._eligible_df(new_ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.suppression_reason, '')
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_four_real_sends_on_eastern_day_block_a_fifth_even_when_last_send_crosses_utc_midnight(self, mock_mssd, mock_rules, mock_send):
+        eastern = ZoneInfo('America/New_York')
+        User.objects.filter(pk=self.user.pk).update(
+            enrolled_at=datetime(2026, 1, 15, tzinfo=eastern) - timedelta(days=RUN_IN_DAYS + 30),
+        )
+        self.user.refresh_from_db()
+        sent_times_eastern = [
+            datetime(2026, 1, 15, 10, 0, tzinfo=eastern),
+            datetime(2026, 1, 15, 13, 0, tzinfo=eastern),
+            datetime(2026, 1, 15, 16, 0, tzinfo=eastern),
+            datetime(2026, 1, 15, 21, 0, tzinfo=eastern),   # -> 2026-01-16 02:00 UTC
+        ]
+        for t in sent_times_eastern:
+            self._make_prior_send(t)
+
+        new_decision_eastern = datetime(2026, 1, 15, 22, 30, tzinfo=eastern)  # -> 2026-01-16 03:30 UTC
+        new_ema = self._make_new_ema(new_decision_eastern)
+        mock_mssd.return_value = self._eligible_df(new_ema)
+        mock_rules.return_value = self._eligible_df(new_ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.status, 'suppressed')
+        self.assertEqual(log.suppression_reason, 'daily_cap')
+        self.assertEqual(log.trigger_reason, 'daily cap reached')
+        mock_send.assert_not_called()
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_cooldown_takes_priority_over_daily_cap_in_evaluate_user(self, mock_mssd, mock_rules, mock_send):
+        new_ema = self._make_new_ema(timezone.now())
+        just_within_cooldown = new_ema.sent_at - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES - 1)
+        for _ in range(study_config.DAILY_PROMPT_CAP):
+            self._make_prior_send(just_within_cooldown)
+        mock_mssd.return_value = self._eligible_df(new_ema)
+        mock_rules.return_value = self._eligible_df(new_ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'cooldown')
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    def test_run_in_still_takes_priority_over_new_cooldown_check(self, mock_mssd, mock_rules, mock_send):
+        fresh_user = make_user(
+            email='cooldowncap-runin@test.com', is_enrolled=True, enrolled_at=timezone.now(),
+            push_token='ExponentPushToken[abc123]',
+        )
+        WearableDevice.objects.create(
+            user=fresh_user, labfront_participant_id='labfront-cdcap-002', is_active=True,
+        )
+        new_ema = EMA.objects.create(
+            user=fresh_user, prompt_id='default', status='completed',
+            responded_at=timezone.now(), mood=4, stress=4, energy=4,
+        )
+        EMAItemResponse.objects.create(ema=new_ema, item_id='B1', sub_item_id='B1_valence', response_type='likert', value_numeric=4)
+        EMAItemResponse.objects.create(ema=new_ema, item_id='B1', sub_item_id='B1_arousal', response_type='likert', value_numeric=4)
+        EMAItemResponse.objects.create(ema=new_ema, item_id='B2', sub_item_id='B2_stress', response_type='likert', value_numeric=4)
+
+        recent_log = JITAILog.objects.create(
+            user=fresh_user, prompt_id='T0', trigger_reason='prompt sent',
+            send_prompt=True, status='delivered', delivery_status='delivered',
+        )
+        JITAILog.objects.filter(pk=recent_log.pk).update(triggered_at=new_ema.sent_at - timedelta(minutes=1))
+
+        import pandas as pd
+        eligible_df = pd.DataFrame([{
+            'user_id': fresh_user.user_id,
+            'timestamp': pd.Timestamp(new_ema.sent_at),
+            'ema': 4.0,
+            'observed_mssd': 2.5,
+            'send_prompt': True,
+            'decision_reason': 'prompt sent',
+            'user_threshold': 1.0,
+        }])
+        mock_mssd.return_value = eligible_df
+        mock_rules.return_value = eligible_df
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(fresh_user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertFalse(log.send_prompt)
+        self.assertEqual(log.suppression_reason, 'run_in')
+
+
 class DecisionEngineEligibilityTests(TestCase):
 
     def _make_df(self):
@@ -3589,44 +4021,6 @@ class JITAILogSerializerMRTFieldsTests(TestCase):
             self.assertIn(field, data)
         self.assertEqual(data['delivery_status'], 'accepted_by_expo')
 
-    def test_telemetry_jitai_serializer_accepts_new_fields(self):
-        from app.serializers import TelemetryJITAILogSerializer
-        data = {
-            'prompt_id': 'default',
-            'trigger_reason': 'test',
-            'decision_point_id': 'ema_42',
-            'randomization_probability': 0.5,
-            'randomization_draw': 0.2,
-            'delivery_status': 'accepted_by_expo',
-            'delivery_error': '',
-            'receipt_platform': 'ios',
-            'receipt_app_state': 'foreground',
-        }
-        ser = TelemetryJITAILogSerializer(data=data)
-        self.assertTrue(ser.is_valid(), ser.errors)
-
-    def test_telemetry_jitai_serializer_new_fields_are_optional(self):
-        from app.serializers import TelemetryJITAILogSerializer
-        data = {
-            'prompt_id': 'default',
-            'trigger_reason': 'test',
-        }
-        ser = TelemetryJITAILogSerializer(data=data)
-        self.assertTrue(ser.is_valid(), ser.errors)
-
-    def test_telemetry_jitai_serializer_probability_range_validation(self):
-        from app.serializers import TelemetryJITAILogSerializer
-        data = {
-            'prompt_id': 'default',
-            'trigger_reason': 'test',
-            'randomization_probability': 1.5,
-        }
-        ser = TelemetryJITAILogSerializer(data=data)
-        self.assertFalse(ser.is_valid())
-        self.assertIn('randomization_probability', ser.errors)
-
-
-
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS, DASHBOARD_API_KEY='dashboard-test-key')
 class DashboardAPIKeyAccessTests(TestCase):
 
@@ -3713,18 +4107,14 @@ class EMARotationEndpointTests(TestCase):
         self.assertEqual(data['jitai_log_id'], jitai_log.id)
         self.assertEqual([item['item_id'] for item in data['items']], ['C0'])
 
-    def _decision(self, minutes_ago, draw, p=0.5, point='ema_1', user=None):
-        decided_at = timezone.now() - timedelta(minutes=minutes_ago)
-        sent = draw is not None and draw < p
-        return JITAILog.objects.create(
-            user=user or self.user, prompt_id='JITAI-EMA-1' if sent else '', trigger_reason='prompt sent',
-            decision_point_id=point, decision_made_at=decided_at, randomization_probability=p,
-            randomization_draw=draw, send_prompt=sent,
-            push_sent_at=decided_at + timedelta(seconds=5) if sent else None,
-        )
-
     def test_next_returns_post_prompt_items_during_outcome_window(self):
-        jitai_log = self._decision(minutes_ago=65, draw=0.2)
+        jitai_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='JITAI-EMA-1',
+            trigger_reason='test',
+            push_sent_at=timezone.now() - timedelta(minutes=10),
+            send_prompt=True,
+        )
         EMA.objects.create(
             user=self.user, prompt_id='EMA-C0-1', status='completed',
             ema_type='prompt_feedback', source_jitai_log=jitai_log,
@@ -3739,6 +4129,81 @@ class EMARotationEndpointTests(TestCase):
         self.assertEqual(data['jitai_log_id'], jitai_log.id)
         self.assertEqual([item['item_id'] for item in data['items']], ['B1', 'B2', 'B4', 'B5', 'B6', 'B7'])
 
+    def _randomized_log(self, send_prompt, message_arm=None, draw=0.9, minutes_ago=10):
+        jitai_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='JITAI-EMA-1',
+            trigger_reason='test',
+            send_prompt=send_prompt,
+            randomization_draw=draw,
+            message_arm=message_arm,
+        )
+        JITAILog.objects.filter(pk=jitai_log.pk).update(
+            triggered_at=timezone.now() - timedelta(minutes=minutes_ago)
+        )
+        jitai_log.refresh_from_db()
+        return jitai_log
+
+    def test_outcome_window_opens_for_randomized_out_decision(self):
+        jitai_log = self._randomized_log(send_prompt=False)
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertTrue(data['should_show'])
+        self.assertTrue(data['outcome_window_active'])
+        self.assertEqual(data['ema_type'], 'post_prompt')
+        self.assertEqual(data['jitai_log_id'], jitai_log.id)
+        self.assertEqual(parse_datetime(data['outcome_window_start']), jitai_log.triggered_at)
+        self.assertEqual(
+            parse_datetime(data['outcome_window_end']),
+            jitai_log.triggered_at + timedelta(hours=study_config.OUTCOME_WINDOW_HOURS),
+        )
+
+    def test_outcome_window_skips_prompt_feedback_for_unsent_decision(self):
+        self._randomized_log(send_prompt=False)
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertNotEqual(data['ema_type'], 'prompt_feedback')
+
+    def test_outcome_window_opens_for_unsent_decision_of_either_arm_label(self):
+        for arm in ('coping', 'control'):
+            JITAILog.objects.all().delete()
+            jitai_log = self._randomized_log(send_prompt=False, message_arm=arm)
+
+            data = self.client.get('/ema/next/').json()
+
+            self.assertTrue(data['outcome_window_active'], arm)
+            self.assertEqual(data['jitai_log_id'], jitai_log.id, arm)
+
+    def test_outcome_window_does_not_open_for_suppressed_decision(self):
+        jitai_log = self._randomized_log(send_prompt=False, draw=None)
+        JITAILog.objects.filter(pk=jitai_log.pk).update(suppression_reason='run_in')
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertFalse(data['outcome_window_active'])
+        self.assertEqual(data['ema_type'], 'scheduled_check_in')
+
+    def test_outcome_window_closes_after_window_hours(self):
+        self._randomized_log(send_prompt=False, minutes_ago=study_config.OUTCOME_WINDOW_HOURS * 60 + 5)
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertFalse(data['outcome_window_active'])
+
+    def test_outcome_window_one_response_per_unsent_window(self):
+        jitai_log = self._randomized_log(send_prompt=False)
+        EMA.objects.create(
+            user=self.user, prompt_id=f'EMA-JITAI-{jitai_log.id}', status='completed',
+            ema_type='post_prompt', source_jitai_log=jitai_log,
+        )
+
+        data = self.client.get('/ema/next/').json()
+
+        self.assertFalse(data['should_show'])
+        self.assertEqual(data['reason'], 'outcome_window_already_completed')
+
     def test_scheduled_check_in_advertises_response_window(self):
         before = timezone.now()
         data = self.client.get('/ema/next/').json()
@@ -3749,7 +4214,14 @@ class EMARotationEndpointTests(TestCase):
         self.assertLessEqual(expires, after + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
 
     def test_post_prompt_response_window_is_independent_of_outcome_window(self):
-        jitai_log = self._decision(minutes_ago=65, draw=0.2)
+        push_sent_at = timezone.now() - timedelta(minutes=10)
+        jitai_log = JITAILog.objects.create(
+            user=self.user,
+            prompt_id='JITAI-EMA-WINDOW',
+            trigger_reason='test',
+            push_sent_at=push_sent_at,
+            send_prompt=True,
+        )
         EMA.objects.create(
             user=self.user, prompt_id='EMA-C0-WINDOW', status='completed',
             ema_type='prompt_feedback', source_jitai_log=jitai_log,
@@ -3760,78 +4232,14 @@ class EMARotationEndpointTests(TestCase):
         after = timezone.now()
 
         # The response window is 30 minutes from now; the outcome window stays
-        # 2 hours from the decision. Aliasing the two is the bug this guards.
+        # 2 hours from the push. Aliasing the two is the bug this guards.
         expires = parse_datetime(data['expires_at'])
         self.assertGreaterEqual(expires, before + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
         self.assertLessEqual(expires, after + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
 
         outcome_end = parse_datetime(data['outcome_window_end'])
-        self.assertEqual(outcome_end, jitai_log.decision_made_at + timedelta(hours=2))
+        self.assertEqual(outcome_end, push_sent_at + timedelta(hours=2))
         self.assertLess(expires, outcome_end)
-
-    def test_control_arm_decision_gets_outcome_check_in_after_delay(self):
-        jitai_log = self._decision(minutes_ago=65, draw=0.9)
-
-        data = self.client.get('/ema/next/').json()
-
-        self.assertTrue(data['should_show'])
-        self.assertEqual(data['ema_type'], 'post_prompt')
-        self.assertEqual(data['jitai_log_id'], jitai_log.id)
-        self.assertEqual(parse_datetime(data['outcome_window_start']), jitai_log.decision_made_at)
-        self.assertEqual([item['item_id'] for item in data['items']], ['B1', 'B2', 'B4', 'B5', 'B6', 'B7'])
-
-    def test_outcome_check_in_pending_before_delay_in_both_arms(self):
-        for i, draw in enumerate((0.2, 0.9)):
-            user = make_user(email=f'pending{i}@test.com')
-            jitai_log = self._decision(minutes_ago=20, draw=draw, point=f'ema_p{i}', user=user)
-            if jitai_log.send_prompt:
-                EMA.objects.create(user=user, prompt_id=f'C0-{i}', status='completed',
-                                   ema_type='prompt_feedback', source_jitai_log=jitai_log)
-
-            data = authenticated_client(user).get('/ema/next/').json()
-
-            self.assertFalse(data['should_show'])
-            self.assertEqual(data['reason'], 'outcome_window_pending')
-            self.assertEqual(
-                parse_datetime(data['outcome_check_in_opens_at']),
-                jitai_log.decision_made_at + timedelta(minutes=OUTCOME_CHECK_IN_DELAY_MINUTES),
-            )
-
-    def test_unavailable_decision_opens_no_outcome_window(self):
-        self._decision(minutes_ago=65, draw=None)
-
-        data = self.client.get('/ema/next/').json()
-
-        self.assertEqual(data['ema_type'], 'scheduled_check_in')
-        self.assertFalse(data['outcome_window_active'])
-
-    def test_distress_suppressed_decision_opens_no_outcome_window(self):
-        jitai_log = self._decision(minutes_ago=65, draw=None)
-        JITAILog.objects.filter(pk=jitai_log.pk).update(
-            suppression_reason='distress_momentary', status='suppressed', randomization_probability=None,
-        )
-
-        data = self.client.get('/ema/next/').json()
-
-        self.assertEqual(data['ema_type'], 'scheduled_check_in')
-        self.assertFalse(data['outcome_window_active'])
-
-    def test_outcome_window_closes_two_hours_after_decision(self):
-        self._decision(minutes_ago=125, draw=0.9)
-
-        data = self.client.get('/ema/next/').json()
-
-        self.assertEqual(data['ema_type'], 'scheduled_check_in')
-
-    def test_extra_check_in_served_after_outcome_reminder(self):
-        jitai_log = self._decision(minutes_ago=65, draw=0.9)
-        CheckinReminder.objects.create(user=self.user, jitai_log=jitai_log)
-
-        data = self.client.get('/ema/next/').json()
-
-        self.assertTrue(data['should_show'])
-        self.assertEqual(data['ema_type'], 'extra_check_in')
-        self.assertEqual(data['jitai_log_id'], jitai_log.id)
 
     def test_submitted_ema_persists_response_window(self):
         response = self.client.post('/ema/responses/', {
@@ -4130,6 +4538,34 @@ class EnrollForNotificationsTests(TestCase):
         self.assertEqual(device.pk, existing.pk)
         self.assertTrue(existing.is_active)
         self.assertEqual(existing.labfront_participant_id, 'LABFRONT-REAL')
+
+
+class UserAdminStudyIdTests(TestCase):
+    def setUp(self):
+        from django.urls import reverse
+        self.staff = AuthUser.objects.create_superuser('sid-admin', 'sid-admin@example.com', 'adminpass123')
+        self.client.force_login(self.staff)
+        self.user = make_user(email='admin-study-id@example.com', study_id='RS08')
+        self.changelist = reverse('admin:app_user_changelist')
+        self.change_url = reverse('admin:app_user_change', args=[self.user.user_id])
+
+    def test_study_id_is_shown_on_the_changelist(self):
+        response = self.client.get(self.changelist)
+        self.assertContains(response, 'RS08')
+
+    def test_study_id_is_searchable(self):
+        response = self.client.get(self.changelist, {'q': 'RS08'})
+        self.assertContains(response, self.user.email)
+
+    def test_study_id_is_editable_on_the_change_form(self):
+        response = self.client.post(self.change_url, {
+            'email': self.user.email, 'first_name': 'Alex', 'last_name': 'Participant',
+            'birthdate': '2000-01-01', 'gender': 'other', 'study_id': 'rs09',
+            'is_enrolled': '', 'push_token': '',
+        }, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.study_id, 'RS09')
 
 
 class UserAdminEnrollActionTests(TestCase):
@@ -4547,6 +4983,17 @@ class ImportBaselineDistressFlagsCommandTests(TestCase):
 
         self.assertTrue(DistressFlag.objects.filter(user=self.flagged).exists())
 
+    def test_id_field_study_id_matches_case_and_whitespace_insensitively(self):
+        self.flagged.study_id = 'RS31'
+        self.flagged.save()
+        row = {f'phq9_{i}': 0 for i in range(1, 10)}
+        row['phq9_9'] = 1
+        row['pid'] = ' rs31 '
+        path = self._write_csv([row])
+        self._run(path, id_column='pid', id_field='study_id')
+
+        self.assertTrue(DistressFlag.objects.filter(user=self.flagged).exists())
+
     def test_non_numeric_identifier_under_user_id_is_reported(self):
         path = self._write_csv([self._phq9_self_harm_row('not-a-number')])
         output = self._run(path, id_field='user_id')
@@ -4595,8 +5042,13 @@ class ImportBaselineDistressFlagsCommandTests(TestCase):
 
         self.assertFalse(DistressFlag.objects.exists())
 
-    def test_defaults_match_users_by_user_id_with_no_flags_passed(self):
-        path = self._write_csv([self._phq9_self_harm_row(str(self.flagged.user_id))])
+    def test_defaults_match_users_by_study_id_with_no_flags_passed(self):
+        self.flagged.study_id = 'RS30'
+        self.flagged.save()
+        row = {f'phq9_{i}': 0 for i in range(1, 10)}
+        row['phq9_9'] = 1
+        row['pid'] = self.flagged.study_id
+        path = self._write_csv([row])
         self._run(path, id_column=None, id_field=None)
 
         self.assertTrue(DistressFlag.objects.filter(user=self.flagged).exists())
@@ -4862,7 +5314,7 @@ class DistressFlagWindowTests(TestCase):
         self.assertNotEqual(older, newer)
 
 
-def _full_screen_row(participant_id, **overrides):
+def _full_screen_row(identifier, **overrides):
     import sys
     from django.conf import settings
     path = str(settings.REPO_ROOT / 'analytics' / 'baseline_survey_scoring')
@@ -4870,7 +5322,7 @@ def _full_screen_row(participant_id, **overrides):
         sys.path.insert(0, path)
     from section11 import REQUIRED_SCREEN_COLUMNS
     row = {column: 0 for column in REQUIRED_SCREEN_COLUMNS}
-    row['participant_id'] = participant_id
+    row['pid'] = identifier
     row.update(overrides)
     return row
 
@@ -4893,7 +5345,8 @@ class BaselineImportFunctionTests(TestCase):
         return import_baseline_flags(_csv_bytes(rows), **kwargs)
 
     def test_a_dry_run_reports_the_plan_and_writes_nothing(self):
-        report = self._run([_full_screen_row(self.user.user_id, phq9_9=1)], dry_run=True)
+        report = self._run([_full_screen_row(self.user.user_id, phq9_9=1)],
+                           dry_run=True, id_field='user_id')
         self.assertEqual(report.planned, [{'user_id': self.user.user_id, 'email': self.user.email,
                                            'signals': ['phq9_self_harm']}])
         self.assertEqual(report.created, [])
@@ -4902,14 +5355,14 @@ class BaselineImportFunctionTests(TestCase):
     def test_a_real_run_writes_the_flag_and_calls_the_hook_once_per_flag(self):
         seen = []
         report = self._run([_full_screen_row(self.user.user_id, phq9_9=1)],
-                           dry_run=False, on_create=seen.append)
+                           dry_run=False, on_create=seen.append, id_field='user_id')
         self.assertEqual(len(report.created), 1)
         self.assertEqual([flag.user_id for flag in seen], [self.user.user_id])
         self.assertEqual(DistressFlag.objects.get().signals, ['phq9_self_harm'])
 
     def test_columns_missing_from_the_export_are_reported(self):
         import pandas as pd
-        rows = [{'participant_id': self.user.user_id, 'phq9_1': 0}]
+        rows = [{'pid': self.user.user_id, 'phq9_1': 0}]
         report = self._run(rows, dry_run=True)
         self.assertIn('scoff_1', report.missing_screen_columns)
         self.assertNotIn('phq9_1', report.missing_screen_columns)
@@ -4925,14 +5378,14 @@ class BaselineImportFunctionTests(TestCase):
         self.assertEqual(report.incomplete, [str(self.user.user_id)])
 
     def test_commit_is_refused_when_a_screen_is_missing_and_completeness_is_required(self):
-        rows = [{'participant_id': self.user.user_id, **{f'phq9_{i}': (1 if i == 9 else 0) for i in range(1, 10)}}]
+        rows = [{'pid': self.user.user_id, **{f'phq9_{i}': (1 if i == 9 else 0) for i in range(1, 10)}}]
         report = self._run(rows, dry_run=False, require_complete_screens=True)
         self.assertTrue(report.refused)
         self.assertEqual(report.created, [])
         self.assertFalse(DistressFlag.objects.exists())
 
     def test_a_dry_run_is_never_refused_only_warned(self):
-        rows = [{'participant_id': self.user.user_id, 'phq9_9': 1}]
+        rows = [{'pid': self.user.user_id, 'phq9_9': 1}]
         report = self._run(rows, dry_run=True, require_complete_screens=True)
         self.assertFalse(report.refused)
         self.assertTrue(report.missing_screen_columns)
@@ -4957,8 +5410,35 @@ class BaselineImportFunctionTests(TestCase):
             if calls['n'] == 2:
                 raise RuntimeError('simulated')
         with self.assertRaises(RuntimeError):
-            self._run(rows, dry_run=False, on_create=boom)
+            self._run(rows, dry_run=False, on_create=boom, id_field='user_id')
         self.assertFalse(DistressFlag.objects.exists())
+
+    def test_study_id_is_the_default_match_field(self):
+        self.user.study_id = 'RS10'
+        self.user.save()
+        rows = [_full_screen_row('rs10', phq9_9=1)]
+        report = self._run(rows, dry_run=True)
+        self.assertEqual(report.planned, [{'user_id': self.user.user_id, 'email': self.user.email,
+                                           'signals': ['phq9_self_harm']}])
+
+    def test_study_id_matching_is_case_and_whitespace_insensitive(self):
+        self.user.study_id = 'RS11'
+        self.user.save()
+        rows = [_full_screen_row(' rs11 ', phq9_9=1)]
+        report = self._run(rows, dry_run=True)
+        self.assertEqual(len(report.planned), 1)
+
+    def test_blank_study_id_is_reported_not_matched(self):
+        rows = [_full_screen_row('', phq9_9=1)]
+        report = self._run(rows, dry_run=True)
+        self.assertEqual(report.planned, [])
+        self.assertEqual(len(report.bad_identifier), 1)
+
+    def test_a_study_id_with_no_matching_user_is_reported_as_unmatched(self):
+        rows = [_full_screen_row('RS99', phq9_9=1)]
+        report = self._run(rows, dry_run=True)
+        self.assertEqual(report.planned, [])
+        self.assertEqual(len(report.unmatched), 1)
 
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
@@ -4966,20 +5446,22 @@ class BaselineImportAdminTests(TestCase):
     URL = '/admin/app/distressflag/import-baseline/'
 
     def setUp(self):
-        self.participant = make_user(email='admin-import@ufl.edu')
+        self.participant = make_user(email='admin-import@ufl.edu', study_id='RS20')
         self.staff = AuthUser.objects.create_superuser('importer', 'importer@test.com', 'pw')
         self.client.force_login(self.staff)
 
-    def _upload(self, rows, name='export.csv', preview=True, raw=None):
+    def _upload(self, rows, name='export.csv', preview=True, raw=None,
+                id_column='pid', id_field='study_id'):
         from django.core.files.uploadedfile import SimpleUploadedFile
         content = raw if raw is not None else _csv_bytes(rows).getvalue()
-        data = {'file': SimpleUploadedFile(name, content, content_type='text/csv')}
+        data = {'file': SimpleUploadedFile(name, content, content_type='text/csv'),
+                'id_column': id_column, 'id_field': id_field}
         if preview:
             data['preview'] = 'on'
         return self.client.post(self.URL, data)
 
     def _flagged_rows(self):
-        return [_full_screen_row(self.participant.user_id, phq9_9=1)]
+        return [_full_screen_row(self.participant.study_id, phq9_9=1)]
 
     def test_the_changelist_offers_the_import_button(self):
         response = self.client.get('/admin/app/distressflag/')
@@ -4991,6 +5473,27 @@ class BaselineImportAdminTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'type="file"')
         self.assertRegex(response.content.decode(), r'name="preview"[^>]*checked')
+
+    def test_the_form_defaults_to_pid_and_study_id(self):
+        response = self.client.get(self.URL)
+        self.assertRegex(response.content.decode(), r'name="id_column"[^>]*value="pid"')
+        self.assertRegex(
+            response.content.decode(),
+            r'<option value="study_id" selected>[^<]*</option>',
+        )
+
+    def test_the_import_can_be_run_with_user_id_explicitly(self):
+        rows = [_full_screen_row(self.participant.user_id, phq9_9=1)]
+        response = self._upload(rows, preview=False, id_column='pid', id_field='user_id')
+        self.assertContains(response, 'Created 1')
+        flag = DistressFlag.objects.get()
+        self.assertEqual(flag.user_id, self.participant.user_id)
+
+    def test_an_unsupported_id_field_choice_is_rejected(self):
+        response = self._upload(self._flagged_rows(), preview=False, id_field='bogus')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'valid choice')
+        self.assertFalse(DistressFlag.objects.exists())
 
     def test_a_preview_shows_the_plan_and_writes_nothing(self):
         response = self._upload(self._flagged_rows())
@@ -5056,21 +5559,21 @@ class BaselineImportAdminTests(TestCase):
         self.assertContains(response, 'empty')
         self.assertFalse(DistressFlag.objects.exists())
 
-    def test_a_missing_participant_id_column_is_reported(self):
-        rows = [{k: v for k, v in _full_screen_row(1).items() if k != 'participant_id'}]
+    def test_a_missing_pid_column_is_reported(self):
+        rows = [{k: v for k, v in _full_screen_row(1).items() if k != 'pid'}]
         response = self._upload(rows, preview=False)
         self.assertContains(response, "not found in the export")
         self.assertFalse(DistressFlag.objects.exists())
 
     def test_a_real_import_is_refused_when_a_screen_is_missing_from_the_export(self):
-        rows = [{'participant_id': self.participant.user_id, **{f'phq9_{i}': (1 if i == 9 else 0) for i in range(1, 10)}}]
+        rows = [{'pid': self.participant.study_id, **{f'phq9_{i}': (1 if i == 9 else 0) for i in range(1, 10)}}]
         response = self._upload(rows, preview=False)
         self.assertContains(response, 'Nothing was written')
         self.assertContains(response, 'scoff_1')
         self.assertFalse(DistressFlag.objects.exists())
 
     def test_a_preview_of_the_same_incomplete_export_still_warns(self):
-        rows = [{'participant_id': self.participant.user_id, 'phq9_9': 1}]
+        rows = [{'pid': self.participant.study_id, 'phq9_9': 1}]
         response = self._upload(rows, preview=True)
         self.assertContains(response, 'scoff_1')
         self.assertContains(response, 'nothing was written')

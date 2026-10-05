@@ -229,6 +229,180 @@ class ReadExportTests(unittest.TestCase):
         self.assertIn('scoring items NOT found', out.getvalue())
 
 
+class ThreeRowHeaderTests(unittest.TestCase):
+    """Qualtrics' three-row-header export: short internal codes as the literal
+    column names, human-readable question text one row below, an ImportId JSON
+    row below that, then data. read_export must match on the text row, not the
+    short codes -- this is the real export shape, not the two-row shape the
+    other ReadExportTests fixtures use."""
+
+    def _csv(self, codes, texts, rows):
+        import_row = [f'{{"ImportId":"{c}"}}' for c in codes]
+        lines = [
+            ','.join(codes),
+            ','.join(f'"{t}"' if ',' in t else t for t in texts),
+            ','.join(import_row),
+        ]
+        lines += [','.join(str(v) for v in r) for r in rows]
+        return io.BytesIO(('\n'.join(lines) + '\n').encode('utf-8'))
+
+    PHQ9_9_TEXT = 'Thoughts that you would be better off dead or of hurting yourself in some way'
+    PHQ9_9_STEM_TEXT = (
+        'Over the last 2 weeks, how often have you been bothered by any of the following problems? '
+        '- Thoughts that you would be better off dead or of hurting yourself in some way'
+    )
+
+    def test_short_code_alone_would_not_match_but_the_text_row_does(self):
+        source = self._csv(['Q0', 'Q1'], ['participant_id', self.PHQ9_9_TEXT], [[7, 1]])
+        frame, diagnostics = qualtrics.read_export(source)
+        self.assertIn('phq9_9', frame.columns)
+        self.assertEqual(frame['phq9_9'].tolist(), [1.0])
+        self.assertNotIn('Q1', frame.columns)
+
+    def test_stem_prefixed_grid_text_also_resolves(self):
+        source = self._csv(['Q0', 'Q1'], ['participant_id', self.PHQ9_9_STEM_TEXT], [[7, 3]])
+        frame, _ = qualtrics.read_export(source)
+        self.assertIn('phq9_9', frame.columns)
+        self.assertEqual(frame['phq9_9'].tolist(), [3.0])
+
+    def test_an_unmatched_column_keeps_its_short_code_name(self):
+        source = self._csv(['Q0', 'Q1'], ['What is your participant ID? (ex. RS01)', self.PHQ9_9_TEXT],
+                           [['RS01', 1]])
+        frame, diagnostics = qualtrics.read_export(source)
+        self.assertIn('Q0', frame.columns)
+        self.assertIn('What is your participant ID? (ex. RS01)', diagnostics['unmatched_headers'])
+        self.assertIn('phq9_9', frame.columns)
+
+    def test_all_nine_phq9_items_resolve_from_a_real_shaped_export(self):
+        items = [
+            'Little interest or pleasure in doing things',
+            'Feeling down, depressed, or hopeless',
+            'Trouble falling or staying asleep, or sleeping too much',
+            'Feeling tired or having little energy',
+            'Poor appetite or overeating',
+            'Feeling bad about yourself, or that you are a failure, or have let yourself or your '
+            'family down',
+            'Trouble concentrating on things, such as reading the newspaper or watching television',
+            'Moving or speaking so slowly that other people could have noticed; or the opposite, '
+            'being so fidgety or restless that you have been moving around a lot more than usual',
+            self.PHQ9_9_TEXT,
+        ]
+        stem = 'Over the last 2 weeks, how often have you been bothered by any of the following problems?'
+        codes = [f'Q{i}' for i in range(1, 10)]
+        texts = [f'{stem} - {item}' for item in items]
+        values = [0, 2, 2, 2, 0, 0, 1, 0, 1]
+        source = self._csv(codes, texts, [values])
+        frame, _ = qualtrics.read_export(source)
+        for column in D.PHQ9:
+            self.assertIn(column, frame.columns, column)
+        self.assertEqual(frame['phq9_9'].tolist(), [1.0])
+
+
+class UpdatedLiveSurveyWordingTests(unittest.TestCase):
+    """scoff_3, pgsi_2, pgsi_7 and hunger_vital_sign_2 did not match a real
+    export (confirmed 2026-09-29) -- the live survey's current wording for
+    each, confirmed against that export, replaced the stale registered text
+    2026-10-01. Pins the new wording so a future registration drift is caught
+    the same way."""
+
+    def test_scoff_3_matches_the_current_fourteen_pound_wording(self):
+        header = 'Have you recently lost more than about 14 pounds in a 3-month period?'
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertEqual(resolved.get(header), D.SCOFF[2])
+        self.assertEqual(unmatched, [])
+
+    def test_scoff_3_no_longer_matches_the_old_fifteen_pound_wording(self):
+        header = 'Have you recently lost more than Fifteen pounds in a 3 month period?'
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertNotIn(header, resolved)
+        self.assertEqual(unmatched, [header])
+
+    def test_pgsi_2_matches_the_current_wording_directly(self):
+        header = 'Have you needed to gamble with larger amounts of money to get the same feeling of excitement?'
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertEqual(resolved.get(header), D.PGSI[1])
+
+    def test_pgsi_2_matches_via_the_grid_stem_fallback(self):
+        header = ('Thinking about the last 12 months: - Have you needed to gamble with larger '
+                   'amounts of money to get the same feeling of excitement?')
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertEqual(resolved.get(header), D.PGSI[1])
+
+    def test_pgsi_7_matches_the_shortened_current_wording(self):
+        header = 'Have people criticized your betting or told you that you had a gambling problem?'
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertEqual(resolved.get(header), D.PGSI[6])
+
+    def test_hunger_vital_sign_2_matches_the_spelled_out_wording(self):
+        header = ('Within the past 12 months the food we bought just did not last and we did not '
+                   'have money to get more.')
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertEqual(resolved.get(header), D.HUNGER_VITAL_SIGN[1])
+
+    def test_a_real_shaped_export_with_current_wording_leaves_none_of_the_four_missing(self):
+        codes = ['Q60', 'Q38e_2', 'Q38e_7', 'Q41']
+        texts = [
+            'Have you recently lost more than about 14 pounds in a 3-month period?',
+            'Thinking about the last 12 months: - Have you needed to gamble with larger amounts '
+            'of money to get the same feeling of excitement?',
+            'Thinking about the last 12 months: - Have people criticized your betting or told '
+            'you that you had a gambling problem?',
+            'Within the past 12 months the food we bought just did not last and we did not have '
+            'money to get more.',
+        ]
+        import_row = [f'{{"ImportId":"{c}"}}' for c in codes]
+        lines = [
+            ','.join(codes),
+            ','.join(f'"{t}"' for t in texts),
+            ','.join(import_row),
+            '0,0,0,0',
+        ]
+        source = io.BytesIO(('\n'.join(lines) + '\n').encode('utf-8'))
+        frame, _ = qualtrics.read_export(source)
+        for column in (D.SCOFF[2], D.PGSI[1], D.PGSI[6], D.HUNGER_VITAL_SIGN[1]):
+            self.assertIn(column, frame.columns, column)
+
+
+class ResolveColumnsStemFallbackTests(unittest.TestCase):
+
+    def test_a_stem_prefixed_header_resolves_via_the_tail(self):
+        header = ('Respond to the following statements on a scale from 1=Extremely uncharacteristic '
+                  'of me to 7=Extremely characteristic of me: - Given enough provocation, I may hit '
+                  'another person.')
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertEqual(resolved.get(header), D.BAQ[0])
+        self.assertEqual(unmatched, [])
+
+    def test_a_plain_header_with_no_stem_still_resolves_directly(self):
+        header = 'Given enough provocation, I may hit another person.'
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertEqual(resolved[header], D.BAQ[0])
+
+    def test_a_non_item_header_with_two_dashes_is_not_falsely_matched(self):
+        header = 'What is your gender identity? - Prefer to self describe - Text'
+        resolved, unmatched = qualtrics.resolve_columns([header])
+        self.assertEqual(unmatched, [header])
+
+
+class MissingTokenNinetyNineTests(unittest.TestCase):
+
+    def test_bare_99_in_a_scoring_column_is_missing_not_a_literal_score(self):
+        header = ['participant_id'] + list(D.PHQ9)
+        values = [7] + [0] * 8 + ['99']
+        text = ','.join(header) + '\n' + ','.join(str(v) for v in values) + '\n'
+        frame, _ = qualtrics.read_export(io.BytesIO(text.encode('utf-8')))
+        out = scoring.score_phq9(scoring.ensure_columns(frame, list(D.ALL_SCORING_COLUMNS)))
+        self.assertTrue(pd.isna(out['phq9_total'].iloc[0]))
+        self.assertTrue(pd.isna(out['phq9_self_harm_positive'].iloc[0]))
+        self.assertTrue(pd.isna(out['phq9_severity_alert'].iloc[0]))
+
+    def test_99_does_not_leak_through_to_numeric_conversion(self):
+        converted, unknown = qualtrics.to_numeric(pd.Series(['99', '1', '2']), None)
+        self.assertTrue(pd.isna(converted.iloc[0]))
+        self.assertEqual(converted.iloc[1:].tolist(), [1.0, 2.0])
+        self.assertEqual(unknown, [])
+
+
 class RequiredScreenColumnsTests(unittest.TestCase):
 
     def test_every_automated_section11_instrument_is_required(self):
