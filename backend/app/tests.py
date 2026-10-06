@@ -5423,6 +5423,27 @@ class DistressFlagWindowTests(TestCase):
             raised_at=self.T - timedelta(days=400))
         self.assertIsNotNone(active_distress_flag(self.user, now=self.T))
 
+    def test_alert_only_baseline_signals_do_not_suppress(self):
+        from app.distress import active_distress_flag
+        for signals in (['audit_c'], ['problem_gambling'], ['audit_c', 'problem_gambling']):
+            flag = DistressFlag.objects.create(user=self.user, source='baseline', signals=signals)
+            self.assertFalse(flag.is_active(self.T))
+            self.assertIsNone(active_distress_flag(self.user, now=self.T))
+
+    def test_a_baseline_flag_with_any_suppressing_signal_still_suppresses(self):
+        from app.distress import active_distress_flag
+        for signals in (['audit_c', 'scoff'], ['phq9_self_harm'], ['food_insecurity'], []):
+            DistressFlag.objects.all().delete()
+            flag = DistressFlag.objects.create(user=self.user, source='baseline', signals=signals)
+            self.assertTrue(flag.is_active(self.T))
+            self.assertEqual(active_distress_flag(self.user, now=self.T), flag)
+
+    def test_an_alert_only_flag_does_not_hide_a_suppressing_one(self):
+        from app.distress import active_distress_flag
+        DistressFlag.objects.create(user=self.user, source='baseline', signals=['audit_c'])
+        suppressing = DistressFlag.objects.create(user=self.user, source='baseline', signals=['scoff'])
+        self.assertEqual(active_distress_flag(self.user, now=self.T), suppressing)
+
     def test_a_momentary_flag_with_no_expiry_is_inactive(self):
         from app.distress import active_distress_flag
         self._momentary(expires_at=None)

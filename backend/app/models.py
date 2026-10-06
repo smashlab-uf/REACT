@@ -439,7 +439,10 @@ class DistressFlag(models.Model):
     def is_active(self, now=None):
         now = now or timezone.now()
         if self.source == 'baseline':
-            return self.contact_documented_at is None
+            from dashboard.data.config import BASELINE_ALERT_ONLY_SIGNALS
+            suppresses = not self.signals or any(
+                code not in BASELINE_ALERT_ONLY_SIGNALS for code in self.signals)
+            return suppresses and self.contact_documented_at is None
         return self.expires_at is not None and now < self.expires_at
 
     def __str__(self):

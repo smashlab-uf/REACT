@@ -117,7 +117,7 @@ def raise_baseline_flag(user, signals):
 
 def active_distress_flag(user, now=None):
     now = now or timezone.now()
-    return (
+    candidates = (
         DistressFlag.objects
         .filter(user=user)
         .filter(
@@ -125,8 +125,11 @@ def active_distress_flag(user, now=None):
             | Q(source='momentary', expires_at__gt=now)
         )
         .order_by('source', '-raised_at')
-        .first()
     )
+    for flag in candidates:
+        if flag.is_active(now):
+            return flag
+    return None
 
 
 def resource_card():
