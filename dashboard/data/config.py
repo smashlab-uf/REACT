@@ -20,6 +20,7 @@ from app.ema_catalog import (
 __all__ = [
     'ARM_RANDOMIZATION_P_DEFAULT',
     'ARM_RANDOMIZATION_P_ENV',
+    'BASELINE_ALERT_ONLY_SIGNALS',
     'BENCHMARKS',
     'CHECKIN_REMINDER_DELAY_MINUTES',
     'DAILY_PROMPT_CAP',
@@ -92,6 +93,13 @@ JITAI_COOLDOWN_MINUTES = 60
 DAILY_PROMPT_CAP = 4
 
 DISTRESS_MOMENTARY_PAUSE_HOURS = 24
+
+# Baseline signals that are a note in the record and a conversation at the next
+# visit, nothing more. They never suppress randomization (Dr. Chang, 2026-10-05):
+# suppressing every alcohol or gambling screen-positive would remove the
+# participants the study is about. PHQ-9, SCOFF and the Hunger Vital Sign still
+# suppress.
+BASELINE_ALERT_ONLY_SIGNALS = ('audit_c', 'problem_gambling')
 
 # Momentary distress override cutoffs, confirmed by Dr. Chang 2026-09-22: exact
 # scale-endpoint values, not thresholds. Separate from ROUTING_TRIGGER_RULES in
