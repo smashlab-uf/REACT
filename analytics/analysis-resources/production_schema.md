@@ -34,7 +34,7 @@ The **Data dictionary** column maps each production table to its logical name in
 | public | auth_user | — (framework) | table | ufa8u8gt63l2t2 |
 | public | auth_user_groups | — (framework) | table | ufa8u8gt63l2t2 |
 | public | auth_user_user_permissions | — (framework) | table | ufa8u8gt63l2t2 |
-| public | django_admin_log | — (framework) | table | ufa8u8gt63l2t2 |
+| public | django_admin_log | — (framework) | table | bufa8u8gt63l2t2 |
 | public | django_content_type | — (framework) | table | ufa8u8gt63l2t2 |
 | public | django_migrations | — (framework) | table | ufa8u8gt63l2t2 |
 | public | django_session | — (framework) | table | ufa8u8gt63l2t2 |
@@ -294,8 +294,7 @@ Note: unique/index names on this table are still prefixed `app_wearabledevice_fi
 |---|---|---|---|
 | id | bigint | not null | identity |
 | sent_at | timestamptz | not null | |
-| daily_count_at_send | smallint | null | |
-| jitai_log_id | bigint | null | |
+| daily_count_at_send | smallint | not null | |
 | user_id | integer | not null | |
 
 **PK:** id &nbsp;·&nbsp; **Index:** user_id &nbsp;·&nbsp; **Checks:** daily_count_at_send >= 0
@@ -475,19 +474,11 @@ them.
    study day 0, although week 1 is meant to be a non-interventional baseline used only to
    establish each participant's within-person MSSD threshold. `runin_violation_n` counts the
    prompts this produces and a critical alert fires. Nothing in the pipeline prevents it yet.
-2. **`apply_decision_rules`'s own internal cap simulation is counted in UTC.**
-   `decision_engine.apply_decision_rules` groups by `row["timestamp"].date()` on UTC-aware
-   timestamps, while every other boundary in the system is America/New_York. This remains true of
-   the engine function itself and is fine for its only remaining consumer — Tien's synthetic-data/
-   sensitivity-analysis pipeline, pure pandas with no real-world randomization feeding back into
-   it. **As of 2026-10, this no longer affects live production enforcement**: `_evaluate_user` and
-   `_decision_point_safeguards` (`backend/app/tasks.py`) both call a shared `_cooldown_cap_reason`
-   helper that counts actual `JITAILog(send_prompt=True)` rows against Eastern-day boundaries
-   (`dashboard/data/windows.py::participant_day_bounds`), ignoring `apply_decision_rules`'s own
-   cap/cooldown verdict entirely. A second, previously-undocumented defect was found and fixed in
-   the same change: `_decision_point_safeguards` had its own independent cooldown/cap query that
-   was also bucketing by UTC day, despite CLAUDE.md describing it as the correct reference
-   implementation — both are now the one shared, Eastern-day implementation.
+2. **The daily cap is counted in UTC.** `decision_engine.apply_decision_rules` groups by
+   `row["timestamp"].date()` on UTC-aware timestamps, while every other boundary in the system
+   is America/New_York. The two disagree for prompts between 19:00 Eastern and midnight, so an
+   evening prompt can belong to the next day for cap purposes. The monitoring layer scores
+   Eastern days throughout and does not work around this.
 
 ---
 
