@@ -294,7 +294,8 @@ Note: unique/index names on this table are still prefixed `app_wearabledevice_fi
 |---|---|---|---|
 | id | bigint | not null | identity |
 | sent_at | timestamptz | not null | |
-| daily_count_at_send | smallint | not null | |
+| daily_count_at_send | smallint | null | |
+| jitai_log_id | bigint | null | |
 | user_id | integer | not null | |
 
 **PK:** id &nbsp;·&nbsp; **Index:** user_id &nbsp;·&nbsp; **Checks:** daily_count_at_send >= 0

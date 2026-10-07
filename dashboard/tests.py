@@ -213,6 +213,14 @@ class ComputeDailyTests(TestCase):
         keys = {'study_day', 'local_date', 'is_run_in', 'is_active_day', 'item_bank_version'}
         self.assertEqual(model_fields, set(METRIC_FIELDS) | keys)
 
+    def test_outcome_reminder_without_slot_is_excluded_from_slot_metrics(self):
+        make_reminder(self.user, 2, self._at(13, 0))
+        make_reminder(self.user, None, self._at(15, 0))
+
+        metrics = self._compute()
+        self.assertEqual(metrics['slots_reminded_uncovered'], 1)
+        self.assertEqual(metrics['reminders_sent'], 1)
+
     def test_slot_coverage_and_reminders(self):
         make_ema(self.user, self._at(10, 15), answers={'B1_valence': 5})
         make_ema(self.user, self._at(13, 30), answers={'B1_valence': 3})
