@@ -61,7 +61,15 @@ To hit a local backend, set `ACTIVE_ENV` to `'dev'` in `src/api/config.ts`. Do n
 
 Two push types exist.
 
+<<<<<<< HEAD
 **Check-in reminder** (visible): title `REACT`, body `Time for your check-in.`, data `{ type: "checkin_reminder" }`. Celery Beat runs `send_checkin_reminders` every 180 seconds. It only sends when the participant-local hour (America/New_York) is `>= 9` and `< 21`. The day is divided into six fixed two-hour slots. At most one reminder is sent per slot, 30 minutes after it opens, and only if no check-in has landed in it. No reminder is sent while a JITAI outcome window (2 hours) is open.
+=======
+**Check-in reminder** (visible): title `REACT`, body `Time for your check-in.`, data `{ type: "checkin_reminder" }`. Celery Beat runs `send_checkin_reminders` every 180 seconds. It only sends when the participant-local hour (America/New_York) is `>= 9` and `< 21`, and serves two purposes:
+- **Slot reminders.** The day is divided into six fixed two-hour slots. At most one reminder is sent per slot, 30 minutes after it opens, and only if no check-in has landed in it.
+- **Outcome check-in reminders.** After every available decision point, sent or not, an outcome window opens. If the outcome check-in hasn't been answered 60 minutes after the decision, one reminder goes out; it is the same in both arms. While any outcome window is open, slot reminders are held back.
+
+The app needs no special handling: `GET /ema/next/` decides what to serve, including `should_show: false` with `reason: "outcome_window_pending"` during the first 60 minutes of a window.
+>>>>>>> d5b42348f3167253ece23d9c4b62604f438c17fb
 
 **JITAI prompt** (silent): no title or body. Data is `{ type: "ema_prompt", prompt_id, jitai_log_id }`. Not on a clock. `evaluate_jitai_triggers` also runs every 180 seconds, but it only considers sending after a new completed EMA, then eligibility plus a coin flip. The app has no local prompt catalog, so JITAI message text is not shown on device.
 
@@ -156,6 +164,10 @@ CI (`.github/workflows/django-ci.yml`) runs Django tests only. It does not build
 - Push token registration skips simulators (`Device.isDevice`).
 - No local JITAI prompt catalog, so silent pushes have no on-device message text.
 - Register/login does not set `is_enrolled` or create a wearable.
+<<<<<<< HEAD
 - The 9–21 reminder window is a placeholder.
+=======
+- The 9–21 reminder window is a placeholder. The 60-minute outcome check-in lag (`OUTCOME_CHECK_IN_DELAY_MINUTES`) is provisional, pending PI sign-off.
+>>>>>>> d5b42348f3167253ece23d9c4b62604f438c17fb
 
 `../Resources/REACT_Mobile_App_Gaps.docx` is older than this branch. EMA UI, auth refresh, and tap receipts are already implemented.
