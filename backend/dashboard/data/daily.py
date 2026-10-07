@@ -148,7 +148,8 @@ def _ema_metrics(user, local_date, day_start, day_end, slots):
 
     reminders = list(
         CheckinReminder.objects
-        .filter(user=user, sent_at__gte=day_start, sent_at__lt=day_end)
+        .filter(user=user, sent_at__gte=day_start, sent_at__lt=day_end,
+                daily_count_at_send__isnull=False)
         .values_list('daily_count_at_send', 'sent_at')
     )
     reminded = {}

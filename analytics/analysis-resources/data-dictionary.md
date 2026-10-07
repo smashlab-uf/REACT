@@ -385,7 +385,7 @@ participant has an active JITAI outcome window open. Confirmed by Dr. Chang, 202
 | `id` | INT (PK) | Backend / scheduler | Primary key. |
 | `user_id` | INT (FK → `user.user_id`) | Backend / scheduler | Participant who received the reminder. |
 | `sent_at` | DATETIME | Backend / scheduler | When the reminder push was sent (`auto_now_add`). |
-| `daily_count_at_send` | SMALLINT | Backend / scheduler | **The 0-indexed check-in slot this reminder was for** (0–5). Despite the column name it is not a count of anything. |
+| `daily_count_at_send` | SMALLINT, nullable | Backend / scheduler | **The 0-indexed check-in slot this reminder was for** (0–5). Despite the column name it is not a count of anything. **NULL for an outcome-window reminder** (migration `0050`), which is tied to a decision point through `jitai_log_id` instead of a slot; filter on `IS NOT NULL` before treating the value as a slot index. |
 
 > **Corrected 2026-09-10.** Earlier revisions described `daily_count_at_send` as the number of
 > check-ins already submitted that day, and the task as enforcing a 120-minute cooldown. Both
