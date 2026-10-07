@@ -55,6 +55,8 @@ __all__ = [
     'RUN_IN_DAYS',
     'SCHEDULED_CHECK_IN_DAILY_CAP',
     'STUDY_DAYS',
+    'STUDY_ID_PREFIX',
+    'TEST_ID_PREFIX',
     'THRESHOLD_QUANTILE',
     'UNMEASURABLE_BENCHMARKS',
     'WAKING_WINDOW_END_HOUR',
@@ -73,6 +75,8 @@ def _int_list_from_env(name):
 # Cohort
 N_TARGET = 40
 PHASE1_USER_IDS = _int_list_from_env('REACT_PHASE1_USER_IDS')
+STUDY_ID_PREFIX = 'RS'
+TEST_ID_PREFIX = 'ST'
 
 STUDY_DAYS = 35
 RUN_IN_DAYS = 7 

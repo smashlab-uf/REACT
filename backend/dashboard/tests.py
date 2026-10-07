@@ -33,6 +33,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Sum
 from django.test import Client, TestCase, override_settings
 
+from dashboard.data import accounts
 from dashboard.data import timeline as tl
 from dashboard.data import windows as w
 from dashboard.data.alerts import Context, evaluate_alerts, pipeline_stalled, randomization_audit
@@ -1874,3 +1875,56 @@ class RandomizationAuditRuleTests(TestCase):
             suppression_reason='run_in', randomization_draw=0.3, randomization_probability=0.5,
             decision_made_at=self.NOW, status='suppressed', delivery_status='suppressed')
         self.assertEqual(len(self._rule()), 1)
+
+
+# ---------------------------------------------------------------------------
+# Account classification
+# ---------------------------------------------------------------------------
+
+class AccountClassificationTests(TestCase):
+    ENROLLED = datetime(2026, 9, 1, 14, 0, tzinfo=UTC)
+
+    def _account(self, email, study_id, enrolled=True):
+        user = make_participant(email, self.ENROLLED if enrolled else None,
+                                is_enrolled=enrolled, device=False)
+        User.objects.filter(pk=user.pk).update(study_id=study_id)
+        return User.objects.get(pk=user.pk)
+
+    def test_classify(self):
+        cases = {
+            'RS01': accounts.STUDY,
+            ' rs07 ': accounts.STUDY,
+            'ST02': accounts.TEST,
+            None: accounts.UNCLASSIFIED,
+            '': accounts.UNCLASSIFIED,
+            'XX9': accounts.UNCLASSIFIED,
+            'TEST1': accounts.UNCLASSIFIED,
+        }
+        for study_id, expected in cases.items():
+            with self.subTest(study_id=study_id):
+                self.assertEqual(accounts.classify(study_id), expected)
+
+    def test_querysets_partition_every_account(self):
+        study = self._account('a@x.test', 'RS01')
+        test = self._account('b@x.test', 'ST01')
+        unlabelled = self._account('c@x.test', None)
+        other = self._account('d@x.test', 'XX9')
+
+        self.assertEqual(set(accounts.study_users()), {study})
+        self.assertEqual(set(accounts.test_users()), {test})
+        self.assertEqual(set(accounts.unclassified_users()), {unlabelled, other})
+        self.assertEqual(accounts.account_counts(), {
+            accounts.STUDY: 1, accounts.TEST: 1, accounts.UNCLASSIFIED: 2,
+        })
+
+    def test_lowercase_study_id_written_without_save_is_still_a_participant(self):
+        user = self._account('a@x.test', 'rs03')
+        self.assertEqual(list(accounts.study_users()), [user])
+        self.assertFalse(accounts.unclassified_users().exists())
+
+    def test_queryset_argument_narrows_the_result(self):
+        enrolled = self._account('a@x.test', 'RS01')
+        self._account('b@x.test', 'RS02', enrolled=False)
+        only_enrolled = User.objects.filter(enrolled_at__isnull=False)
+        self.assertEqual(list(accounts.study_users(only_enrolled)), [enrolled])
+        self.assertEqual(accounts.account_counts(only_enrolled)[accounts.STUDY], 1)
