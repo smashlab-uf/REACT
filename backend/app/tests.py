@@ -4158,6 +4158,7 @@ class EMARotationEndpointTests(TestCase):
     def setUp(self):
         self.user = make_user(email='ema-rotation@test.com')
         self.client = authenticated_client(self.user)
+        self.reminder = CheckinReminder.objects.create(user=self.user)
 
     def test_next_returns_scheduled_items_without_active_jitai(self):
         response = self.client.get('/ema/next/')
@@ -4190,12 +4191,15 @@ class EMARotationEndpointTests(TestCase):
     def _decision(self, minutes_ago, draw, p=0.5, point='ema_1', user=None):
         decided_at = timezone.now() - timedelta(minutes=minutes_ago)
         sent = draw is not None and draw < p
-        return JITAILog.objects.create(
+        jitai_log = JITAILog.objects.create(
             user=user or self.user, prompt_id='JITAI-EMA-1' if sent else '', trigger_reason='prompt sent',
             decision_point_id=point, decision_made_at=decided_at, randomization_probability=p,
             randomization_draw=draw, send_prompt=sent,
             push_sent_at=decided_at + timedelta(seconds=5) if sent else None,
         )
+        if draw is not None and OUTCOME_CHECK_IN_DELAY_MINUTES <= minutes_ago < 120:
+            CheckinReminder.objects.create(user=user or self.user, jitai_log=jitai_log)
+        return jitai_log
 
     def test_next_returns_post_prompt_items_during_outcome_window(self):
         jitai_log = self._decision(minutes_ago=65, draw=0.2)
@@ -4229,6 +4233,8 @@ class EMARotationEndpointTests(TestCase):
             triggered_at=decided_at, decision_made_at=decided_at,
         )
         jitai_log.refresh_from_db()
+        if draw is not None and OUTCOME_CHECK_IN_DELAY_MINUTES <= minutes_ago < 120:
+            CheckinReminder.objects.create(user=self.user, jitai_log=jitai_log)
         return jitai_log
 
     def test_outcome_window_opens_for_randomized_out_decision(self):
@@ -4238,7 +4244,7 @@ class EMARotationEndpointTests(TestCase):
 
         self.assertTrue(data['should_show'])
         self.assertTrue(data['outcome_window_active'])
-        self.assertEqual(data['ema_type'], 'post_prompt')
+        self.assertEqual(data['ema_type'], 'extra_check_in')
         self.assertEqual(data['jitai_log_id'], jitai_log.id)
         self.assertEqual(parse_datetime(data['outcome_window_start']), jitai_log.decision_made_at)
         self.assertEqual(
@@ -4292,13 +4298,10 @@ class EMARotationEndpointTests(TestCase):
         self.assertEqual(data['reason'], 'outcome_window_already_completed')
 
     def test_scheduled_check_in_advertises_response_window(self):
-        before = timezone.now()
         data = self.client.get('/ema/next/').json()
-        after = timezone.now()
 
         expires = parse_datetime(data['expires_at'])
-        self.assertGreaterEqual(expires, before + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
-        self.assertLessEqual(expires, after + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
+        self.assertEqual(expires, self.reminder.expires_at)
 
     def test_post_prompt_response_window_is_independent_of_outcome_window(self):
         jitai_log = self._decision(minutes_ago=65, draw=0.2)
@@ -4307,15 +4310,12 @@ class EMARotationEndpointTests(TestCase):
             ema_type='prompt_feedback', source_jitai_log=jitai_log,
         )
 
-        before = timezone.now()
         data = self.client.get('/ema/next/').json()
-        after = timezone.now()
 
-        # The response window is 30 minutes from now; the outcome window stays
-        # 2 hours from the decision. Aliasing the two is the bug this guards.
+        # Response expiry is anchored to the reminder; the outcome window
+        # remains anchored to the decision.
         expires = parse_datetime(data['expires_at'])
-        self.assertGreaterEqual(expires, before + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
-        self.assertLessEqual(expires, after + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES))
+        self.assertEqual(expires, CheckinReminder.objects.get(jitai_log=jitai_log).expires_at)
 
         outcome_end = parse_datetime(data['outcome_window_end'])
         self.assertEqual(outcome_end, jitai_log.decision_made_at + timedelta(hours=2))
@@ -4327,7 +4327,7 @@ class EMARotationEndpointTests(TestCase):
         data = self.client.get('/ema/next/').json()
 
         self.assertTrue(data['should_show'])
-        self.assertEqual(data['ema_type'], 'post_prompt')
+        self.assertEqual(data['ema_type'], 'extra_check_in')
         self.assertEqual(data['jitai_log_id'], jitai_log.id)
         self.assertEqual(parse_datetime(data['outcome_window_start']), jitai_log.decision_made_at)
         self.assertEqual([item['item_id'] for item in data['items']], ['B1', 'B2', 'B4', 'B5', 'B6', 'B7'])
@@ -4377,7 +4377,6 @@ class EMARotationEndpointTests(TestCase):
 
     def test_extra_check_in_served_after_outcome_reminder(self):
         jitai_log = self._decision(minutes_ago=65, draw=0.9)
-        CheckinReminder.objects.create(user=self.user, jitai_log=jitai_log)
 
         data = self.client.get('/ema/next/').json()
 
@@ -4387,7 +4386,7 @@ class EMARotationEndpointTests(TestCase):
 
     def test_submitted_ema_persists_response_window(self):
         response = self.client.post('/ema/responses/', {
-            'prompt_id': 'EMA-WINDOW-PERSIST',
+            'prompt_id': self.reminder.prompt_id,
             'ema_type': 'scheduled_check_in',
             'responses': [
                 {'sub_item_id': 'B1_valence', 'value': 4},
@@ -4395,18 +4394,12 @@ class EMARotationEndpointTests(TestCase):
         }, format='json')
 
         self.assertEqual(response.status_code, 201)
-        ema = EMA.objects.get(prompt_id='EMA-WINDOW-PERSIST')
-        # Previously NULL for scheduled check-ins: expires_at was read from the
-        # client-supplied outcome_window_end, which these never carry.
-        self.assertIsNotNone(ema.expires_at)
-        # Within a second: sent_at is auto_now_add and so fires marginally after
-        # the `now` that expires_at is derived from.
-        window = (ema.expires_at - ema.sent_at).total_seconds()
-        self.assertAlmostEqual(window, EMA_RESPONSE_WINDOW_MINUTES * 60, delta=1.0)
+        ema = EMA.objects.get(prompt_id=self.reminder.prompt_id)
+        self.assertEqual(ema.expires_at, self.reminder.expires_at)
 
     def test_submit_variable_ema_responses(self):
         response = self.client.post('/ema/responses/', {
-            'prompt_id': 'EMA-ROTATION-1',
+            'prompt_id': self.reminder.prompt_id,
             'ema_type': 'scheduled_check_in',
             'responses': [
                 {'sub_item_id': 'B1_valence', 'value': 5},
@@ -4417,7 +4410,7 @@ class EMARotationEndpointTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         data = response.json()
-        self.assertEqual(data['prompt_id'], 'EMA-ROTATION-1')
+        self.assertEqual(data['prompt_id'], self.reminder.prompt_id)
         self.assertEqual(data['status'], 'completed')
         self.assertEqual(len(data['item_responses']), 3)
         self.assertEqual(EMAItemResponse.objects.filter(ema_id=data['id']).count(), 3)
@@ -4532,6 +4525,7 @@ class EMAScheduledItemSelectionTests(TestCase):
         self.client = authenticated_client(self.user)
 
     def test_b3_absent_without_event_day(self):
+        CheckinReminder.objects.create(user=self.user)
         response = self.client.get('/ema/next/')
 
         item_ids = [item['item_id'] for item in response.json()['items']]
@@ -4540,6 +4534,7 @@ class EMAScheduledItemSelectionTests(TestCase):
     def test_b3_present_with_event_day(self):
         EventDay.objects.create(date=eastern_today(), sport='football')
 
+        CheckinReminder.objects.create(user=self.user)
         response = self.client.get('/ema/next/')
 
         item_ids = [item['item_id'] for item in response.json()['items']]
@@ -4550,6 +4545,7 @@ class EMAScheduledItemSelectionTests(TestCase):
             'B1': 'B1_valence', 'B2': 'B2_stress', 'B3': 'B3_importance', 'B4': 'B4_urge',
             'B5': 'B5_success', 'B6': 'B6_urge', 'B7': 'B7_urge', 'B8': 'B8_sleep',
         }
+        CheckinReminder.objects.create(user=self.user)
         first = self.client.get('/ema/next/')
         first_items = [item['item_id'] for item in first.json()['items']]
         self.assertIn('B8', first_items)
@@ -4559,6 +4555,7 @@ class EMAScheduledItemSelectionTests(TestCase):
             'responses': [{'sub_item_id': representative_sub_item[i], 'value': 4} for i in first_items],
         }, format='json')
 
+        CheckinReminder.objects.create(user=self.user)
         second = self.client.get('/ema/next/')
         second_items = [item['item_id'] for item in second.json()['items']]
         self.assertNotIn('B8', second_items)
@@ -4568,6 +4565,7 @@ class EMAScheduledItemSelectionTests(TestCase):
         EMAItemResponse.objects.create(ema=EMA_, item_id='B4', sub_item_id='B4_urge', response_type='likert', value_numeric=5)
         EMAItemResponse.objects.create(ema=EMA_, item_id='B5', sub_item_id='B5_success', response_type='likert', value_numeric=5)
 
+        CheckinReminder.objects.create(user=self.user)
         response = self.client.get('/ema/next/')
 
         item_ids = [item['item_id'] for item in response.json()['items']]
@@ -4582,6 +4580,7 @@ class EMAScheduledItemSelectionTests(TestCase):
         from zoneinfo import ZoneInfo
         mock_now.return_value = datetime(2026, 8, 13, 21, 0, 0, tzinfo=ZoneInfo('America/New_York'))
 
+        CheckinReminder.objects.create(user=self.user)
         response = self.client.get('/ema/next/')
 
         item_ids = [item['item_id'] for item in response.json()['items']]
@@ -4607,6 +4606,7 @@ class EMAScheduledItemSelectionTests(TestCase):
         mock_now.return_value = datetime(2026, 8, 13, 13, 0, 0, tzinfo=tz)
         self._seed_rotation_usage(datetime(2026, 8, 13, 9, 0, 0, tzinfo=tz))
 
+        CheckinReminder.objects.create(user=self.user)
         response = self.client.get('/ema/next/')
         data = response.json()
 
@@ -4623,6 +4623,7 @@ class EMAScheduledItemSelectionTests(TestCase):
         already_afternoon = EMA.objects.create(user=self.user, prompt_id='seed2', status='completed')
         EMA.objects.filter(pk=already_afternoon.pk).update(sent_at=datetime(2026, 8, 13, 12, 30, 0, tzinfo=tz))
 
+        CheckinReminder.objects.create(user=self.user)
         response = self.client.get('/ema/next/')
         data = response.json()
 
@@ -4637,6 +4638,7 @@ class EMAScheduledItemSelectionTests(TestCase):
         mock_now.return_value = datetime(2026, 8, 13, 9, 0, 0, tzinfo=tz)
         self._seed_rotation_usage(datetime(2026, 8, 13, 7, 0, 0, tzinfo=tz))
 
+        CheckinReminder.objects.create(user=self.user)
         response = self.client.get('/ema/next/')
         data = response.json()
 
@@ -4881,7 +4883,7 @@ class EMAResponseDistressTests(TestCase):
             for sub_item_id, value in pairs if value is not None
         ]
         return self.client.post('/ema/responses/', {
-            'prompt_id': 'EMA-DISTRESS',
+            'prompt_id': CheckinReminder.objects.create(user=self.user).prompt_id,
             'ema_type': 'scheduled_check_in',
             'responses': responses,
         }, format='json')

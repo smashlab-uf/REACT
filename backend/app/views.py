@@ -23,6 +23,7 @@ from .ema_catalog import (
 from .models import (
     EMA,
     EMAItemResponse,
+    CheckinReminder,
     EngagementLog,
     EventDay,
     HeartRateSample,
@@ -679,6 +680,23 @@ class EMAView(APIView):
         return Response(EMASerializer(emas, many=True).data)
 
 
+def _open_reminder(user, now, jitai_log=None):
+    reminders = CheckinReminder.objects.filter(
+        user=user, jitai_log=jitai_log,
+        sent_at__gt=now - timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES),
+        sent_at__lte=now,
+    ).order_by('-sent_at', '-pk')
+    for reminder in reminders:
+        if not EMA.objects.filter(user=user, prompt_id=reminder.prompt_id).exists():
+            return reminder
+    return None
+
+
+def _no_checkin():
+    return Response({'should_show': False, 'reason': 'no_active_check_in',
+                     'outcome_window_active': False})
+
+
 class EMANextView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -689,7 +707,10 @@ class EMANextView(APIView):
 
         now = django_timezone.now()
 
-        feedback_jitai = _latest_jitai_awaiting_feedback(app_user)
+        # Home-screen availability and reminder opens skip C0 feedback, which
+        # remains eligible through the intervention notification flow.
+        checkin_only = request.query_params.get('checkin_only') == '1'
+        feedback_jitai = None if checkin_only else _latest_jitai_awaiting_feedback(app_user)
         if feedback_jitai is not None:
             feedback_items = _ema_items(PROMPT_FEEDBACK_ITEM_IDS)
             return Response({
@@ -733,7 +754,10 @@ class EMANextView(APIView):
                 })
 
             post_prompt_count = _today_post_prompt_count(app_user, now)
-            ema_type = 'extra_check_in' if active_jitai.outcome_reminders.exists() else 'post_prompt'
+            reminder = _open_reminder(app_user, now, active_jitai)
+            if reminder is None:
+                return _no_checkin()
+            ema_type = 'extra_check_in'
             if post_prompt_count >= POST_PROMPT_CHECK_IN_DAILY_CAP:
                 return Response({
                     'should_show': False,
@@ -750,13 +774,13 @@ class EMANextView(APIView):
             )
             return Response({
                 'should_show': True,
-                'prompt_id': f'EMA-JITAI-{active_jitai.id}',
+                'prompt_id': reminder.prompt_id,
                 'ema_type': ema_type,
                 'jitai_log_id': active_jitai.id,
                 'outcome_window_active': True,
                 'outcome_window_start': outcome_start,
                 'outcome_window_end': outcome_end,
-                'expires_at': now + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES),
+                'expires_at': reminder.expires_at,
                 'daily_cap': POST_PROMPT_CHECK_IN_DAILY_CAP,
                 'daily_count': post_prompt_count,
                 'items': outcome_items,
@@ -773,17 +797,21 @@ class EMANextView(APIView):
                 'daily_count': scheduled_count,
             })
 
+        reminder = _open_reminder(app_user, now)
+        if reminder is None:
+            return _no_checkin()
+
         item_ids = _select_scheduled_items(app_user, now, scheduled_count)
         scheduled_items = _filter_conditional_sub_items(
             _ema_items(item_ids), _satisfied_schedule_conditions(app_user, now)
         )
         return Response({
             'should_show': True,
-            'prompt_id': f'EMA-{app_user.user_id}-{now.strftime("%Y%m%d%H%M%S")}',
+            'prompt_id': reminder.prompt_id,
             'ema_type': 'scheduled_check_in',
             'jitai_log_id': None,
             'outcome_window_active': False,
-            'expires_at': now + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES),
+            'expires_at': reminder.expires_at,
             'daily_cap': SCHEDULED_CHECK_IN_DAILY_CAP,
             'daily_count': scheduled_count,
             'items': scheduled_items,
@@ -815,6 +843,41 @@ class EMAResponseView(APIView):
 
         now = django_timezone.now()
         ema_type = data.get('ema_type', 'scheduled_check_in')
+        reminder = None
+        if ema_type == 'prompt_feedback' and data['prompt_id'].startswith('EMA-REMINDER-'):
+            return Response({'error': 'Check-in type does not match its notification.'}, status=status.HTTP_400_BAD_REQUEST)
+        if ema_type != 'prompt_feedback':
+            prefix = 'EMA-REMINDER-'
+            reminder_id = data['prompt_id'].removeprefix(prefix)
+            if not data['prompt_id'].startswith(prefix) or not reminder_id.isdecimal():
+                return Response({'error': 'Unknown check-in.'}, status=status.HTTP_400_BAD_REQUEST)
+            reminder = CheckinReminder.objects.select_for_update().filter(
+                pk=reminder_id, user=app_user,
+            ).first()
+            if reminder is None:
+                return Response({'error': 'Check-in not found.'}, status=status.HTTP_404_NOT_FOUND)
+            if data['prompt_id'] != reminder.prompt_id:
+                return Response({'error': 'Unknown check-in.'}, status=status.HTTP_400_BAD_REQUEST)
+            # Re-read the clock after acquiring the lock, including concurrent submissions.
+            now = django_timezone.now()
+            if now >= reminder.expires_at or now < reminder.sent_at:
+                return Response({'error': 'This check-in has expired.'}, status=status.HTTP_410_GONE)
+            if EMA.objects.filter(user=app_user, prompt_id=reminder.prompt_id).exists():
+                return Response({'error': 'This check-in was already completed.'}, status=status.HTTP_409_CONFLICT)
+            expected_type = 'extra_check_in' if reminder.jitai_log_id else 'scheduled_check_in'
+            if ema_type != expected_type or jitai_log_id != reminder.jitai_log_id:
+                return Response({'error': 'Check-in does not match its notification.'}, status=status.HTTP_400_BAD_REQUEST)
+            # Outcome boundaries come from the server, not client-supplied timestamps.
+            if reminder.jitai_log_id:
+                window = _latest_outcome_window(app_user, now)
+                if window is None or window.jitai_log.pk != reminder.jitai_log_id or now < window.opens_at:
+                    return Response({'error': 'This check-in is no longer available.'}, status=status.HTTP_410_GONE)
+                if EMA.objects.filter(user=app_user, source_jitai_log=jitai_log,
+                                      ema_type__in=['post_prompt', 'extra_check_in'], status='completed').exists():
+                    return Response({'error': 'This check-in was already completed.'}, status=status.HTTP_409_CONFLICT)
+                data['outcome_window_start'], data['outcome_window_end'] = window.start, window.end
+            else:
+                data['outcome_window_start'] = data['outcome_window_end'] = None
         # A dismissed C0 rating is submitted with no responses — recorded as
         # missing, not as a negative answer, per the measures doc.
         dismissed = ema_type == 'prompt_feedback' and not data['responses']
@@ -830,11 +893,7 @@ class EMAResponseView(APIView):
             source_jitai_log=jitai_log,
             outcome_window_start=data.get('outcome_window_start'),
             outcome_window_end=data.get('outcome_window_end'),
-            # Server-derived, never client-supplied, and independent of the
-            # outcome window: aliasing the two is what previously gave scheduled
-            # check-ins a NULL expires_at and post-prompt EMAs a 2-hour one.
-            # sent_at is auto_now_add, so it equals `now` for this row.
-            expires_at=now + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES),
+            expires_at=reminder.expires_at if reminder else now + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES),
             served_sub_item_ids=served,
         )
 
