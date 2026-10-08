@@ -337,6 +337,7 @@ class JITAILog(models.Model):
         ('not_sent', 'Not Sent'),
         ('suppressed', 'Suppressed'),
         ('accepted_by_expo', 'Accepted by Expo'),
+        ('handed_to_provider', 'Handed to Apple/Google'),
         ('received_on_device', 'Received on Device'),
         ('failed', 'Failed'),
     ]
@@ -394,6 +395,10 @@ class JITAILog(models.Model):
         db_index=True,
     )
     delivery_error = models.TextField(blank=True, default='')
+    expo_ticket_id = models.CharField(max_length=64, blank=True, default='')
+    expo_receipt_status = models.CharField(max_length=16, blank=True, default='')
+    expo_receipt_error = models.CharField(max_length=64, blank=True, default='')
+    expo_receipt_checked_at = models.DateTimeField(null=True, blank=True)
     receipt_platform = models.CharField(max_length=16, blank=True, default='')
     receipt_app_state = models.CharField(max_length=32, blank=True, default='')
     trigger_signal = models.CharField(max_length=32, null=True, blank=True)

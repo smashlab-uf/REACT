@@ -2,6 +2,7 @@ import csv
 import logging
 import random
 from pathlib import Path
+from types import SimpleNamespace
 
 from django.utils import timezone
 
@@ -202,14 +203,27 @@ def mark_delivery_failed(jitai_log, error: str) -> None:
     jitai_log.save(update_fields=['status', 'delivery_status', 'delivery_error'])
 
 
-def mark_delivery_accepted(jitai_log) -> None:
+def mark_delivery_accepted(jitai_log, ticket_id: str = '') -> None:
     jitai_log.status = 'delivered'
     jitai_log.delivery_status = 'accepted_by_expo'
     jitai_log.push_sent_at = timezone.now()
     jitai_log.delivery_error = ''
+    jitai_log.expo_ticket_id = ticket_id
     jitai_log.save(
-        update_fields=['status', 'delivery_status', 'push_sent_at', 'delivery_error']
+        update_fields=[
+            'status', 'delivery_status', 'push_sent_at', 'delivery_error', 'expo_ticket_id',
+        ]
     )
+
+
+def fetch_expo_receipts(ticket_ids: list[str]) -> list:
+    tickets = [SimpleNamespace(id=ticket_id) for ticket_id in ticket_ids]
+    return PushClient().check_receipts_multiple(tickets)
+
+
+def receipt_error_code(receipt) -> str:
+    details = receipt.details if isinstance(receipt.details, dict) else {}
+    return str(details.get('error') or 'unknown')[:64]
 
 
 def build_jitai_push_message(user, jitai_log) -> PushMessage:
@@ -247,7 +261,8 @@ def send_jitai_prompt(user, jitai_log) -> bool:
         try:
             response = PushClient().publish(message)
             response.validate_response()
-            mark_delivery_accepted(jitai_log)
+            ticket_id = response.id if isinstance(response.id, str) else ''
+            mark_delivery_accepted(jitai_log, ticket_id)
             logger.info(
                 "Expo push sent: user_id=%s prompt_id=%s",
                 user.user_id, jitai_log.prompt_id,

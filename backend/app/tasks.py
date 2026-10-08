@@ -12,7 +12,9 @@ from app.models import (
     CheckinReminder, EMA, HeartRateSample, HRVSample, JITAILog, StressSample, User,
 )
 from app.notification_service import (
+    fetch_expo_receipts,
     mark_delivery_failed,
+    receipt_error_code,
     select_control_prompt,
     select_prompt,
     send_checkin_reminder,
@@ -389,6 +391,74 @@ def _evaluate_user(user, p):
                 user.user_id,
             )
             mark_delivery_failed(jitai_log, 'missing push token')
+
+
+EXPO_RECEIPT_MIN_AGE = timedelta(minutes=15)
+EXPO_RECEIPT_MAX_AGE = timedelta(hours=23)
+
+
+def _apply_expo_receipt(jitai_log, receipt, now):
+    jitai_log.expo_receipt_checked_at = now
+    fields = ['expo_receipt_checked_at', 'expo_receipt_status', 'expo_receipt_error']
+    if receipt.status == 'ok':
+        jitai_log.expo_receipt_status = 'ok'
+        jitai_log.expo_receipt_error = ''
+        if jitai_log.delivery_status == 'accepted_by_expo':
+            jitai_log.delivery_status = 'handed_to_provider'
+            fields.append('delivery_status')
+    else:
+        code = receipt_error_code(receipt)
+        jitai_log.expo_receipt_status = 'error'
+        jitai_log.expo_receipt_error = code
+        if jitai_log.delivery_status != 'received_on_device':
+            jitai_log.status = 'failed'
+            jitai_log.delivery_status = 'failed'
+            jitai_log.delivery_error = f'expo receipt: {code}'
+            fields += ['status', 'delivery_status', 'delivery_error']
+        if code == 'DeviceNotRegistered':
+            jitai_log.user.push_token = None
+            jitai_log.user.save(update_fields=['push_token'])
+    jitai_log.save(update_fields=fields)
+
+
+@shared_task
+def check_expo_receipts():
+    now = django_timezone.now()
+    pending = list(
+        JITAILog.objects.filter(
+            expo_ticket_id__gt='',
+            expo_receipt_checked_at__isnull=True,
+            push_sent_at__gte=now - EXPO_RECEIPT_MAX_AGE,
+            push_sent_at__lte=now - EXPO_RECEIPT_MIN_AGE,
+        ).select_related('user')
+    )
+    if not pending:
+        return 0
+
+    try:
+        receipts = fetch_expo_receipts([log.expo_ticket_id for log in pending])
+    except Exception:
+        logger.exception("check_expo_receipts: receipt request failed")
+        return 0
+
+    by_ticket = {log.expo_ticket_id: log for log in pending}
+    checked = 0
+    for receipt in receipts:
+        jitai_log = by_ticket.pop(receipt.id, None)
+        if jitai_log is None:
+            continue
+        try:
+            _apply_expo_receipt(jitai_log, receipt, now)
+            checked += 1
+        except Exception:
+            logger.exception(
+                "check_expo_receipts failed for jitai_log_id=%s", jitai_log.pk
+            )
+    if by_ticket:
+        logger.warning(
+            "check_expo_receipts: %s ticket(s) had no receipt yet", len(by_ticket)
+        )
+    return checked
 
 
 @shared_task
