@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   LayoutAnimation,
   Linking,
   Modal,
@@ -37,6 +38,7 @@ import { log } from '../utils/logger';
 import { colors, radius, typography } from '../theme';
 
 const NO_SHOW_COPY: Record<string, string> = {
+  no_active_check_in: 'There are no available check-ins right now. We’ll notify you when the next one is ready.',
   daily_cap_reached: "You're all caught up on check-ins for today. Thanks for taking part!",
   outcome_window_already_completed: "You've already completed this check-in. Thank you!",
 };
@@ -52,6 +54,7 @@ const DIALABLE = /^[0-9+\-\s()]+$/;
 type Props = {
   visible: boolean;
   jitaiLogId?: number;
+  checkinOnly?: boolean;
   onClose: () => void;
 };
 
@@ -65,7 +68,7 @@ function isSupported(sub: EMASubItem) {
   );
 }
 
-export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
+export default function EMAScreen({ visible, jitaiLogId, checkinOnly = false, onClose }: Props) {
   const userId = useAuthStore((s) => s.userId);
   const showAlert = useAlertStore((s) => s.show);
 
@@ -111,10 +114,10 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     sectionOffsets.current = {};
 
     try {
-      const { data } = await emaApi.next();
+      const { data } = await emaApi.next(checkinOnly);
 
-      if (!data.should_show) {
-        setNoShowReason(data.reason ?? null);
+      if (!data.should_show || (checkinOnly && data.ema_type === 'prompt_feedback')) {
+        setNoShowReason(data.should_show ? 'no_active_check_in' : data.reason ?? null);
         setPhase('noshow');
         return;
       }
@@ -133,12 +136,12 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
       log('[EMA] next failed:', e?.response?.status, e?.response?.data ?? e?.message);
       setPhase('error');
     }
-  }, [logEngagement]);
+  }, [logEngagement, checkinOnly]);
 
   useEffect(() => {
     if (!visible) return;
     load();
-  }, [visible]);
+  }, [visible, load]);
 
   useEffect(() => {
     if (phase !== 'form' || !survey) return;
@@ -149,7 +152,13 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
       return;
     }
     const timer = setTimeout(() => setPhase('expired'), remaining);
-    return () => clearTimeout(timer);
+    const appState = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        const left = msUntil(survey.expires_at);
+        if (left !== null && left <= 0) setPhase('expired');
+      }
+    });
+    return () => { clearTimeout(timer); appState.remove(); };
   }, [phase, survey]);
 
   function handleScroll(e: NativeSyntheticEvent<NativeScrollEvent>) {
@@ -182,6 +191,11 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
 
   async function handleSubmit() {
     if (!survey || !complete || submitting) return;
+    const remaining = msUntil(survey.expires_at);
+    if (remaining !== null && remaining <= 0) {
+      setPhase('expired');
+      return;
+    }
     setSubmitting(true);
 
     try {
@@ -207,9 +221,14 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
     } catch (e: any) {
       const status = e?.response?.status;
       log('[EMA] submit failed:', status, e?.response?.data);
+      if (status === 410) {
+        setPhase('expired');
+        setSubmitting(false);
+        return;
+      }
       showAlert(
         'Could not submit',
-        status === 400 || status === 404
+        status === 400 || status === 404 || status === 409
           ? 'This check-in is no longer valid. Close and try again later.'
           : 'Check your connection and try again.',
       );
@@ -374,7 +393,7 @@ export default function EMAScreen({ visible, jitaiLogId, onClose }: Props) {
             </Text>
             {!activeSectionTitle && phase === 'form' && typeof survey?.daily_cap === 'number' && (
               <Text style={styles.progressPillText}>
-                {survey.daily_count + 1} of {survey.daily_cap}
+                {(survey.daily_count ?? 0) + 1} of {survey.daily_cap}
               </Text>
             )}
           </View>

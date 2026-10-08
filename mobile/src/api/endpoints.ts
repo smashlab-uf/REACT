@@ -41,8 +41,10 @@ export const user = {
 // ─── EMA ──────────────────────────────────────────────────────────────────────
 
 export const ema = {
-  next: () =>
-    client.get<EMANextResponse>('/ema/next/'),
+  next: (checkinOnly = false) =>
+    client.get<EMANextResponse>('/ema/next/', {
+      params: checkinOnly ? { checkin_only: '1' } : undefined,
+    }),
 
   submitResponses: (body: EMASubmitRequest) =>
     client.post<EMASubmitResponse>('/ema/responses/', body),

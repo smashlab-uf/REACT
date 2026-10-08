@@ -248,6 +248,17 @@ class CheckinReminder(models.Model):
         'JITAILog', on_delete=models.SET_NULL, null=True, blank=True, related_name='outcome_reminders'
     )
 
+    @property
+    def prompt_id(self):
+        return f'EMA-REMINDER-{self.pk}'
+
+    @property
+    def expires_at(self):
+        # Derived from the immutable send record, never from a read/open time.
+        from datetime import timedelta
+        from .ema_catalog import EMA_RESPONSE_WINDOW_MINUTES
+        return self.sent_at + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES)
+
     class Meta:
         ordering = ['-sent_at']
 

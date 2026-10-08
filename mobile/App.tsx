@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Platform, View } from 'react-native';
 import * as Notifications from 'expo-notifications';
+import NetInfo from '@react-native-community/netinfo';
 import { useFonts } from 'expo-font';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from './src/store/authStore';
@@ -8,10 +9,12 @@ import LoginScreen from './src/screens/LoginScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
 import ComposeScreen from './src/screens/ComposeScreen';
 import EMAScreen from './src/screens/EMAScreen';
+import { useAvailableCheckin } from './src/ema/useAvailableCheckin';
 import { flushQueue, startNetworkListener } from './src/telemetry/offlineQueue';
 import { registerForPushNotifications } from './src/notifications/pushToken';
 import { parsePushData, shouldOpenEMA } from './src/notifications/payload';
-import { jitai, user as userApi, telemetry } from './src/api/endpoints';
+import { jitai, telemetry } from './src/api/endpoints';
+import { pushRegistration } from './src/notifications/session';
 import NotificationToast from './src/components/NotificationToast';
 import AppAlert from './src/components/AppAlert';
 import { log } from './src/utils/logger';
@@ -19,19 +22,19 @@ import { colors } from './src/theme';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
+    shouldShowAlert: useAuthStore.getState().isAuthenticated,
+    shouldPlaySound: useAuthStore.getState().isAuthenticated,
     shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
+    shouldShowBanner: useAuthStore.getState().isAuthenticated,
+    shouldShowList: useAuthStore.getState().isAuthenticated,
   }),
 });
 
 type Screen = 'login' | 'register' | 'app';
-type ActiveEMA = { jitaiLogId?: number };
+type ActiveEMA = { jitaiLogId?: number; checkinOnly?: boolean };
 type ReceiptAppState = 'foreground' | 'background' | 'killed';
 
-const COLD_START_MAX_AGE_MS = 120000;
+const COLD_START_MAX_AGE_MS = 30 * 60 * 1000;
 
 export default function App() {
   const [fontsLoaded] = useFonts({
@@ -42,6 +45,7 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastVariant, setToastVariant] = useState<'info' | 'success' | 'error'>('info');
   const [activeEMA, setActiveEMA] = useState<ActiveEMA | null>(null);
+  const checkin = useAvailableCheckin(isAuthenticated ? userId : null, activeEMA !== null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function showToast(message: string, variant: 'info' | 'success' | 'error' = 'info') {
@@ -58,19 +62,63 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated) {
+      setActiveEMA(null);
+      return;
+    }
     flushQueue();
   }, [isAuthenticated]);
 
   useEffect(() => {
-    if (!isAuthenticated || !userId) return;
+    if (isLoading) return;
+    if (!isAuthenticated) {
+      setActiveEMA(null);
+      setToastMessage(null);
+    }
+    const retry = () => {
+      const action = useAuthStore.getState().isAuthenticated
+        ? pushRegistration.retry() : pushRegistration.unregister();
+      action.catch(() => log('[PushToken] Cleanup still pending'));
+    };
+    retry();
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      if (state.isConnected) retry();
+    });
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') retry();
+    });
+    return () => { unsubscribe(); subscription.remove(); };
+  }, [isAuthenticated, isLoading]);
 
-    registerForPushNotifications().then((token) => {
-      if (token) {
-        userApi.update(userId, { push_token: token }).catch((e) => {
-          log('[PushToken] Failed to register with backend:', e?.response?.status);
-        });
+  useEffect(() => {
+    if (!isAuthenticated || !userId) return;
+    let cancelled = false;
+    const isCurrent = () => !cancelled && useAuthStore.getState().isAuthenticated
+      && useAuthStore.getState().userId === userId;
+
+    let registering = false;
+    let registered = false;
+    const ensureRegistered = async () => {
+      if (!isCurrent() || registering || registered) return;
+      registering = true;
+      try {
+        const token = await registerForPushNotifications();
+        if (token) {
+          await pushRegistration.register(userId, token, isCurrent);
+          registered = isCurrent();
+        }
+      } catch {
+        log('[PushToken] Failed to register with backend; will retry');
+      } finally {
+        registering = false;
       }
+    };
+    void ensureRegistered();
+    const registrationNetworkSub = NetInfo.addEventListener((state) => {
+      if (state.isConnected) void ensureRegistered();
+    });
+    const registrationAppSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void ensureRegistered();
     });
 
     const reportedReceipts = new Set<number>();
@@ -90,14 +138,20 @@ export default function App() {
     }
 
     function openFromPush(parsed: ReturnType<typeof parsePushData>) {
+      if (!isCurrent()) return;
       if (!shouldOpenEMA(parsed.type)) return;
-      setActiveEMA({ jitaiLogId: parsed.jitaiLogId });
+      setActiveEMA({ jitaiLogId: parsed.jitaiLogId, checkinOnly: parsed.type === 'checkin_reminder' });
     }
 
     function onTapped(response: Notifications.NotificationResponse, appState: ReceiptAppState) {
+      if (!isCurrent()) return;
       const identifier = response.notification.request.identifier;
       if (handledTaps.has(identifier)) return;
       handledTaps.add(identifier);
+      // Consume the response so an icon launch does not replay a previous tap.
+      Notifications.clearLastNotificationResponseAsync().catch((e) => {
+        log('[Push] Could not clear handled notification response:', e?.message);
+      });
 
       const data = response.notification.request.content.data as Record<string, unknown>;
       const parsed = parsePushData(data);
@@ -120,6 +174,7 @@ export default function App() {
     }
 
     const foregroundSub = Notifications.addNotificationReceivedListener((notification) => {
+      if (!isCurrent()) return;
       const content = notification.request.content;
       const data = content.data as Record<string, unknown>;
       const parsed = parsePushData(data);
@@ -151,6 +206,9 @@ export default function App() {
     });
 
     return () => {
+      cancelled = true;
+      registrationNetworkSub();
+      registrationAppSub.remove();
       foregroundSub.remove();
       tapSub.remove();
     };
@@ -169,7 +227,12 @@ export default function App() {
       <NotificationToast message={toastMessage} variant={toastVariant} />
       <AppAlert />
       {isAuthenticated ? (
-        <ComposeScreen onOpenEMA={() => setActiveEMA({})} />
+        <ComposeScreen
+          onOpenEMA={() => setActiveEMA({ checkinOnly: true })}
+          availableCheckin={checkin.available}
+          checkinError={checkin.error}
+          onRefreshCheckin={checkin.refresh}
+        />
       ) : screen === 'register' ? (
         <RegisterScreen onGoToLogin={() => setScreen('login')} />
       ) : (
@@ -177,8 +240,9 @@ export default function App() {
       )}
 
       <EMAScreen
-        visible={activeEMA !== null}
+        visible={isAuthenticated && activeEMA !== null}
         jitaiLogId={activeEMA?.jitaiLogId}
+        checkinOnly={activeEMA?.checkinOnly ?? false}
         onClose={() => setActiveEMA(null)}
       />
     </View>

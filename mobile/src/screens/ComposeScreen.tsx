@@ -15,12 +15,18 @@ import { useTelemetryStore, TelemetryEvent } from '../telemetry/telemetryStore';
 import { useAuthStore } from '../store/authStore';
 import { useAlertStore } from '../store/alertStore';
 import { jitai } from '../api/endpoints';
+import { EMANextShowResponse } from '../api/types';
 import { log } from '../utils/logger';
 import { colors, radius } from '../theme';
 
-type Props = { onOpenEMA: () => void };
+type Props = {
+  onOpenEMA: () => void;
+  availableCheckin: EMANextShowResponse | null;
+  checkinError: boolean;
+  onRefreshCheckin: () => void;
+};
 
-export default function ComposeScreen({ onOpenEMA }: Props) {
+export default function ComposeScreen({ onOpenEMA, availableCheckin, checkinError, onRefreshCheckin }: Props) {
   const [text, setText] = useState('');
   const events = useTelemetryStore((s) => s.events);
   const flush = useTelemetryStore((s) => s.flush);
@@ -109,6 +115,32 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
           </View>
         )}
 
+        {availableCheckin && availableCheckin.ema_type !== 'prompt_feedback' && (
+          <View style={styles.checkinCard}>
+            <Text style={styles.checkinTitle}>
+              Check-in available
+            </Text>
+            {availableCheckin.expires_at && (
+              <Text style={styles.checkinDetail}>
+                Available until {new Date(availableCheckin.expires_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+              </Text>
+            )}
+            <TouchableOpacity accessibilityRole="button" style={styles.checkinButton} onPress={onOpenEMA}>
+              <Text style={styles.checkinButtonText}>
+                Start check-in
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        {checkinError && (
+          <View style={styles.checkinCard}>
+            <Text style={styles.checkinDetail}>Could not check for a check-in.</Text>
+            <TouchableOpacity accessibilityRole="button" style={styles.checkinButton} onPress={onRefreshCheckin}>
+              <Text style={styles.checkinButtonText}>Try again</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         <Text style={styles.title}>Compose</Text>
         <View style={styles.titleAccent} />
         <ComposeInput value={text} onChangeText={setText} onSubmit={handleSubmit} />
@@ -153,6 +185,14 @@ export default function ComposeScreen({ onOpenEMA }: Props) {
 }
 
 const styles = StyleSheet.create({
+  checkinCard: {
+    margin: 16, padding: 16, borderRadius: 12,
+    backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.primary,
+  },
+  checkinTitle: { fontSize: 20, fontWeight: '600', color: colors.primary },
+  checkinDetail: { fontSize: 14, color: colors.primary, marginTop: 8 },
+  checkinButton: { backgroundColor: colors.primary, borderRadius: 8, padding: 12, marginTop: 12 },
+  checkinButtonText: { color: '#fff', fontWeight: '600', textAlign: 'center' },
   container: {
     flex: 1,
     backgroundColor: '#f5f5f7',

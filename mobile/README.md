@@ -69,7 +69,15 @@ The app needs no special handling: `GET /ema/next/` decides what to serve, inclu
 
 **JITAI prompt** (silent): no title or body. Data is `{ type: "ema_prompt", prompt_id, jitai_log_id }`. Not on a clock. `evaluate_jitai_triggers` also runs every 180 seconds, but it only considers sending after a new completed EMA, then eligibility plus a coin flip. The app has no local prompt catalog, so JITAI message text is not shown on device.
 
-Tapping either type opens EMA (`GET /ema/next/`, then `POST /ema/responses/`). A foreground check-in reminder also opens EMA. JITAI receipts (`POST /jitai/receipt/`) fire when `jitai_log_id` is present (foreground, tap, or cold start). Check-in reminders have no `jitai_log_id`, so they do not report a JITAI receipt.
+The home screen checks `GET /ema/next/?checkin_only=1` after sign-in, on return to the foreground, and after closing a survey. An available check-in appears in a card with a **Start check-in** button and its closing time. The card disappears at expiry or after completion. Failed availability requests show a retry button. The card and check-in reminder opens use `checkin_only=1` to skip unanswered C0 feedback. C0 feedback opens through intervention notifications using the default endpoint; it has no home-screen card.
+
+Scheduled and outcome check-ins require a successful notification send record (`CheckinReminder`). Their stable prompt ID is `EMA-REMINDER-<id>` and their deadline is that record's `sent_at + 30 minutes`. The record is written after Expo accepts the push; this is server send time, not confirmed arrival on the phone. Opening or refreshing the app does not extend the deadline. The server rejects expired submissions (410), duplicate completions (409), and unknown/mismatched check-ins (400/404). Immediate C0 prompt feedback keeps its existing separate behavior. No database migration is needed: the deadline is derived from the existing send record.
+
+Deploy the backend change together with the mobile update. An older app fetching a new survey can echo the new prompt ID, but surveys already open with old prompt IDs must be closed and reopened. A locally simulated notification does not create a server send record; use a real test-account reminder to validate availability. The legacy `backend/full_circle_test.py` script's arbitrary survey submissions also no longer satisfy the notification requirement.
+
+For device QA on an ST test account: background the app, receive a check-in reminder, wait five minutes without tapping it, then launch from the home-screen icon. Confirm the card appears and shows the original closing time. Open, dismiss, and reopen the check-in; the deadline must stay the same. Confirm completion removes the card, and reopening after 30 minutes does not recover the expired check-in. Repeat with the app terminated, and verify notification taps and a failed-network retry.
+
+Tapping an intervention notification opens EMA using `GET /ema/next/`; check-in reminders use `GET /ema/next/?checkin_only=1`. Both submit through `POST /ema/responses/`. A foreground check-in reminder also opens EMA. JITAI receipts (`POST /jitai/receipt/`) fire when `jitai_log_id` is present (foreground, tap, or cold start). Check-in reminders have no `jitai_log_id`, so they do not report a JITAI receipt.
 
 ## Local backend
 
