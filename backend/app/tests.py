@@ -1406,19 +1406,26 @@ class JITAIEndpointTests(TestCase):
         self.assertEqual(log.suppression_reason, 'cooldown')
 
     def test_post_past_daily_cap_is_forced_suppressed(self):
-        old_enough = timezone.now() - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES + 5)
+        # Keep prior sends on the same Eastern day even when CI runs just
+        # after midnight, while placing them outside the cooldown window.
+        decision_time = datetime(2026, 1, 15, 12, 0, tzinfo=EASTERN)
+        User.objects.filter(pk=self.user.pk).update(
+            enrolled_at=decision_time - timedelta(days=RUN_IN_DAYS + 1),
+        )
+        old_enough = decision_time - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES + 5)
         for i in range(study_config.DAILY_PROMPT_CAP):
             log = JITAILog.objects.create(
                 user=self.user, prompt_id=f'T{i}', trigger_reason='hr_elevated',
                 send_prompt=True, status='delivered', delivery_status='delivered',
             )
             JITAILog.objects.filter(pk=log.pk).update(triggered_at=old_enough)
-        response = self.staff_client.post('/jitai/', {
-            'user': self.user.user_id,
-            'prompt_id': 'T_over_cap',
-            'trigger_reason': 'hr_elevated+stress_high',
-            'send_prompt': True,
-        }, format='json')
+        with patch('app.views.django_timezone.now', return_value=decision_time):
+            response = self.staff_client.post('/jitai/', {
+                'user': self.user.user_id,
+                'prompt_id': 'T_over_cap',
+                'trigger_reason': 'hr_elevated+stress_high',
+                'send_prompt': True,
+            }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
         self.assertFalse(log.send_prompt)
