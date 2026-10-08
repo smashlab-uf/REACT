@@ -8,6 +8,7 @@ import LoginScreen from './src/screens/LoginScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
 import ComposeScreen from './src/screens/ComposeScreen';
 import EMAScreen from './src/screens/EMAScreen';
+import { useAvailableCheckin } from './src/ema/useAvailableCheckin';
 import { flushQueue, startNetworkListener } from './src/telemetry/offlineQueue';
 import { registerForPushNotifications } from './src/notifications/pushToken';
 import { parsePushData, shouldOpenEMA } from './src/notifications/payload';
@@ -28,10 +29,10 @@ Notifications.setNotificationHandler({
 });
 
 type Screen = 'login' | 'register' | 'app';
-type ActiveEMA = { jitaiLogId?: number };
+type ActiveEMA = { jitaiLogId?: number; checkinOnly?: boolean };
 type ReceiptAppState = 'foreground' | 'background' | 'killed';
 
-const COLD_START_MAX_AGE_MS = 120000;
+const COLD_START_MAX_AGE_MS = 30 * 60 * 1000;
 
 export default function App() {
   const [fontsLoaded] = useFonts({
@@ -42,6 +43,7 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastVariant, setToastVariant] = useState<'info' | 'success' | 'error'>('info');
   const [activeEMA, setActiveEMA] = useState<ActiveEMA | null>(null);
+  const checkin = useAvailableCheckin(isAuthenticated ? userId : null, activeEMA !== null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function showToast(message: string, variant: 'info' | 'success' | 'error' = 'info') {
@@ -58,7 +60,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated) {
+      setActiveEMA(null);
+      return;
+    }
     flushQueue();
   }, [isAuthenticated]);
 
@@ -91,13 +96,17 @@ export default function App() {
 
     function openFromPush(parsed: ReturnType<typeof parsePushData>) {
       if (!shouldOpenEMA(parsed.type)) return;
-      setActiveEMA({ jitaiLogId: parsed.jitaiLogId });
+      setActiveEMA({ jitaiLogId: parsed.jitaiLogId, checkinOnly: parsed.type === 'checkin_reminder' });
     }
 
     function onTapped(response: Notifications.NotificationResponse, appState: ReceiptAppState) {
       const identifier = response.notification.request.identifier;
       if (handledTaps.has(identifier)) return;
       handledTaps.add(identifier);
+      // Consume the response so an icon launch does not replay a previous tap.
+      Notifications.clearLastNotificationResponseAsync().catch((e) => {
+        log('[Push] Could not clear handled notification response:', e?.message);
+      });
 
       const data = response.notification.request.content.data as Record<string, unknown>;
       const parsed = parsePushData(data);
@@ -169,7 +178,12 @@ export default function App() {
       <NotificationToast message={toastMessage} variant={toastVariant} />
       <AppAlert />
       {isAuthenticated ? (
-        <ComposeScreen onOpenEMA={() => setActiveEMA({})} />
+        <ComposeScreen
+          onOpenEMA={() => setActiveEMA({ checkinOnly: true })}
+          availableCheckin={checkin.available}
+          checkinError={checkin.error}
+          onRefreshCheckin={checkin.refresh}
+        />
       ) : screen === 'register' ? (
         <RegisterScreen onGoToLogin={() => setScreen('login')} />
       ) : (
@@ -179,6 +193,7 @@ export default function App() {
       <EMAScreen
         visible={activeEMA !== null}
         jitaiLogId={activeEMA?.jitaiLogId}
+        checkinOnly={activeEMA?.checkinOnly ?? false}
         onClose={() => setActiveEMA(null)}
       />
     </View>

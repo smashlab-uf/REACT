@@ -1,4 +1,4 @@
-export type EMAType = 'scheduled_check_in' | 'post_prompt' | 'extra_check_in';
+export type EMAType = 'scheduled_check_in' | 'post_prompt' | 'extra_check_in' | 'prompt_feedback';
 
 export type EMAResponseType = 'likert' | 'single_choice' | 'multi_choice' | 'yes_no' | 'number';
 
@@ -39,9 +39,9 @@ export type EMANextShowResponse = {
   outcome_window_active: boolean;
   outcome_window_start?: string | null;
   outcome_window_end?: string | null;
-  expires_at: string;
-  daily_cap: number;
-  daily_count: number;
+  expires_at?: string | null;
+  daily_cap?: number;
+  daily_count?: number;
   items: EMAItem[];
 };
 
