@@ -277,6 +277,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'app.tasks.send_checkin_reminders',
         'schedule': schedule(180.0),
     },
+    'check-expo-receipts': {
+        'task': 'app.tasks.check_expo_receipts',
+        'schedule': schedule(180.0),
+    },
     # Slower than the three above on purpose: the trailing recompute is an
     # aggregate refresh, and 10 minutes matches the Labfront batch cadence, so
     # a shorter interval would only reread the same rows.

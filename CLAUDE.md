@@ -140,9 +140,9 @@ Three cooperating processes (`Procfile`) plus the mobile client:
 - **web** — `gunicorn project.wsgi` — the DRF API and Django Admin (the primary researcher
   surface; see Researcher Dashboard below for the read-only monitoring API alongside it).
 - **worker** — `celery -A project.celery worker` — executes the JITAI / notification tasks.
-- **beat** — `celery -A project.celery beat` — fires four periodic tasks (`CELERY_BEAT_SCHEDULE`
-  in `settings.py`). Three run every **180 s** and live in `app/tasks.py`:
-  `ingest_wearable_data`, `evaluate_jitai_triggers`, `send_checkin_reminders`. The fourth,
+- **beat** — `celery -A project.celery beat` — fires five periodic tasks (`CELERY_BEAT_SCHEDULE`
+  in `settings.py`). Four run every **180 s** and live in `app/tasks.py`:
+  `ingest_wearable_data`, `evaluate_jitai_triggers`, `send_checkin_reminders`, `check_expo_receipts`. The fourth,
   `dashboard.tasks.recompute_monitoring_metrics`, runs every **600 s** — an aggregate refresh
   paced to the Labfront batch cadence, so a shorter interval would only reread the same rows.
 
@@ -164,6 +164,13 @@ has landed and never as a catch-up; there is no cooldown, and the 120 minutes so
 as one is just the slot length; it also sends the **outcome check-in reminder** described below) and a
 **silent JITAI prompt** (`evaluate_jitai_triggers`, sent only after a
 newly completed EMA passes eligibility + randomization).
+
+`send_jitai_prompt` stores Expo's ticket ID on `JITAILog.expo_ticket_id`. `check_expo_receipts` asks Expo for
+the receipt 15 min to 23 h after the send (Expo keeps receipts about 24 h) and records `expo_receipt_status` /
+`expo_receipt_error`. An `ok` receipt moves `delivery_status` from `accepted_by_expo` to `handed_to_provider`
+(Apple/Google accepted it, not proof the participant saw it); an error receipt sets `failed` with
+`delivery_error='expo receipt: <code>'`, and `DeviceNotRegistered` clears `User.push_token`. A row already
+`received_on_device` is never downgraded. Check-in reminders do not store a ticket.
 
 **Every available decision point opens a time-locked outcome window, sent or not**
 (`_latest_outcome_window` in `app/views.py`, protocol §9.2).
@@ -331,7 +338,7 @@ but that file doesn't exist in the repo — don't chase it.)
 | GET | `/telemetry/stress/{user_id}/` | Fetch recent stress samples (dashboard use) |
 | POST | `/telemetry/phone/` | Ingest compose surface event from mobile app |
 | POST | `/telemetry/engagement/` | Ingest EMA/notification engagement event from mobile app |
-| GET | `/dashboard/participants/` | Per-participant sync/push/receipt status + staleness |
+| GET | `/dashboard/participants/` | Per-participant sync/push/receipt status + staleness (labelled by study ID, no email) |
 | GET | `/dashboard/latency-events/` | Recent push→receipt latency events |
 | GET | `/api/monitor/cohort` | Latest cohort snapshot: benchmarks, Wilson bounds, 14-day series |
 | GET | `/api/monitor/grid` | `MetricsDaily` pivoted to participant × study_day for one metric |
@@ -480,6 +487,10 @@ so a stray space or lowercase code in an export still resolves. It is deliberate
 from `user_id` rather than reused as a foreign key target, for the same reason `DistressFlag`
 stores only signal codes — it's a crosswalk, not a join key into anything sensitive. Set on
 `ParticipantEnrollmentForm` (optional, validated unique case-insensitively) or in Django Admin.
+`dashboard/serializers.py`'s `participant_label` is the one place that names a participant in the monitoring
+endpoints and `/dashboard/participants/`: study ID, else Labfront ID, else `user_id`. No monitoring payload
+carries email. The admin "Enroll for notifications" shortcut writes a `TEST-<user_id>` Labfront ID, so never use it on
+a real participant (user 102 / RS02 was enrolled that way and needs the real ID set).
 
 A suppressed decision point is logged with `send_prompt=False`, `randomization_draw` and
 `randomization_probability` both null, `status` and `delivery_status` both `'suppressed'` (never

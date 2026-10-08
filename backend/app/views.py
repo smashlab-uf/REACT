@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from dashboard.data.config import OUTCOME_CHECK_IN_DELAY_MINUTES, OUTCOME_WINDOW_HOURS, PARTICIPANT_TZ
 from dashboard.data.windows import participant_day_bounds
+from dashboard.serializers import participant_label
 from .distress import active_distress_flag, raise_momentary_flag, resource_card
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -1097,12 +1098,6 @@ class DashboardParticipantStatusView(APIView):
 
         stale_cutoff = django_timezone.now() - timedelta(hours=stale_after_hours)
 
-        latest_participant_id = (
-            WearableDevice.objects
-            .filter(user=OuterRef('pk'))
-            .order_by('-last_synced_at', '-id')
-            .values('labfront_participant_id')[:1]
-        )
         latest_device_sync = (
             WearableDevice.objects
             .filter(user=OuterRef('pk'))
@@ -1124,8 +1119,8 @@ class DashboardParticipantStatusView(APIView):
 
         users = (
             User.objects
+            .select_related('wearabledevice')
             .annotate(
-                labfront_participant_id=Subquery(latest_participant_id),
                 last_sync_timestamp=Subquery(latest_device_sync),
                 last_push_timestamp=Subquery(latest_push),
                 last_receipt_timestamp=Subquery(latest_receipt),
@@ -1138,9 +1133,8 @@ class DashboardParticipantStatusView(APIView):
             last_sync = user.last_sync_timestamp
             is_stale = last_sync is None or last_sync < stale_cutoff
             data.append({
-                'participant_id': user.labfront_participant_id or str(user.user_id),
+                'participant_id': participant_label(user),
                 'user_id': user.user_id,
-                'email': user.email,
                 'last_sync_timestamp': last_sync,
                 'last_push_timestamp': user.last_push_timestamp,
                 'last_receipt_timestamp': user.last_receipt_timestamp,
@@ -1201,17 +1195,10 @@ class DashboardLatencyEventsView(APIView):
                 for event in log.engagementlog_set.all().order_by('occurred_at')
             ]
 
-            device = getattr(log.user, 'wearabledevice', None)
-            participant_id = (
-                device.labfront_participant_id
-                if device is not None
-                else str(log.user.user_id)
-            )
-
             data.append({
                 'event_id': log.id,
                 'message_id': log.prompt_id,
-                'participant_id': participant_id,
+                'participant_id': participant_label(log.user),
                 'user_id': log.user.user_id,
                 'decision_point_id': log.decision_point_id,
                 'decision_made_at': log.decision_made_at,
