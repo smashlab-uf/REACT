@@ -224,6 +224,8 @@ def build_jitai_push_message(user, jitai_log) -> PushMessage:
 
 
 def send_jitai_prompt(user, jitai_log) -> bool:
+    # A worker may have loaded this user before the device logged out.
+    user.refresh_from_db(fields=['push_token'])
     if not user.push_token:
         logger.warning("No push token for user_id=%s — skipping", user.user_id)
         mark_delivery_failed(jitai_log, 'missing push token')
@@ -295,6 +297,7 @@ def build_checkin_reminder_message(user) -> PushMessage:
 
 
 def send_checkin_reminder(user) -> bool:
+    user.refresh_from_db(fields=['push_token'])
     if not is_valid_expo_push_token(user.push_token):
         if user.push_token:
             logger.warning(
