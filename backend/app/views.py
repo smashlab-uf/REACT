@@ -1138,6 +1138,7 @@ class DashboardParticipantStatusView(APIView):
                 'last_sync_timestamp': last_sync,
                 'last_push_timestamp': user.last_push_timestamp,
                 'last_receipt_timestamp': user.last_receipt_timestamp,
+                'has_push_token': bool(user.push_token),
                 'current_status': 'stale' if is_stale else 'active',
                 'is_stale': is_stale,
                 'stale_after_hours': stale_after_hours,

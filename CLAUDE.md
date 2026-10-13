@@ -338,7 +338,7 @@ but that file doesn't exist in the repo — don't chase it.)
 | GET | `/telemetry/stress/{user_id}/` | Fetch recent stress samples (dashboard use) |
 | POST | `/telemetry/phone/` | Ingest compose surface event from mobile app |
 | POST | `/telemetry/engagement/` | Ingest EMA/notification engagement event from mobile app |
-| GET | `/dashboard/participants/` | Per-participant sync/push/receipt status + staleness (labelled by study ID, no email) |
+| GET | `/dashboard/participants/` | Per-participant sync/push/receipt status + push-token presence (`has_push_token`, never the token) + staleness (labelled by study ID, no email) |
 | GET | `/dashboard/latency-events/` | Recent push→receipt latency events |
 | GET | `/api/monitor/cohort` | Latest cohort snapshot: benchmarks, Wilson bounds, 14-day series |
 | GET | `/api/monitor/grid` | `MetricsDaily` pivoted to participant × study_day for one metric |

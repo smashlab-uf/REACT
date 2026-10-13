@@ -5979,6 +5979,21 @@ class DashboardStudyIdLabelTests(TestCase):
             self.assertNotIn('email', row)
         self.assertNotIn('ufl.edu', body.content.decode())
 
+    def test_participants_report_push_token_presence_without_leaking_it(self):
+        token = 'ExponentPushToken[abcdefghijklmnopqrstuv]'
+        self.with_study.push_token = token
+        self.with_study.save(update_fields=['push_token'])
+        self.without_study.push_token = ''
+        self.without_study.save(update_fields=['push_token'])
+        body = self._get('/dashboard/participants/')
+        rows = {row['user_id']: row for row in body.json()}
+        self.assertIs(rows[self.with_study.user_id]['has_push_token'], True)
+        self.assertIs(rows[self.without_study.user_id]['has_push_token'], False)
+        self.assertIs(rows[self.bare.user_id]['has_push_token'], False)
+        self.assertNotIn(token, body.content.decode())
+        for row in rows.values():
+            self.assertNotIn('push_token', row)
+
     def test_latency_events_use_study_id(self):
         data = self._get('/dashboard/latency-events/').json()
         self.assertEqual(data[0]['participant_id'], 'RS02')
