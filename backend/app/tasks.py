@@ -180,8 +180,8 @@ def _protocol_override_reason(user, moment):
 
 
 def _cooldown_cap_reason(user, moment):
-    """Real-send-history cooldown/daily-cap check, Eastern days, actual sends
-    only. The single implementation of "has this user already gotten enough
+    """Real-send-history cooldown/daily-cap check, Eastern days, sends that
+    have not failed. The single implementation of "has this user already gotten enough
     today," shared by _evaluate_user (production pipeline) and
     _decision_point_safeguards (the manual POST /jitai/ recheck) — replacing
     two formerly-independent implementations that both bucketed by UTC day.
@@ -189,6 +189,7 @@ def _cooldown_cap_reason(user, moment):
     """
     last_sent = (
         JITAILog.objects.filter(user=user, send_prompt=True)
+        .exclude(delivery_status='failed')
         .order_by('-triggered_at').first()
     )
     if last_sent and (moment - last_sent.triggered_at).total_seconds() / 60 < JITAI_COOLDOWN_MINUTES:
@@ -197,7 +198,7 @@ def _cooldown_cap_reason(user, moment):
     day_start, day_end = participant_day_bounds(moment.astimezone(PARTICIPANT_TZ).date())
     sent_today = JITAILog.objects.filter(
         user=user, send_prompt=True, triggered_at__gte=day_start, triggered_at__lt=day_end,
-    ).count()
+    ).exclude(delivery_status='failed').count()
     if sent_today >= DAILY_PROMPT_CAP:
         return 'daily_cap'
     return ''
@@ -300,6 +301,7 @@ def _evaluate_user(user, p):
             JITAILog.objects
             .filter(user=user, send_prompt=True)
             .exclude(prompt_id='')
+            .exclude(delivery_status='failed')
             .order_by('-decision_made_at')
             .values_list('prompt_id', flat=True)[:5]
         )
