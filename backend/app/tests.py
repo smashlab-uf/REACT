@@ -3914,6 +3914,43 @@ class EvaluateUserCooldownCapTests(NoRealCheckinPushMixin, TestCase):
     @patch('app.tasks.send_jitai_prompt')
     @patch('app.tasks.apply_decision_rules')
     @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.3)
+    def test_failed_prior_send_does_not_trigger_cooldown(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        new_ema = self._make_new_ema(timezone.now())
+        failed = self._make_prior_send(new_ema.sent_at - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES - 1))
+        JITAILog.objects.filter(pk=failed.pk).update(status='failed', delivery_status='failed')
+        mock_mssd.return_value = self._eligible_df(new_ema)
+        mock_rules.return_value = self._eligible_df(new_ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.suppression_reason, '')
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.3)
+    def test_failed_prior_sends_do_not_count_toward_daily_cap(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        new_ema = self._make_new_ema(timezone.now())
+        for hours_ago in range(2, 2 + study_config.DAILY_PROMPT_CAP):
+            failed = self._make_prior_send(new_ema.sent_at - timedelta(hours=hours_ago))
+            JITAILog.objects.filter(pk=failed.pk).update(status='failed', delivery_status='failed')
+        mock_mssd.return_value = self._eligible_df(new_ema)
+        mock_rules.return_value = self._eligible_df(new_ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.suppression_reason, '')
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
     def test_four_real_sends_on_eastern_day_block_a_fifth_even_when_last_send_crosses_utc_midnight(self, mock_mssd, mock_rules, mock_send):
         eastern = ZoneInfo('America/New_York')
         User.objects.filter(pk=self.user.pk).update(
@@ -5948,6 +5985,21 @@ class DashboardStudyIdLabelTests(TestCase):
         for row in body.json():
             self.assertNotIn('email', row)
         self.assertNotIn('ufl.edu', body.content.decode())
+
+    def test_participants_report_push_token_presence_without_leaking_it(self):
+        token = 'ExponentPushToken[abcdefghijklmnopqrstuv]'
+        self.with_study.push_token = token
+        self.with_study.save(update_fields=['push_token'])
+        self.without_study.push_token = ''
+        self.without_study.save(update_fields=['push_token'])
+        body = self._get('/dashboard/participants/')
+        rows = {row['user_id']: row for row in body.json()}
+        self.assertIs(rows[self.with_study.user_id]['has_push_token'], True)
+        self.assertIs(rows[self.without_study.user_id]['has_push_token'], False)
+        self.assertIs(rows[self.bare.user_id]['has_push_token'], False)
+        self.assertNotIn(token, body.content.decode())
+        for row in rows.values():
+            self.assertNotIn('push_token', row)
 
     def test_latency_events_use_study_id(self):
         data = self._get('/dashboard/latency-events/').json()
