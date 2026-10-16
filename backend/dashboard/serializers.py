@@ -97,12 +97,16 @@ class AlertSerializer(serializers.ModelSerializer):
 
 
 def participant_label(user):
-    """The Labfront id when there is one, else the user_id.
+    """The study id when there is one, else the Labfront id, else the user_id.
 
-    Matches what the existing /dashboard/participants/ endpoint reports, so both
-    surfaces name a participant the same way.
+    The monitoring endpoints and /dashboard/participants/ all name a participant
+    through this, so they cannot drift apart.
     """
     if user is None:
         return None
+    if user.study_id:
+        return user.study_id
     device = getattr(user, 'wearabledevice', None)
-    return device.labfront_participant_id if device is not None else str(user.pk)
+    if device is not None and device.labfront_participant_id:
+        return device.labfront_participant_id
+    return str(user.pk)

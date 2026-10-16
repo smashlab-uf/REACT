@@ -1406,19 +1406,26 @@ class JITAIEndpointTests(TestCase):
         self.assertEqual(log.suppression_reason, 'cooldown')
 
     def test_post_past_daily_cap_is_forced_suppressed(self):
-        old_enough = timezone.now() - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES + 5)
+        # Keep prior sends on the same Eastern day even when CI runs just
+        # after midnight, while placing them outside the cooldown window.
+        decision_time = datetime(2026, 1, 15, 12, 0, tzinfo=EASTERN)
+        User.objects.filter(pk=self.user.pk).update(
+            enrolled_at=decision_time - timedelta(days=RUN_IN_DAYS + 1),
+        )
+        old_enough = decision_time - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES + 5)
         for i in range(study_config.DAILY_PROMPT_CAP):
             log = JITAILog.objects.create(
                 user=self.user, prompt_id=f'T{i}', trigger_reason='hr_elevated',
                 send_prompt=True, status='delivered', delivery_status='delivered',
             )
             JITAILog.objects.filter(pk=log.pk).update(triggered_at=old_enough)
-        response = self.staff_client.post('/jitai/', {
-            'user': self.user.user_id,
-            'prompt_id': 'T_over_cap',
-            'trigger_reason': 'hr_elevated+stress_high',
-            'send_prompt': True,
-        }, format='json')
+        with patch('app.views.django_timezone.now', return_value=decision_time):
+            response = self.staff_client.post('/jitai/', {
+                'user': self.user.user_id,
+                'prompt_id': 'T_over_cap',
+                'trigger_reason': 'hr_elevated+stress_high',
+                'send_prompt': True,
+            }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
         log = JITAILog.objects.filter(user=self.user).latest('triggered_at')
         self.assertFalse(log.send_prompt)
@@ -3907,6 +3914,43 @@ class EvaluateUserCooldownCapTests(NoRealCheckinPushMixin, TestCase):
     @patch('app.tasks.send_jitai_prompt')
     @patch('app.tasks.apply_decision_rules')
     @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.3)
+    def test_failed_prior_send_does_not_trigger_cooldown(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        new_ema = self._make_new_ema(timezone.now())
+        failed = self._make_prior_send(new_ema.sent_at - timedelta(minutes=study_config.JITAI_COOLDOWN_MINUTES - 1))
+        JITAILog.objects.filter(pk=failed.pk).update(status='failed', delivery_status='failed')
+        mock_mssd.return_value = self._eligible_df(new_ema)
+        mock_rules.return_value = self._eligible_df(new_ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.suppression_reason, '')
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
+    @patch('app.tasks.random.uniform', return_value=0.3)
+    def test_failed_prior_sends_do_not_count_toward_daily_cap(self, mock_rand, mock_mssd, mock_rules, mock_send):
+        new_ema = self._make_new_ema(timezone.now())
+        for hours_ago in range(2, 2 + study_config.DAILY_PROMPT_CAP):
+            failed = self._make_prior_send(new_ema.sent_at - timedelta(hours=hours_ago))
+            JITAILog.objects.filter(pk=failed.pk).update(status='failed', delivery_status='failed')
+        mock_mssd.return_value = self._eligible_df(new_ema)
+        mock_rules.return_value = self._eligible_df(new_ema)
+
+        from app.tasks import _evaluate_user
+        _evaluate_user(self.user, 0.5)
+
+        log = JITAILog.objects.get(ema=new_ema)
+        self.assertTrue(log.send_prompt)
+        self.assertEqual(log.suppression_reason, '')
+
+    @patch('app.tasks.send_jitai_prompt')
+    @patch('app.tasks.apply_decision_rules')
+    @patch('app.tasks.calculate_mssd')
     def test_four_real_sends_on_eastern_day_block_a_fifth_even_when_last_send_crosses_utc_midnight(self, mock_mssd, mock_rules, mock_send):
         eastern = ZoneInfo('America/New_York')
         User.objects.filter(pk=self.user.pk).update(
@@ -5754,3 +5798,210 @@ class BaselineImportAdminTests(TestCase):
         self.assertContains(response, 'unknown_question')
         self.assertContains(response, '999999')
         self.assertContains(response, 'blank screening item')
+
+
+class ExpoTicketAndReceiptTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='receipt@ufl.edu', push_token='ExponentPushToken[abc]')
+        self.now = timezone.now()
+
+    def _log(self, ticket_id='tkt-1', minutes_ago=30, delivery_status='accepted_by_expo'):
+        return JITAILog.objects.create(
+            user=self.user,
+            prompt_id='P001',
+            trigger_reason='prompt sent',
+            status='delivered',
+            delivery_status=delivery_status,
+            push_sent_at=self.now - timedelta(minutes=minutes_ago),
+            expo_ticket_id=ticket_id,
+        )
+
+    def _receipt(self, receipt_id, status='ok', error=None):
+        return MagicMock(
+            id=receipt_id,
+            status=status,
+            details={'error': error} if error else None,
+        )
+
+    @patch('app.notification_service.PushClient')
+    def test_send_stores_ticket_id(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        log = JITAILog.objects.create(user=self.user, prompt_id='P001', trigger_reason='prompt sent')
+        MockPushClient.return_value.publish.return_value = MagicMock(id='ticket-abc', status='ok')
+
+        send_jitai_prompt(self.user, log)
+
+        log.refresh_from_db()
+        self.assertEqual(log.expo_ticket_id, 'ticket-abc')
+        self.assertEqual(log.delivery_status, 'accepted_by_expo')
+
+    @patch('app.notification_service.PushClient')
+    def test_send_without_string_ticket_id_stores_blank(self, MockPushClient):
+        from app.notification_service import send_jitai_prompt
+        log = JITAILog.objects.create(user=self.user, prompt_id='P001', trigger_reason='prompt sent')
+        MockPushClient.return_value.publish.return_value = MagicMock()
+
+        send_jitai_prompt(self.user, log)
+
+        log.refresh_from_db()
+        self.assertEqual(log.expo_ticket_id, '')
+
+    @patch('app.tasks.fetch_expo_receipts')
+    def test_ok_receipt_marks_handed_to_provider(self, mock_fetch):
+        from app.tasks import check_expo_receipts
+        log = self._log()
+        mock_fetch.return_value = [self._receipt('tkt-1')]
+
+        self.assertEqual(check_expo_receipts(), 1)
+
+        log.refresh_from_db()
+        self.assertEqual(log.expo_receipt_status, 'ok')
+        self.assertEqual(log.delivery_status, 'handed_to_provider')
+        self.assertIsNotNone(log.expo_receipt_checked_at)
+
+    @patch('app.tasks.fetch_expo_receipts')
+    def test_error_receipt_marks_failed_with_code(self, mock_fetch):
+        from app.tasks import check_expo_receipts
+        log = self._log()
+        mock_fetch.return_value = [self._receipt('tkt-1', 'error', 'MessageRateExceeded')]
+
+        check_expo_receipts()
+
+        log.refresh_from_db()
+        self.assertEqual(log.expo_receipt_status, 'error')
+        self.assertEqual(log.expo_receipt_error, 'MessageRateExceeded')
+        self.assertEqual(log.delivery_status, 'failed')
+        self.assertEqual(log.status, 'failed')
+        self.assertEqual(log.delivery_error, 'expo receipt: MessageRateExceeded')
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.push_token, 'ExponentPushToken[abc]')
+
+    @patch('app.tasks.fetch_expo_receipts')
+    def test_device_not_registered_receipt_clears_push_token(self, mock_fetch):
+        from app.tasks import check_expo_receipts
+        self._log()
+        mock_fetch.return_value = [self._receipt('tkt-1', 'error', 'DeviceNotRegistered')]
+
+        check_expo_receipts()
+
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.push_token)
+
+    @patch('app.tasks.fetch_expo_receipts')
+    def test_error_receipt_does_not_downgrade_received_on_device(self, mock_fetch):
+        from app.tasks import check_expo_receipts
+        log = self._log(delivery_status='received_on_device')
+        mock_fetch.return_value = [self._receipt('tkt-1', 'error', 'DeviceNotRegistered')]
+
+        check_expo_receipts()
+
+        log.refresh_from_db()
+        self.assertEqual(log.delivery_status, 'received_on_device')
+        self.assertEqual(log.expo_receipt_status, 'error')
+        self.assertEqual(log.expo_receipt_error, 'DeviceNotRegistered')
+
+    @patch('app.tasks.fetch_expo_receipts')
+    def test_ok_receipt_does_not_overwrite_received_on_device(self, mock_fetch):
+        from app.tasks import check_expo_receipts
+        log = self._log(delivery_status='received_on_device')
+        mock_fetch.return_value = [self._receipt('tkt-1')]
+
+        check_expo_receipts()
+
+        log.refresh_from_db()
+        self.assertEqual(log.delivery_status, 'received_on_device')
+        self.assertEqual(log.expo_receipt_status, 'ok')
+
+    @patch('app.tasks.fetch_expo_receipts')
+    def test_window_edges_are_skipped(self, mock_fetch):
+        from app.tasks import check_expo_receipts
+        self._log(ticket_id='too-new', minutes_ago=5)
+        self._log(ticket_id='too-old', minutes_ago=24 * 60)
+
+        self.assertEqual(check_expo_receipts(), 0)
+        mock_fetch.assert_not_called()
+
+    @patch('app.tasks.fetch_expo_receipts')
+    def test_already_checked_and_untracked_logs_are_skipped(self, mock_fetch):
+        from app.tasks import check_expo_receipts
+        checked = self._log(ticket_id='done')
+        JITAILog.objects.filter(pk=checked.pk).update(expo_receipt_checked_at=self.now)
+        self._log(ticket_id='')
+
+        check_expo_receipts()
+
+        mock_fetch.assert_not_called()
+
+    @patch('app.tasks.fetch_expo_receipts')
+    def test_missing_receipt_leaves_log_unchecked(self, mock_fetch):
+        from app.tasks import check_expo_receipts
+        log = self._log()
+        mock_fetch.return_value = []
+
+        self.assertEqual(check_expo_receipts(), 0)
+
+        log.refresh_from_db()
+        self.assertIsNone(log.expo_receipt_checked_at)
+        self.assertEqual(log.delivery_status, 'accepted_by_expo')
+
+    @patch('app.tasks.fetch_expo_receipts')
+    def test_fetch_failure_changes_nothing(self, mock_fetch):
+        from app.tasks import check_expo_receipts
+        log = self._log()
+        mock_fetch.side_effect = RuntimeError('expo down')
+
+        self.assertEqual(check_expo_receipts(), 0)
+
+        log.refresh_from_db()
+        self.assertIsNone(log.expo_receipt_checked_at)
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS, DASHBOARD_API_KEY='dashboard-test-key')
+class DashboardStudyIdLabelTests(TestCase):
+
+    def setUp(self):
+        self.with_study = make_user(email='real.person@ufl.edu', study_id='rs02')
+        WearableDevice.objects.create(user=self.with_study, labfront_participant_id='TEST-1')
+        self.without_study = make_user(email='other@ufl.edu')
+        WearableDevice.objects.create(user=self.without_study, labfront_participant_id='lf-77')
+        self.bare = make_user(email='bare@ufl.edu')
+        JITAILog.objects.create(
+            user=self.with_study, prompt_id='P1', trigger_reason='prompt sent',
+            push_sent_at=timezone.now(),
+        )
+
+    def _get(self, path):
+        return self.client.get(path, HTTP_X_DASHBOARD_API_KEY='dashboard-test-key')
+
+    def test_participants_use_study_id_then_labfront_then_user_id(self):
+        rows = {row['user_id']: row for row in self._get('/dashboard/participants/').json()}
+        self.assertEqual(rows[self.with_study.user_id]['participant_id'], 'RS02')
+        self.assertEqual(rows[self.without_study.user_id]['participant_id'], 'lf-77')
+        self.assertEqual(rows[self.bare.user_id]['participant_id'], str(self.bare.user_id))
+
+    def test_participants_payload_has_no_email(self):
+        body = self._get('/dashboard/participants/')
+        for row in body.json():
+            self.assertNotIn('email', row)
+        self.assertNotIn('ufl.edu', body.content.decode())
+
+    def test_participants_report_push_token_presence_without_leaking_it(self):
+        token = 'ExponentPushToken[abcdefghijklmnopqrstuv]'
+        self.with_study.push_token = token
+        self.with_study.save(update_fields=['push_token'])
+        self.without_study.push_token = ''
+        self.without_study.save(update_fields=['push_token'])
+        body = self._get('/dashboard/participants/')
+        rows = {row['user_id']: row for row in body.json()}
+        self.assertIs(rows[self.with_study.user_id]['has_push_token'], True)
+        self.assertIs(rows[self.without_study.user_id]['has_push_token'], False)
+        self.assertIs(rows[self.bare.user_id]['has_push_token'], False)
+        self.assertNotIn(token, body.content.decode())
+        for row in rows.values():
+            self.assertNotIn('push_token', row)
+
+    def test_latency_events_use_study_id(self):
+        data = self._get('/dashboard/latency-events/').json()
+        self.assertEqual(data[0]['participant_id'], 'RS02')
+        self.assertNotIn('ufl.edu', str(data))

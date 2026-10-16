@@ -123,12 +123,16 @@ class JITAILogSerializer(serializers.ModelSerializer):
             'send_prompt', 'status', 'decision_made_at', 'push_sent_at',
             'device_received_at', 'receipt_reported_at', 'receipt_event_id',
             'delivery_status', 'delivery_error', 'receipt_platform', 'receipt_app_state',
+            'expo_ticket_id', 'expo_receipt_status', 'expo_receipt_error', 'expo_receipt_checked_at',
             'send_prompt', 'status',
             'trigger_signal', 'ema_mood', 'ema_stress', 'ema_energy',
             'eligible_prompt_ids', 'evaluated_items', 'matched_categories',
             'category_drawn', 'fallback_reason', 'suppression_reason',
         ]
-        read_only_fields = ('id', 'triggered_at', 'suppression_reason')
+        read_only_fields = (
+            'id', 'triggered_at', 'suppression_reason',
+            'expo_ticket_id', 'expo_receipt_status', 'expo_receipt_error', 'expo_receipt_checked_at',
+        )
 
 
 class JITAIReceiptSerializer(serializers.Serializer):
