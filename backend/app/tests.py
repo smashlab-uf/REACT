@@ -2381,6 +2381,47 @@ class EvaluateJITAITriggersTests(NoRealCheckinPushMixin, TestCase):
 
     @patch('app.tasks.random.uniform', return_value=0.1)
     @patch('app.tasks.send_jitai_prompt')
+    def test_decision_row_records_active_flag_alongside_suppression(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._volatile_cohort(user)
+        self._flag(user, 'momentary')
+
+        evaluate_jitai_triggers()
+
+        log = JITAILog.objects.get(user=user)
+        self.assertTrue(log.distress_flag_active)
+        self.assertEqual(log.suppression_reason, 'distress_momentary')
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_decision_row_records_active_flag_when_run_in_wins(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        volatile = self._volatile_cohort(user)
+        self._enroll_on_study_day(user, volatile, 1)
+        self._flag(user, 'momentary')
+
+        evaluate_jitai_triggers()
+
+        log = JITAILog.objects.get(user=user)
+        self.assertEqual(log.suppression_reason, 'run_in')
+        self.assertTrue(log.distress_flag_active)
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
+    def test_decision_row_not_active_without_a_flag_or_after_expiry(self, mock_send, mock_rand):
+        from app.tasks import evaluate_jitai_triggers
+        user = self._make_enrolled_user()
+        self._volatile_cohort(user)
+        self._flag(user, 'momentary', expires_at=timezone.now() - timedelta(minutes=1))
+
+        evaluate_jitai_triggers()
+
+        self.assertFalse(JITAILog.objects.get(user=user).distress_flag_active)
+
+    @patch('app.tasks.random.uniform', return_value=0.1)
+    @patch('app.tasks.send_jitai_prompt')
     def test_active_momentary_flag_suppresses(self, mock_send, mock_rand):
         from app.tasks import evaluate_jitai_triggers
         user = self._make_enrolled_user()
@@ -6005,3 +6046,102 @@ class DashboardStudyIdLabelTests(TestCase):
         data = self._get('/dashboard/latency-events/').json()
         self.assertEqual(data[0]['participant_id'], 'RS02')
         self.assertNotIn('ufl.edu', str(data))
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class EMANextDistressActiveFieldTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='distress-active@test.com')
+        self.client = authenticated_client(self.user)
+
+    def test_false_without_a_flag(self):
+        response = self.client.get('/ema/next/')
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.json()['distress_active'], False)
+
+    def test_true_with_an_active_momentary_flag_and_checkins_still_served(self):
+        DistressFlag.objects.create(
+            user=self.user, source='momentary', signals=['b1_low_valence'],
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
+        response = self.client.get('/ema/next/')
+        self.assertIs(response.json()['distress_active'], True)
+        self.assertNotIn('distress_', response.json().get('reason', ''))
+
+    def test_false_after_the_flag_expires(self):
+        DistressFlag.objects.create(
+            user=self.user, source='momentary', signals=['b1_low_valence'],
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+        self.assertIs(self.client.get('/ema/next/').json()['distress_active'], False)
+
+
+@override_settings(PASSWORD_HASHERS=FAST_HASHERS)
+class BackfillDistressFlagActiveTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user(email='backfill-distress@test.com')
+        self.now = timezone.now()
+
+    def _log(self, moment, key):
+        return JITAILog.objects.create(
+            user=self.user, decision_point_id=key, decision_made_at=moment,
+            send_prompt=False, status='not_sent',
+        )
+
+    def _run(self, *args):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('backfill_distress_flag_active', *args, stdout=out)
+        return out.getvalue()
+
+    def test_marks_rows_inside_flag_window_only(self):
+        raised = self.now - timedelta(hours=10)
+        DistressFlag.objects.create(
+            user=self.user, source='momentary', signals=['b1_low_valence'],
+            raised_at=raised, expires_at=raised + timedelta(hours=24),
+        )
+        before = self._log(raised - timedelta(minutes=5), 'before')
+        inside = self._log(raised + timedelta(hours=1), 'inside')
+        after = self._log(raised + timedelta(hours=25), 'after')
+
+        self._run()
+
+        before.refresh_from_db(); inside.refresh_from_db(); after.refresh_from_db()
+        self.assertFalse(before.distress_flag_active)
+        self.assertTrue(inside.distress_flag_active)
+        self.assertFalse(after.distress_flag_active)
+
+    def test_baseline_flag_ends_when_contact_documented(self):
+        raised = self.now - timedelta(days=3)
+        DistressFlag.objects.create(
+            user=self.user, source='baseline', signals=['phq9_self_harm'], raised_at=raised,
+            contact_documented_at=raised + timedelta(days=1),
+        )
+        during = self._log(raised + timedelta(hours=2), 'during')
+        later = self._log(raised + timedelta(days=2), 'later')
+
+        self._run()
+
+        during.refresh_from_db(); later.refresh_from_db()
+        self.assertTrue(during.distress_flag_active)
+        self.assertFalse(later.distress_flag_active)
+
+    def test_dry_run_writes_nothing_and_rerun_is_stable(self):
+        raised = self.now - timedelta(hours=5)
+        DistressFlag.objects.create(
+            user=self.user, source='momentary', signals=['b2_high_stress'],
+            raised_at=raised, expires_at=raised + timedelta(hours=24),
+        )
+        row = self._log(raised + timedelta(hours=1), 'row')
+
+        self.assertIn('would change 1', self._run('--dry-run'))
+        row.refresh_from_db()
+        self.assertFalse(row.distress_flag_active)
+
+        self._run()
+        self.assertIn('changed 0', self._run())
+        row.refresh_from_db()
+        self.assertTrue(row.distress_flag_active)

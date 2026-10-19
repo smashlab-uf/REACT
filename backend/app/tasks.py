@@ -329,6 +329,7 @@ def _evaluate_user(user, p):
         selected_prompt_id = ''
 
     unsent_status = 'suppressed' if suppression_reason else 'not_sent'
+    distress_flag_active = active_distress_flag(user) is not None
 
     recent_hr = HeartRateSample.objects.filter(user=user).order_by('-timestamp').first()
     recent_stress = StressSample.objects.filter(user=user).order_by('-timestamp').first()
@@ -356,6 +357,7 @@ def _evaluate_user(user, p):
                 'hrv_class_at_trigger': hrv_class_at_trigger,
                 'randomization_probability': None if suppression_reason else p,
                 'suppression_reason': suppression_reason,
+                'distress_flag_active': distress_flag_active,
                 'randomization_draw': draw,
                 'message_arm': message_arm,
                 'arm_randomization_probability': arm_p,

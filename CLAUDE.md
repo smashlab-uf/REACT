@@ -219,9 +219,9 @@ docs/superpowers/  # schema design specs/plans from the original REACT model bui
 ## Schema authority
 
 The **Django Models** section below is a simplified design reference and is intentionally leaner than
-what is deployed. The live schema is richer — e.g. `JITAILog` has **36** columns (the message-arm
+what is deployed. The live schema is richer — e.g. `JITAILog` has **37** columns (the message-arm
 randomization and routing audit landed in migrations `0042`–`0043`, and
-`threshold_at_decision` / `threshold_source` in `0046`); `User` carries `study_id` (migration
+`threshold_at_decision` / `threshold_source` in `0046`, and `distress_flag_active` in `0054`); `User` carries `study_id` (migration
 `0051`, see the baseline-import section below); `EMA` carries `ema_type`,
 outcome-window fields and `served_sub_item_ids`; there are additional tables (`EMAItemResponse`,
 `EngagementLog`, `PhoneTelemetry`, `EventDay`, `CheckinReminder`, `WearableSync`, `DistressFlag`); and four derived
@@ -491,6 +491,8 @@ stores only signal codes — it's a crosswalk, not a join key into anything sens
 endpoints and `/dashboard/participants/`: study ID, else Labfront ID, else `user_id`. No monitoring payload
 carries email. The admin "Enroll for notifications" shortcut writes a `TEST-<user_id>` Labfront ID, so never use it on
 a real participant (user 102 / RS02 was enrolled that way and needs the real ID set).
+
+`JITAILog.distress_flag_active` (migration `0054`, added 2026-10-19) is true on every decision row written while any distress flag was active, whatever the row's own outcome: below threshold, run-in, randomized out or sent. It records context only and does not drive any decision; `suppression_reason` is still the sole record of what blocked a prompt, so a below-threshold row inside a flag window stays `not_sent` with `distress_flag_active=True`. `manage.py backfill_distress_flag_active [--dry-run] [--user N]` (dashboard app) fills it for older rows from `DistressFlag.was_active_at`. `GET /ema/next/` separately returns `distress_active` for the app. The resource card is returned by `POST /ema/responses/` after any flagged check-in, independent of whether a decision was due; nothing logs the app rendering it, so the database cannot show that a participant saw it.
 
 A suppressed decision point is logged with `send_prompt=False`, `randomization_draw` and
 `randomization_probability` both null, `status` and `delivery_status` both `'suppressed'` (never

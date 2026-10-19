@@ -356,6 +356,7 @@ def load_jitai_log(
             "ema_energy", "status", "delivery_status", "push_sent_at",
             "device_received_at", "receipt_reported_at", "receipt_platform",
             "receipt_app_state", "delivery_error", "suppression_reason",
+            "distress_flag_active",
         )
     )
     return _to_utc(

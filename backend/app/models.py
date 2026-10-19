@@ -426,6 +426,7 @@ class JITAILog(models.Model):
     suppression_reason = models.CharField(
         max_length=32, choices=SUPPRESSION_CHOICES, blank=True, default='', db_index=True
     )
+    distress_flag_active = models.BooleanField(default=False, db_index=True)
 
     class Meta:
         ordering = ['-triggered_at']
@@ -460,6 +461,17 @@ class DistressFlag(models.Model):
                 code not in BASELINE_ALERT_ONLY_SIGNALS for code in self.signals)
             return suppresses and self.contact_documented_at is None
         return self.expires_at is not None and now < self.expires_at
+
+    def was_active_at(self, moment):
+        if moment < self.raised_at:
+            return False
+        if self.source == 'baseline':
+            if self.contact_documented_at is not None and self.contact_documented_at <= moment:
+                return False
+            from dashboard.data.config import BASELINE_ALERT_ONLY_SIGNALS
+            return not self.signals or any(
+                code not in BASELINE_ALERT_ONLY_SIGNALS for code in self.signals)
+        return self.expires_at is not None and moment < self.expires_at
 
     def __str__(self):
         return f"{self.source} distress flag for {self.user.email} at {self.raised_at}"
