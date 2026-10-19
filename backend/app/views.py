@@ -720,6 +720,13 @@ class EMANextView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        response = self._get(request)
+        if response.status_code == status.HTTP_200_OK:
+            app_user = _get_app_user(request)
+            response.data['distress_active'] = active_distress_flag(app_user) is not None
+        return response
+
+    def _get(self, request):
         app_user = _get_app_user(request)
         if app_user is None:
             return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
@@ -954,6 +961,9 @@ class JITAILogView(APIView):
 
         eligible, suppression_reason = _decision_point_safeguards(
             serializer.validated_data['user'], django_timezone.now(),
+        )
+        serializer.validated_data['distress_flag_active'] = (
+            active_distress_flag(serializer.validated_data['user']) is not None
         )
         if not eligible:
             serializer.validated_data.update({

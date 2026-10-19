@@ -294,6 +294,7 @@ def mssd_lane(user, local_date):
             'eligible': log.randomization_draw is not None,
             'send_prompt': log.send_prompt,
             'suppression_reason': log.suppression_reason or None,
+            'distress_flag_active': log.distress_flag_active,
             'unexplained': bool(
                 above and log.randomization_draw is None
                 and not log.suppression_reason
