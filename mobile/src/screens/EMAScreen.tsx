@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   AppState,
   LayoutAnimation,
-  Linking,
   Modal,
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -23,12 +22,14 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 const HEADER_TITLE_SWAP = LayoutAnimation.create(180, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity);
 const STICK_THRESHOLD = 12;
 import EMASubItemField from '../components/EMASubItemField';
+import SupportResourceCard from '../components/SupportResourceCard';
 import { ema as emaApi, telemetry } from '../api/endpoints';
 import {
   EMAAnswerValue,
   EMAItem,
   EMANextShowResponse,
   EMASubItem,
+  EMASubmitResponse,
   ResourceCard,
 } from '../api/types';
 import { isAnswered, isSubItemVisible, pruneHiddenAnswers, visibleSubItems } from '../ema/visibility';
@@ -49,13 +50,12 @@ const MAX_TIMEOUT_MS = 2147483647;
 
 type Phase = 'loading' | 'form' | 'noshow' | 'expired' | 'error' | 'resources';
 
-const DIALABLE = /^[0-9+\-\s()]+$/;
-
 type Props = {
   visible: boolean;
   jitaiLogId?: number;
   checkinOnly?: boolean;
   onClose: () => void;
+  onSubmitted: (response: EMASubmitResponse) => void;
 };
 
 function isSupported(sub: EMASubItem) {
@@ -68,7 +68,7 @@ function isSupported(sub: EMASubItem) {
   );
 }
 
-export default function EMAScreen({ visible, jitaiLogId, checkinOnly = false, onClose }: Props) {
+export default function EMAScreen({ visible, jitaiLogId, checkinOnly = false, onClose, onSubmitted }: Props) {
   const userId = useAuthStore((s) => s.userId);
   const showAlert = useAlertStore((s) => s.show);
 
@@ -210,6 +210,7 @@ export default function EMAScreen({ visible, jitaiLogId, checkinOnly = false, on
           value: answers[sub.sub_item_id],
         })),
       });
+      onSubmitted(submitted);
       logEngagement('ema_completed', survey.jitai_log_id);
       if (submitted.resource_card) {
         setResourceCard(submitted.resource_card);
@@ -328,26 +329,7 @@ export default function EMAScreen({ visible, jitaiLogId, checkinOnly = false, on
     if (phase === 'resources' && resourceCard) {
       return (
         <ScrollView contentContainerStyle={styles.body}>
-          <Text style={styles.sectionTitle}>{resourceCard.title}</Text>
-          <Text style={styles.resourceMessage}>{resourceCard.message}</Text>
-          {resourceCard.resources.map((resource) => (
-            <View key={resource.name} style={styles.resource}>
-              <Text style={styles.resourceName}>{resource.name}</Text>
-              {resource.description ? (
-                <Text style={styles.messageBody}>{resource.description}</Text>
-              ) : null}
-              {resource.contact && DIALABLE.test(resource.contact) ? (
-                <TouchableOpacity
-                  style={styles.resourceCall}
-                  onPress={() => Linking.openURL(`tel:${resource.contact!.replace(/\s/g, '')}`)}
-                  accessibilityLabel={`Call ${resource.name}`}>
-                  <Text style={styles.resourceCallText}>Call {resource.contact}</Text>
-                </TouchableOpacity>
-              ) : resource.contact ? (
-                <Text style={styles.resourceContact}>{resource.contact}</Text>
-              ) : null}
-            </View>
-          ))}
+          <SupportResourceCard card={resourceCard} />
         </ScrollView>
       );
     }
@@ -479,23 +461,6 @@ const styles = StyleSheet.create({
   groupText: { ...typography.label, marginBottom: 12 },
   messageTitle: { fontSize: 20, fontWeight: '700', color: colors.textPrimary, marginBottom: 8, textAlign: 'center' },
   messageBody: { ...typography.body, textAlign: 'center', lineHeight: 21 },
-  resourceMessage: { ...typography.body, lineHeight: 21, marginBottom: 20 },
-  resource: {
-    backgroundColor: colors.surfaceMuted,
-    borderRadius: radius.md,
-    padding: 16,
-    marginBottom: 12,
-  },
-  resourceName: { ...typography.label, marginBottom: 4 },
-  resourceContact: { ...typography.body, marginTop: 8, fontWeight: '600' },
-  resourceCall: {
-    backgroundColor: colors.primary,
-    borderRadius: radius.md,
-    padding: 12,
-    alignItems: 'center',
-    marginTop: 12,
-  },
-  resourceCallText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   retry: { marginTop: 20, paddingVertical: 10, paddingHorizontal: 24 },
   retryText: { fontSize: 16, color: colors.primary, fontWeight: '600' },
   footer: { paddingHorizontal: 24, paddingBottom: 40, paddingTop: 8 },

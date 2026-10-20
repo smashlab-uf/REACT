@@ -232,6 +232,7 @@ export default function App() {
           availableCheckin={checkin.available}
           checkinError={checkin.error}
           onRefreshCheckin={checkin.refresh}
+          resourceCard={checkin.resourceCard}
         />
       ) : screen === 'register' ? (
         <RegisterScreen onGoToLogin={() => setScreen('login')} />
@@ -244,6 +245,7 @@ export default function App() {
         jitaiLogId={activeEMA?.jitaiLogId}
         checkinOnly={activeEMA?.checkinOnly ?? false}
         onClose={() => setActiveEMA(null)}
+        onSubmitted={checkin.onSubmitted}
       />
     </View>
   );

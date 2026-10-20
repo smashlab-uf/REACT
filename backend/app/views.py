@@ -4,7 +4,7 @@ from datetime import timedelta
 from dashboard.data.config import OUTCOME_CHECK_IN_DELAY_MINUTES, OUTCOME_WINDOW_HOURS, PARTICIPANT_TZ
 from dashboard.data.windows import participant_day_bounds
 from dashboard.serializers import participant_label
-from .distress import active_distress_flag, raise_momentary_flag, resource_card
+from .distress import active_distress_flag, raise_momentary_flag, resource_card_state
 from django.contrib.auth.models import User as AuthUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render
@@ -723,7 +723,7 @@ class EMANextView(APIView):
         response = self._get(request)
         if response.status_code == status.HTTP_200_OK:
             app_user = _get_app_user(request)
-            response.data['distress_active'] = active_distress_flag(app_user) is not None
+            response.data.update(resource_card_state(app_user))
         return response
 
     def _get(self, request):
@@ -939,7 +939,7 @@ class EMAResponseView(APIView):
 
         raise_momentary_flag(ema)
         payload = dict(EMASerializer(ema).data)
-        payload['resource_card'] = resource_card() if active_distress_flag(app_user) else None
+        payload.update(resource_card_state(app_user))
 
         return Response(payload, status=status.HTTP_201_CREATED)
 

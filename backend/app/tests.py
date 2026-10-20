@@ -4981,6 +4981,12 @@ class EMAResponseDistressTests(TestCase):
         flag = DistressFlag.objects.get(user=self.user)
         self.assertEqual(flag.source, 'momentary')
         self.assertEqual(flag.ema_id, response.json()['id'])
+        self.assertTrue(response.json()['distress_active'])
+        self.assertEqual(parse_datetime(response.json()['distress_expires_at']), flag.expires_at)
+        home = self.client.get('/ema/next/?checkin_only=1').json()
+        self.assertFalse(home['should_show'])
+        self.assertEqual(home['resource_card'], card)
+        self.assertEqual(home['distress_expires_at'], response.json()['distress_expires_at'])
 
     def test_unflagged_check_in_has_no_card(self):
         response = self._submit(valence=4, stress=2)
@@ -6059,6 +6065,8 @@ class EMANextDistressActiveFieldTests(TestCase):
         response = self.client.get('/ema/next/')
         self.assertEqual(response.status_code, 200)
         self.assertIs(response.json()['distress_active'], False)
+        self.assertIsNone(response.json()['resource_card'])
+        self.assertIsNone(response.json()['distress_expires_at'])
 
     def test_true_with_an_active_momentary_flag_and_checkins_still_served(self):
         DistressFlag.objects.create(
@@ -6074,7 +6082,72 @@ class EMANextDistressActiveFieldTests(TestCase):
             user=self.user, source='momentary', signals=['b1_low_valence'],
             expires_at=timezone.now() - timedelta(minutes=1),
         )
-        self.assertIs(self.client.get('/ema/next/').json()['distress_active'], False)
+        data = self.client.get('/ema/next/').json()
+        self.assertIs(data['distress_active'], False)
+        self.assertIsNone(data['resource_card'])
+
+    def test_home_resources_without_an_available_checkin(self):
+        from app.distress import resource_card
+        flag = DistressFlag.objects.create(
+            user=self.user, source='momentary', signals=['b2_high_stress'],
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
+        data = self.client.get('/ema/next/?checkin_only=1').json()
+        self.assertFalse(data['should_show'])
+        self.assertEqual(data['resource_card'], resource_card())
+        self.assertEqual(parse_datetime(data['distress_expires_at']), flag.expires_at)
+
+    def test_resources_do_not_replace_an_available_scheduled_checkin(self):
+        DistressFlag.objects.create(user=self.user, source='baseline', signals=['phq9_self_harm'])
+        reminder = CheckinReminder.objects.create(user=self.user)
+        data = self.client.get('/ema/next/?checkin_only=1').json()
+        self.assertTrue(data['should_show'])
+        self.assertEqual(data['prompt_id'], reminder.prompt_id)
+        self.assertIsNotNone(data['resource_card'])
+        self.assertIsNone(data['distress_expires_at'])
+
+    def test_resource_expiry_covers_all_overlapping_momentary_flags(self):
+        now = timezone.now()
+        latest_expiry = now + timedelta(hours=24)
+        DistressFlag.objects.create(
+            user=self.user, source='momentary', raised_at=now - timedelta(hours=1),
+            expires_at=latest_expiry,
+        )
+        # Even an imported, newer row with a shorter expiry must not hide the card early.
+        DistressFlag.objects.create(
+            user=self.user, source='momentary', raised_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        data = self.client.get('/ema/next/?checkin_only=1').json()
+        self.assertEqual(parse_datetime(data['distress_expires_at']), latest_expiry)
+
+    def test_baseline_resources_last_until_contact_and_then_use_remaining_flag(self):
+        baseline = DistressFlag.objects.create(
+            user=self.user, source='baseline', signals=['phq9_self_harm'],
+        )
+        momentary = DistressFlag.objects.create(
+            user=self.user, source='momentary', expires_at=timezone.now() + timedelta(hours=24),
+        )
+        data = self.client.get('/ema/next/?checkin_only=1').json()
+        self.assertIsNotNone(data['resource_card'])
+        self.assertIsNone(data['distress_expires_at'])
+        baseline.contact_documented_at = timezone.now()
+        baseline.save()
+        data = self.client.get('/ema/next/?checkin_only=1').json()
+        self.assertEqual(parse_datetime(data['distress_expires_at']), momentary.expires_at)
+        momentary.expires_at = timezone.now() - timedelta(seconds=1)
+        momentary.save()
+        data = self.client.get('/ema/next/?checkin_only=1').json()
+        self.assertFalse(data['distress_active'])
+        self.assertIsNone(data['resource_card'])
+
+    def test_alert_only_and_other_participants_flags_do_not_show_resources(self):
+        DistressFlag.objects.create(user=self.user, source='baseline', signals=['audit_c', 'problem_gambling'])
+        other = make_user(email='other-resources@test.com')
+        DistressFlag.objects.create(user=other, source='baseline', signals=['phq9_self_harm'])
+        data = self.client.get('/ema/next/?checkin_only=1').json()
+        self.assertFalse(data['distress_active'])
+        self.assertIsNone(data['resource_card'])
 
 
 @override_settings(PASSWORD_HASHERS=FAST_HASHERS)
