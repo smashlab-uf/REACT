@@ -115,8 +115,7 @@ def raise_baseline_flag(user, signals):
     return DistressFlag.objects.create(user=user, source='baseline', signals=list(signals))
 
 
-def active_distress_flag(user, now=None):
-    now = now or timezone.now()
+def _active_distress_flags(user, now):
     candidates = (
         DistressFlag.objects
         .filter(user=user)
@@ -128,8 +127,24 @@ def active_distress_flag(user, now=None):
     )
     for flag in candidates:
         if flag.is_active(now):
-            return flag
-    return None
+            yield flag
+
+
+def active_distress_flag(user, now=None):
+    return next(_active_distress_flags(user, now or timezone.now()), None)
+
+
+def resource_card_state(user, now=None):
+    """Keep in-app resources until all active flags end, regardless of survey availability."""
+    flags = list(_active_distress_flags(user, now or timezone.now()))
+    expires_at = None
+    if flags and all(flag.source == 'momentary' for flag in flags):
+        expires_at = max(flag.expires_at for flag in flags)
+    return {
+        'distress_active': bool(flags),
+        'distress_expires_at': expires_at,
+        'resource_card': resource_card() if flags else None,
+    }
 
 
 def resource_card():
