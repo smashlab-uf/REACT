@@ -68,6 +68,7 @@ production (sourced/joined outside the Django backend).
 | push_token | varchar(128) | | |
 | is_enrolled | boolean | not null | |
 | enrolled_at | timestamptz | | |
+| schedule_restarted_at | timestamptz | | |
 
 **PK:** user_id &nbsp;·&nbsp; **Unique:** email &nbsp;·&nbsp;
 **Referenced by:** all `app_*` tables via `user_id`.

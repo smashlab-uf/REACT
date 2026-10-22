@@ -222,7 +222,8 @@ The **Django Models** section below is a simplified design reference and is inte
 what is deployed. The live schema is richer — e.g. `JITAILog` has **37** columns (the message-arm
 randomization and routing audit landed in migrations `0042`–`0043`, and
 `threshold_at_decision` / `threshold_source` in `0046`, and `distress_flag_active` in `0054`); `User` carries `study_id` (migration
-`0051`, see the baseline-import section below); `EMA` carries `ema_type`,
+`0051`, see the baseline-import section below) and `schedule_restarted_at` (`0055`: set when staff restart a
+participant's schedule by moving `enrolled_at`; records before it are pre-restart, kept, and logged in `docs/CHANGELOG.md`); `EMA` carries `ema_type`,
 outcome-window fields and `served_sub_item_ids`; there are additional tables (`EMAItemResponse`,
 `EngagementLog`, `PhoneTelemetry`, `EventDay`, `CheckinReminder`, `WearableSync`, `DistressFlag`); and four derived
 `dashboard_*` monitoring tables. For the actual deployed schema,

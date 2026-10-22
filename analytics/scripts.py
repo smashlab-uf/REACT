@@ -162,8 +162,11 @@ def load_users(user_id: Optional[int] = None) -> pd.DataFrame:
     Outputs:
         pd.DataFrame with columns:
             user_id, email, first_name, last_name, birthdate, gender,
-            is_enrolled, enrolled_at.
-        One row per participant. enrolled_at is timezone-aware (UTC).
+            is_enrolled, enrolled_at, schedule_restarted_at.
+        One row per participant. enrolled_at and schedule_restarted_at are
+        timezone-aware (UTC). schedule_restarted_at is set only for a
+        participant whose schedule was restarted; their records timestamped
+        before it are pre-restart.
 
     Example:
         load_users(user_id=42)  ->  1-row DataFrame for participant 42
@@ -180,10 +183,10 @@ def load_users(user_id: Optional[int] = None) -> pd.DataFrame:
     df = pd.DataFrame(
         queryset.values(
             "user_id", "email", "first_name", "last_name", "birthdate",
-            "gender", "is_enrolled", "enrolled_at",
+            "gender", "is_enrolled", "enrolled_at", "schedule_restarted_at",
         )
     )
-    df = _to_utc(df, ["enrolled_at"])
+    df = _to_utc(df, ["enrolled_at", "schedule_restarted_at"])
     _warn_undated_enrollments(df)
     return df
 

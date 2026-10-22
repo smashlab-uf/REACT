@@ -68,13 +68,13 @@ class UserAdmin(ReadableAdminMixin, admin.ModelAdmin):
     list_filter = ("gender", "is_enrolled")
     search_fields = ("email", "first_name", "last_name", "study_id")
     ordering = ("email",)
-    readonly_fields = ("password", "enrolled_at")
+    readonly_fields = ("password", "enrolled_at", "schedule_restarted_at")
     fieldsets = (
         ("Profile", {
             "fields": ("email", "study_id", "first_name", "last_name", "birthdate", "gender"),
         }),
         ("Enrollment", {
-            "fields": ("is_enrolled", "enrolled_at"),
+            "fields": ("is_enrolled", "enrolled_at", "schedule_restarted_at"),
         }),
         ("Notifications", {
             "fields": ("push_token",),
