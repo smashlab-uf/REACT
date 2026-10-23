@@ -1,221 +1,191 @@
 # REACT
-Senior Project / JITAI application 2024
 
-<img src="mobile/assets/images/clipboardgator.jpg" width="200" /><img src="mobile/assets/images/coolgator.png" width="200" />
+REACT is a Just-In-Time Adaptive Intervention (JITAI) mHealth system built at the SMASH Research Lab, University of Florida, under PI Dr. Yonghwan Chang (Department of Sport Management). Participants answer short in-app check-ins (EMA) while wearing a Garmin Venu 3. The backend computes MSSD over their recent check-ins, and at each eligible decision point it randomizes whether to send a coping prompt (a micro-randomized trial). Researchers monitor the study through Django Admin and a read-only monitoring API.
 
-## Run the App: Simple Setup (recommended)
-This process involves downloading our pre-packaged installation file for testing on a mobile device.
-#### Option 1: Run on IOS Device 
-If you want to test the application on an IOS device, follow the steps shown below.
+The target deployment is about 300 participants across a UF football season (late August to early December, 12–14 weeks).
 
-##### If Public Link Approved (recommended)
-- Download the “TestFlight” application on your mobile device.
-- Open this link on your phone / testing device: https://testflight.apple.com/join/DgDEk74t
-- Follow the prompts on your device, allow notifications if prompted.
+## Tech stack
 
-##### If Public Link NOT Approved (APPROVED as of 12/3)
-- Notify @lisareichelson@ufl.edu that you would like access to test our application. All we need is your email address to be able to grant you access.
-- Check your email for an invitation. Create an account / follow the on-screen instructions. Eventually you should be prompted to download an application on your phone via testflight. Do so, and allow notifications if prompted.
+| Layer | Technology |
+|---|---|
+| Backend | Django REST Framework (Python 3.11), PostgreSQL |
+| Task queue | Celery + Redis |
+| Mobile | React Native, Expo SDK 56 (dev client; Expo Go does not work) |
+| Push | Expo Push Notification Service → Firebase / APNs |
+| Wearables | Garmin Venu 3 via the Labfront research platform |
+| Hosting | Heroku (`Procfile`), Sentry for errors |
 
-  **ADMIN NOTES: navigate to [the user management screen](https://appstoreconnect.apple.com/access/users) to send an invitation to the requested email address.
-Once they accept the invitation, go to [the tester management screen](https://appstoreconnect.apple.com/teams/6dbe8045-715d-454b-9898-d5f6c28236e9/apps/6738848648/testflight/groups/ee86f684-4ec1-4ec3-8697-fb92d0ffdd35) and add them as an approved tester. **
+## Architecture
 
-#### Option 2: Run on Android Device 
-- Open this link on your phone / testing device: https://tsfr.io/join/j83v89
-- Follow the instructions that appear on the screen. Install the application, allow notifications if prompted.
+`Procfile` runs a `release` step (`manage.py migrate`) and three processes, all from `backend/`:
 
+- **web**: `gunicorn project.wsgi`, the DRF API and Django Admin
+- **worker**: `celery -A project.celery worker`, runs the notification and JITAI tasks
+- **beat**: `celery -A project.celery beat`, schedules five periodic tasks (`CELERY_BEAT_SCHEDULE` in `backend/project/settings.py`):
+  - every 180 s: `ingest_wearable_data`, `evaluate_jitai_triggers`, `send_checkin_reminders`, `check_expo_receipts`
+  - every 600 s: `dashboard.tasks.recompute_monitoring_metrics`
 
-## Run the App: Advanced Setup (Recommended for development purposes only)
+Wearable data reaches REACT only through Labfront. REACT never talks to Garmin and never holds Garmin OAuth tokens.
 
-### Backend
+```
+Garmin Venu 3 → Garmin Health API → Labfront → REACT (ingest / import) → PostgreSQL
+  → decision engine → Expo push → participant device
+```
 
-#### Option 1: Run on Heroku (recommended)
-This app runs on a Heroku server in production. No specific action is required to start up the backend if you plan on using Heroku.
-- Index: https://healthygatorsportsfan-84ee3c84673f.herokuapp.com
-- Django admin view: https://healthygatorsportsfan-84ee3c84673f.herokuapp.com/admin
+The app receives two kinds of push:
 
-#### Option 2: Run Locally (on Windows)
-If you want to develop and test backend code changes locally, you can run the backend on ngrok, Django server, Redis server, Celery worker, and Celery beat scheduler. First you'll need to clone the repo and install the necessary prerequisites.
+- **Check-in reminders** (visible). The day from 9:00 to 21:00 participant-local time is split into six two-hour slots. A reminder goes out 30 minutes into a slot only if no check-in has landed in it yet.
+- **JITAI prompts** (silent). These are sent only after a newly completed check-in passes eligibility (MSSD threshold, run-in, distress, cooldown, daily cap) and the randomization draw. Every decision point, sent or not, opens a time-locked outcome window, so both arms are measured on the same schedule.
 
-##### Step 0: Prerequisite downloads and installations
+The MSSD math lives in `backend/decision_engine/decision_engine.py` and is regression-tested against a golden CSV. Every protocol constant (window, caps, cooldown, threshold quantile, randomization probability, timezone) is defined once, in `dashboard/data/config.py`.
 
-1. Install Python and Pip
-   - Download the latest version of Python from https://www.python.org/downloads/ 
-   - Ensure the latest version of pip is installed by running `py -m ensurepip –upgrade` in the terminal.
+## Repository layout
 
-1. Install Django
-   - You can install Django by running the command `python -m pip install Django` in the terminal. Instructions can be found here: https://docs.djangoproject.com/en/5.1/topics/install/#installing-official-release or here: https://docs.djangoproject.com/en/5.1/intro/install/#install-django.
+```
+backend/
+  project/           Django project: settings.py, celery.py, urls.py (all routes), test_settings.py
+  app/               models, serializers, views, tasks, admin, distress.py, ema_catalog.py,
+                     notification_service.py, management/commands/
+  decision_engine/   standalone MSSD / JITAI logic + golden-CSV scenario tests (pure pandas)
+  syntheticData/     synthetic cohort generators
+  dress_rehearsal.py, full_circle_test.py   manual end-to-end QA scripts
+dashboard/           monitoring Django app (repo root, NOT under backend/): derived metric
+                     tables, /api/monitor/* views, recompute task, data/config.py
+mobile/              Expo app; source in src/, native android/ and ios/ are committed
+analytics/
+  scripts.py                 ORM-backed loaders + pandas metrics
+  reconcile_monitoring.py    live-vs-offline metric agreement check
+  monitor_app/               Streamlit monitoring prototype (cohort board, participant grid, timeline)
+  baseline_survey_scoring/   Qualtrics baseline scoring for the Section 11 distress screens
+  sensitivity_analysis/      MSSD parameter recovery / robustness notebooks
+  analysis-resources/        data dictionary, production schema map, analysis plan
+Resources/           study documents (API contract, enrollment guide, schema PDFs)
+docs/superpowers/    historical design specs from the original model build-out
+```
 
-1. Install PostgreSQL
-    - Download https://www.postgresql.org/download/windows/.
-    - In the terminal from the **REACT** directory run `python -m pip install psycopg2`
-    - Open pgAdmin4 (from Windows Start menu) and login with the password you made when downloading PostgreSQL.
-        - Go to servers/login/grouproles. Right click and create a new role. Set the priviledges to allow “LOG IN”
-        - Name it and set the password.
-        - Right click databases and create “react”. Set the owner to yourself.
-    - Navigate to the **backend** directory and run `python manage.py migrate` then `python manage.py createsuperuser?`
-    - From the **backend** directory run `python manage.py runserver`, and open the link. Navigate to http://localhost:8000/admin and log in with your superuser credentials.
-
-1. Install CORS for Django
-   - Navigate to the **backend** directory and run `pip install django-cors-headers`. This allows for ExpoGo to connect to the local server on the backend
-  
-1. Install College Football Data API and other needed modules
-   - Navigate to the **backend** directory and run:
-     - `python -m pip install cfbd==5.3.3a1` (click [here](https://github.com/CFBD/cfbd-python/tree/next?tab=readme-ov-file#installation--usage) for more information)
-     - `python -m pip install pytz`
-     - `python -m pip install exponent-server-sdk`
-
-1. Install OpenAPI SARTBEAR Swagger generation tool for Django Rest Framework
-   - Navigate to the **backend** directory and run `pip install drf-yasg`
-
-1. Set up Ngrok
-   - Follow Steps 1-4 in these instructions: [Quickstart | ngrok documentation](https://ngrok.com/docs/getting-started/?os=windows). Use port 8000 instead of 8080. And be sure to create a static domain (step 4). Here is an excerpt with some tweaks for our use case:
-     - **Step 1: Install** - Run this command in an Administrator Command Prompt: `choco install ngrok`, or [download the ngrok agent from their Download page](https://download.ngrok.com/) if you can't use one of the options above. The ngrok agent is a zero-dependency CLI program that runs on all major operating systems. Test that you installed it correctly by running `ngrok help` in your terminal and confirm that ngrok prints its help text.
-     - **Step 2: Connect your account** - Next, connect your ngrok agent to your ngrok account. If you haven't already, sign up for an ngrok account. Copy your ngrok authtoken from your ngrok dashboard. Run the following command in your terminal to install the authtoken and connect the ngrok agent to your account: `ngrok config add-authtoken <TOKEN>`
-     - **Step 3: Put your app online** - Start ngrok by running the following command: `ngrok http http://localhost:8000`(NOTE: The tutorial calls for port 8080, but this app run locally uses port 8000). You will see something similar to the following console UI in your terminal. Open the Forwarding URL in your browser and you will see your web application. This URL is available to anyone on the internet. Test it out by sending it to a friend! Your app is available over HTTPS (notice the 🔒 in your browser window) with a valid certificate that ngrok automatically manages for you.
-       ```
-            ngrok                                                                   (Ctrl+C to quit)
-            
-            Session Status                online
-            Account                       inconshreveable (Plan: Free)
-            Version                       3.0.0
-            Region                        United States (us)
-            Latency                       78ms
-            Web Interface                 http://127.0.0.1:4040
-            Forwarding                    https://84c5df474.ngrok-free.dev -> http://localhost:8080
-            
-            Connections                   ttl     opn     rt1     rt5     p50     p90
-                                          0       0       0.00    0.00    0.00    0.00
-        ```
-     - **Step 4: Always use the same domain** - If you want to keep the same URL each time you use ngrok (NOTE: You will), create a static domain on your dashboard and then use the --url flag to ask the ngrok agent to use it. First, stop ngrok with Ctrl+C and then run ngrok again: `ngrok http 8000 --url <your new static domain>`. Use this link to get to your dashboard once set up: https://dashboard.ngrok.com/
-   - Navigate to **backend\project\settings.py** and add your new static domain to ALLOWED_HOSTS and CSRF_TRUSTED_ORIGIN.
-   - Navigate to **mobile\constants\AppUrls.ts**, add your new static domain to the list. Comment out other URLs in the list. This will ensure the frontend uses this host for API calls.
-
-1. Install Celery and Redis
-   - Open a terminal in your virtual environment and run: 'python -m pip install celery redis'. This installs Celery (the task queue) and Redis (the message broker).   
-
-1. Download Redis for Windows
-   - Download the .msi file (not the zip) from the [official source](https://github.com/microsoftarchive/redis/releases) and double click on it to run the installer. 
-
-Once you've completed the prerequisites, you're ready to run the application by following these steps:
-
-##### Step 1. Run the Django server
-
-Be sure you've already completed the following steps specified in the pre-requisites:
-   - Navigate to **backend\project\settings.py** and add your new static domain to ALLOWED_HOSTS and CSRF_TRUSTED_ORIGIN.
-   - Navigate to **mobile\constants\AppUrls.ts**, add your new static domain to the list. Comment out other URLs in the list. This will ensure the frontend uses this host for API calls.
-
-In a terminal, navigate to **backend** directory  and run `ngrok http 8000 --url <your new static domain>`. 
-
-##### Step 2. Run the Django server
-
-In a terminal, navigate to the **backend** directory and run `python manage.py runserver 0.0.0.0:8000`. You should see something like this in the terminal:
-
-<img width="881" alt="image" src="https://github.com/user-attachments/assets/ea048a5a-5931-4690-8865-2418a4a461a1">
-
-Now you can open the following links in your browser to view the index of entities and manage your Django app as an admin:
-- Index: http://localhost:8000
-- Django admin view: http://localhost:8000/admin
-
-> [!NOTE]  
-> When running the backend locally, you will be using a local instance of a PostgreSQL database. Data stored here will differ than the one used by Heroku.
-
-##### Step 3: Run the Redis-Server
-Open a terminal as admin (you’ll need root privileges) and navigate to the directory where Redis is installed (i.e. **C:\Program Files\Redis**). Run `redis-server` in the terminal. 
-
-> [!WARNING]
-> You may get this known issue in Windows when running the command: `# Creating Server TCP listening socket *:6379: No such file or directory`. If this happens, run `redis-cli.exe` from the Redis directory, then run > > `shutdown` while that is executing. Run `ctrl+c` to exit the executable, then re-run  `redis-server` again and it should work. Your terminal should look something like this: 
-> <img width="1117" alt="image" src="https://github.com/user-attachments/assets/604611da-5681-42f2-84d8-e9cfbb38c687">
-
-##### Step 4: Run the Celery worker
-Open a new terminal and navigate to the **backend** directory. Start the Celery worker by running `celery -A project worker --pool=solo -l info`. This command starts the Celery worker, which polls Redis for new tasks. The `--pool=solo` forces things to become single threaded so it can work on Windows. 
-
-##### Step 5: Run the Celery beat scheduler
-Open a new terminal and navigate to the **backend** directory. Start the celery beat scheduler by running `celery -A project beat --loglevel=info`. This command starts the Celery beat scheduler, which sends tasks to the message broker (in this case, Redis) at set intervals, e.g., every 10 seconds.
-
-Now the backend should be up and running locally!
-
-### Frontend
-
-#### Option 1: Run using TestFlight
-(TODO: Complete this section)
-
-#### Option 2: Run locally using Expo Go
-
-##### Step 0: Prerequisite downloads and installations
-
-Navigate to the **mobile** directory and run the following:
-- `npm install`
-- `npx expo install react-native-web`
-- `npx expo install expo-web-browser`
-
-> [!WARNING]
-> Running `npm audit fix` will cause errors.
-
-Within the **mobile** directory run:
-- `npx expo start`
-
-#### Option 2.1: Using Expo Go CLI
-
-##### Step 1: Start the app
-
-In the Expo Go CLI press `w`
-
-#### Option 2.2: Using Expo Go with Android emulator
-
-##### Step 1: Install Android Studio
-
-1. Install Watchman and JDK
-    - Install [Java SE Development Kit (JDK)](https://openjdk.org/) using the command: `choco install -y microsoft-openjdk17`.
-
-2.  Set up Android Studio
-   - Follow Steps 1-9 in these instructions: [Expo Go | Set up Android Studio](https://docs.expo.dev/workflow/android-studio-emulator/#set-up-an-emulator).
-      - **Step 1: Download** - Download [Android Studio](https://developer.android.com/studio)
-      - **Step 2: Install** - Go through the Android Studio wizard, accept the licensing agreement, and click finish.
-      - **Step 3: Create Windows environment variables** - After the tools installation is complete, configure the `ANDROID_HOME` environment variable.
-         - Go to Windows Control Panel > User Accounts > User Accounts (again) > Change my environment variables and click New to create a new `ANDROID_HOME` user variable. The value of this variable will point to the path to your Android SDK:
-         - By default, the Android SDK is installed at the following location: `C:\Users\username\AppData\Local\Android\SDK`
-      - **Step 4: Add platform-tools to PATH** - Go to Windows Control Panel > User Accounts > User Accounts (again) > Change my environment variables > Path > Edit > New and add the path to the platform-tools
-         - By default, the paltform-tools folder is installed at the following location: `C:\Users\username\AppData\Local\Android\SDK\platform-tools`
-      - **Step 5: Vertification** - You can vertify that `adb` can be located by running `adb` from a terminal.
-
-##### Step 2: Install emulator
-
-Set up an emulator
-   - Follow Steps 1-5 in these instructions: [Expo Go | Set up an emulator](https://docs.expo.dev/workflow/android-studio-emulator/#set-up-an-emulator).
-      - **Step 1: Create a device** - On the Android Studio main screen, click More Actions, then Virtual Device Manager in the dropdown, then click the Create device button.
-      - **Step 2: Select Hardware** - Under Select Hardware, choose the hardware you want to emulate, click next, then select an OS version, click finish.
-
-##### Step 3: Download Expo Go
-
-Download Expo Go on the emulator
-   - Install Expo Go through [Expo Go](https://expo.dev/go)
-
-##### Step 3: Start the app
-
-To run the app on the Android emulator:
-   - Open Expo Go in the Android emulator
-   - In the Expo Go CLI press `a`
-
-REACT is organized into two primary directories: **backend** for the Django-powered backend code, and **mobile** for the React Native frontend code.
+## Getting started
 
 ### Backend
 
-Database entities for User, UserData, and NotificationData are defined in backend/app/models.py.
+From `backend/`, with Python 3.11:
 
-APIs are defined in the backend in [backend/app/views.py](backend/app/views.py)
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt          # requirements_mac.txt on Apple Silicon
+python manage.py migrate
+python manage.py createsuperuser
+python manage.py runserver 0.0.0.0:8000
 
-API URLs are captured in [backend/project/urls.py](backend/project/urls.py)
+# in separate terminals (needs a running Redis)
+celery -A project.celery worker --loglevel=info
+celery -A project.celery beat   --loglevel=info
+```
 
-Thse REST APIs are documented in our [Swagger](https://healthygatorsportsfan-84ee3c84673f.herokuapp.com/swagger/).
+`settings.py` reads everything from the environment. It picks the database from `DATABASE_URL`, then Cloud SQL (when `K_SERVICE` is set), then the discrete `DATABASE_*` variables. Other variables:
 
-Heroku, Django, Expo SDK 52, ReactNative...
+| Variable | Purpose |
+|---|---|
+| `SECRET_KEY` | Django secret |
+| `REDIS_URL` / `CELERY_BROKER_URL` | Celery broker |
+| `API_KEY` | When set, API routes require a matching `X-API-Key` header |
+| `DASHBOARD_API_KEY` | Key for `/dashboard/*` and `/api/monitor/*` |
+| `SENTRY_DSN` | Error reporting |
+| `JITAI_RANDOMIZATION_PROBABILITY` | Randomization probability (default `0.5`) |
 
+> [!WARNING]
+> Check which database your `.env` points at before running anything that writes. A local `.env` can point at production, and `dress_rehearsal.py --reset` and `analytics/reconcile_monitoring.py` both write to whatever database it names.
 
-Django Index:
+### Mobile
 
-<img width="443" alt="image" src="https://github.com/user-attachments/assets/1160bd37-580e-45e6-819a-b3787e96793e">
+You need Node 20.19.4 or newer and a physical device. Expo Go does not work with this app, so it runs as a development build.
 
-Django Admin View:
+```bash
+cd mobile && npm install
+npx expo run:ios --device        # or: npx expo run:android --device
+npx expo start --dev-client      # afterwards, once the native build exists
+```
 
-<img width="559" alt="image" src="https://github.com/user-attachments/assets/61943fa6-eeb2-42fc-a535-43b57581c5ac">
+`mobile/.env` must set `EXPO_PUBLIC_API_KEY` to the backend's `API_KEY`, or requests get a 403. The app targets production by default. To use a local backend, set `ACTIVE_ENV` to `'dev'` in `mobile/src/api/config.ts`, and don't commit that change. Full device setup, notifications and troubleshooting are in [mobile/README.md](mobile/README.md).
+
+### Monitoring prototype
+
+The prototype is a Streamlit app that reads `/api/monitor/*` over HTTP. It has no database credential and does not import Django.
+
+```bash
+cd analytics && pip install -r requirements.txt
+export MONITOR_BASE_URL=http://localhost:8000 DASHBOARD_API_KEY=...
+streamlit run monitor_app/app.py
+```
+
+Do not export `API_KEY` in this shell. It is not needed here, and it would switch on API-key checks for every route of a local backend sharing that shell. See [analytics/monitor_app/README.md](analytics/monitor_app/README.md).
+
+## Testing
+
+```bash
+# from backend/ — SQLite in-memory; the custom runner supplies labels and blanks API keys
+python manage.py test --settings=project.test_settings
+python manage.py test app.tests.EMANextViewTests --settings=project.test_settings
+
+# dashboard tests must run from the repo root
+python3 backend/manage.py test dashboard --settings=project.test_settings
+
+# decision-engine scenario tests (plain unittest, from backend/)
+python -m unittest decision_engine.test_decision_engine_scenarios
+
+# mobile (no test suite; these are the checks)
+cd mobile && npx tsc --noEmit && npx expo export --platform ios --output-dir /tmp/x
+```
+
+GitHub Actions (`.github/workflows/django-ci.yml`) runs on every push: first the decision-engine scenario tests, then `migrate` and `manage.py test` against SQLite. A passing push to `main` deploys to Heroku automatically.
+
+## Management commands
+
+Run these from `backend/`. The import, backfill and test-push commands accept `--dry-run`.
+
+| Command | What it does |
+|---|---|
+| `recompute_metrics [--all] [--user N --days D]` | Rebuild the monitoring tables (the periodic task covers the trailing 3 days) |
+| `import_labfront_export <path>` | Load a Labfront export (zip, CSV or folder) into the HR / stress / HRV tables |
+| `import_baseline_distress_flags --file export.csv` | Score a Qualtrics baseline export and write Section 11 `DistressFlag` rows (also available as a button in Django Admin) |
+| `import_event_days <csv>` | Load UF sporting event dates into `EventDay` |
+| `dump_item_bank --check` | Fail if the EMA item bank drifted from the frozen JSON |
+| `backfill_thresholds`, `backfill_withdrawals`, `backfill_enrollment`, `backfill_distress_flag_active` | One-off backfills for columns added after data was collected |
+| `send_test_jitai_push --user-id N` | Send a content-free test JITAI push |
+
+There are also two manual QA scripts (not part of CI): `dress_rehearsal.py` simulates participants at the ORM layer, and `full_circle_test.py --base-url URL` exercises a running backend over HTTP.
+
+## API
+
+All routes are registered in [backend/project/urls.py](backend/project/urls.py). Interactive docs are served at `/swagger/`.
+
+Authentication has three parts:
+
+- `APIKeyMiddleware` requires `X-API-Key` when `API_KEY` is set.
+- SimpleJWT handles user auth on top of that.
+- The read-only `/dashboard/*` and `/api/monitor/*` endpoints take either a staff session or an `X-Dashboard-API-Key` header.
+
+## Research and privacy constraints
+
+- **No free text or message bodies in the database (IRB).** `JITAILog` stores only a `prompt_id` template reference, and JITAI pushes are silent.
+- **Labfront owns wearable OAuth.** The only Labfront identifier stored is `labfront_participant_id`. There is no Fitbit or Fitabase integration.
+- **Protocol values need PI sign-off.** That covers thresholds, caps and other protocol values. Change them only in `dashboard/data/config.py`, and never hardcode a literal elsewhere.
+- **Distress override (protocol Section 11).** A baseline-screen flag or a momentary check-in flag suspends randomization for that participant. The app then shows a resource card instead of a coping message. See `backend/app/distress.py`.
+- **Monitoring payloads name participants by study ID, never by email.**
+
+## Deployment
+
+Production runs on Heroku and deploys from `main` through CI. The base URL is `https://react-backend-prod-8db300645555.herokuapp.com`, with Django Admin at `/admin` and API docs at `/swagger/`. `cloudbuild.yaml` (GCP) is dormant.
+
+## Further documentation
+
+- [CLAUDE.md](CLAUDE.md): detailed architecture, endpoint table, distress override, monitoring invariants
+- [mobile/README.md](mobile/README.md): device builds, notifications, check-in behavior
+- [analytics/monitor_app/README.md](analytics/monitor_app/README.md): monitoring prototype
+- [analytics/analysis-resources/production_schema.md](analytics/analysis-resources/production_schema.md) and [data-dictionary.md](analytics/analysis-resources/data-dictionary.md): live schema
+- [Resources/REACT_Admin_Enrollment.md](Resources/REACT_Admin_Enrollment.md): enrolling participants
+
+## People
+
+- **Prof. Yonghwan Chang**: PI, Department of Sport Management, UF
+- SMASH Research Lab student engineers
+- REACT builds on the HealthyGator platform developed by earlier UF student teams.
