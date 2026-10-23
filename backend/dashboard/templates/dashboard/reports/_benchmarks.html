@@ -1,0 +1,29 @@
+{% load report_format %}<section>
+  <h2>{{ number }} Feasibility benchmarks</h2>
+  <p class="note">A benchmark passes when its whole 95% Wilson interval clears the target and fails when the whole
+    interval falls short. Below 10 participants or 30 units the rate is withheld and only counts are shown.</p>
+  {% if benchmark_chart %}<div class="card">{{ benchmark_chart }}
+    <p class="note" style="margin:6px 0 0">Dot: current rate · line: 95% Wilson interval · vertical tick: target.</p></div>{% endif %}
+  <div class="card" style="margin-top:12px"><table>
+    <thead><tr><th>Measure</th><th class="n">Current</th><th class="n">95% CI</th><th class="n">Count</th><th class="n">Target</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for entry in benchmarks %}
+      <tr>
+        <td>{{ entry.label }}{% if entry.provisional %}<span class="tag" title="{{ entry.note }}">provisional</span>{% endif %}</td>
+        <td class="n">{{ entry.value|pct }}</td>
+        <td class="n">{% if entry.wilson_low is not None %}{{ entry.wilson_low|pct }}–{{ entry.wilson_high|pct }}{% else %}—{% endif %}</td>
+        <td class="n">{{ entry.numerator|num }}/{{ entry.denominator|num }} {{ entry.unit }}</td>
+        <td class="n">≥ {{ entry.target|pct }}</td>
+        <td>{% include "dashboard/reports/_status.html" with value=entry.status %}</td>
+      </tr>
+    {% endfor %}
+      <tr>
+        <td>{{ hair_sample.label }}</td><td class="n">—</td><td class="n">—</td>
+        <td class="n muted">{{ hair_sample.detail }}</td>
+        <td class="n">≥ {{ hair_sample.target|pct }}</td>
+        <td>{% include "dashboard/reports/_status.html" with value=hair_sample.status %}</td>
+      </tr>
+    </tbody>
+  </table></div>
+  {% for entry in benchmarks %}{% if entry.provisional %}<p class="note">{{ entry.label }} is provisional: {{ entry.note }}</p>{% endif %}{% endfor %}
+</section>

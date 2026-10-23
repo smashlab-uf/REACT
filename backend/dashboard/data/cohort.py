@@ -18,6 +18,8 @@ from django.db.models import Count, F, Q, Sum
 from django.utils import timezone as django_timezone
 
 from dashboard.data.config import (
+    AVAILABILITY_ALARM_HIGH,
+    AVAILABILITY_ALARM_LOW,
     BENCHMARKS,
     JITAI_COOLDOWN_MINUTES,
     PHASE1_USER_IDS,
@@ -301,7 +303,7 @@ def _mrt_integrity(users, now):
         'eligibility_rate': _gauge(
             'eligibility_rate', totals['eligible_n'], totals['decision_points_n'],
             extra={
-                'alarm_low': 0.10, 'alarm_high': 0.35,
+                'alarm_low': AVAILABILITY_ALARM_LOW, 'alarm_high': AVAILABILITY_ALARM_HIGH,
                 # A decision point only exists when an EMA is submitted, so
                 # availability is confounded with compliance. Printed beside the
                 # gauge so the confound cannot be read past.

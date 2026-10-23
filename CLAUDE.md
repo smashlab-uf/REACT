@@ -115,9 +115,20 @@ python manage.py import_baseline_distress_flags --dry-run --file export.csv
                                                    #   (Qualtrics' embedded-data pid field matched
                                                    #   against User.study_id); both still overridable
                                                    #   to user_id/email for an older export.
-# The dashboard tests do NOT run from backend/: the label 'dashboard' resolves to the directory
-# backend/dashboard/ there, so bare `manage.py test` (and CI) skips them. Run them from the repo root:
-python3 backend/manage.py test dashboard --settings=project.test_settings
+python manage.py build_report --daily [--date 2026-09-20]     # PI report, one Eastern day (default yesterday)
+python manage.py build_report --weekly [--end 2026-09-20]     # PI report, the 7 days ending --end
+                                                   # writes analytics/reports/output/react_{daily|weekly}_<date>.html
+                                                   #   (git-ignored: it carries study IDs). --out DIR to change;
+                                                   #   --recompute refreshes the RS participants' metric tables
+                                                   #   first (same write as the periodic task). Mind which
+                                                   #   database .env points at.
+python manage.py build_report --weekly --end 2026-10-11 --labfront-export ../labfront_data/<export-id>
+                                                   # weekly only: line Garmin HR/stress up with check-ins
+                                                   #   from a Labfront export folder (read only, git-ignored)
+# Run all tests from backend/. The default suite includes the dashboard tests (about 200 of them).
+# A leftover, untracked top-level dashboard/ directory holding only __pycache__ can shadow the
+# label if you run from the repo root. Delete it.
+python manage.py test dashboard --settings=project.test_settings
 ```
 
 ```bash
@@ -130,7 +141,8 @@ python3 full_circle_test.py [--base-url URL]       # hits a real running backend
 ```
 
 GitHub Actions (`.github/workflows/django-ci.yml`) runs on every push: decision-engine scenario
-tests, then `manage.py migrate` + `manage.py test` against SQLite (via `DATABASE_URL=sqlite:///db.sqlite3`,
+tests, then `manage.py migrate`, `makemigrations --check --dry-run` (a model change without its
+migration fails CI), and `manage.py test` against SQLite (via `DATABASE_URL=sqlite:///db.sqlite3`,
 not `test_settings`). A push to `main` that passes then auto-deploys to Heroku.
 
 ---
@@ -199,8 +211,9 @@ backend/
                    #   wsgi/asgi, test_settings.py
   app/             # the single Django app: models, serializers, views, tasks, admin,
                    #   middleware.py (API key), notification_service.py (Expo push), ema_catalog.py
-  dashboard/       # monitoring Django app: data/ (config.py constants, windows.py,
-                   #   daily/participant/cohort/alerts), models.py (4 derived metric tables),
+  dashboard/       # monitoring Django app: data/ (config.py constants, windows.py, accounts.py,
+                   #   daily/participant/cohort/alerts), reports/ (PI daily/weekly report builder),
+                   #   models.py (4 derived metric tables),
                    #   views.py (/api/monitor/*), tasks.py, stages/ (4 analysis notebooks +
                    #   monitor_common.py), make_fixture.py (synthetic cohort generator)
   decision_engine/ # standalone MSSD/JITAI logic + golden-CSV scenario tests (pure pandas)
@@ -497,7 +510,7 @@ a real participant (user 102 / RS02 was enrolled that way and needs the real ID 
 
 A suppressed decision point is logged with `send_prompt=False`, `randomization_draw` and
 `randomization_probability` both null, `status` and `delivery_status` both `'suppressed'` (never
-`not_sent`, which stays for ordinary ineligible or randomized-out decisions), and
+`not_sent`, which stays for ordinary unavailable or randomized-out decisions), and
 `JITAILog.suppression_reason` set (`run_in`, `distress_baseline`, `distress_momentary`, plus
 `cooldown` and `daily_cap` — as of 2026-10, both `_evaluate_user` and `POST /jitai/`'s safeguard
 recheck can produce these two, via the shared `_cooldown_cap_reason` helper described below). That
@@ -646,8 +659,8 @@ maximum 47, with each term's point contribution stored in `risk_components` so t
 arguable rather than opaque. Weights are a starting point to tune after Phase 1. Two properties
 to preserve: the score is **null, not zero**, for anyone the study is not currently asking
 anything of (pre-enrollment, complete, withdrawn), since every term reads as maximally bad for
-them and they would otherwise dominate the top of the RA's call list; and only `critical` alerts
-move it, because `Alert.SEVERITY_CHOICES` has no `high`.
+them and they would otherwise dominate the top of the RA's call list; and only open
+alerts in `Alert.ACTIONABLE_SEVERITIES` (`critical` and `high`, not `warning`) move it.
 
 `EMA.served_sub_item_ids` records what a check-in actually put on screen, which is what makes
 item completeness measurable at all. `/ema/next/` returns the list, the client may echo it back,
@@ -671,6 +684,127 @@ sees everything. Confirm RA access scope with Prof. Chang before implementing it
 
 Labfront's own dashboard handles device compliance monitoring (battery, sync times, wear
 gaps) — do not duplicate this in Django Admin.
+
+---
+
+## PI feasibility reports
+
+The daily and weekly feasibility and compliance reports for Dr. Chang are built in
+`backend/dashboard/reports/`: `sections.py` has one function per section of the template in
+`analytics/reports/template/`, and `build.py` assembles them (`build_daily(date)`,
+`build_weekly(end)`). They read the ORM and return plain dicts; rendering is separate.
+
+**Only RS accounts are analysed.** `dashboard/data/accounts.py` classifies by `study_id`
+prefix: `RS*` is a study participant, `ST*` is a test or staff account kept for system validation,
+and anything else (including no `study_id`) is Unclassified. Test and Unclassified accounts are
+counted in the participant-status table so the exclusion is visible. An enrolled Unclassified
+account is listed under data quality for staff to label in Admin. The live dashboard tables do
+not filter this way yet. Each RS participant's `labfront_participant_id` is expected to equal their
+study ID (RS01 → RS01). Data quality flags a missing device, a `TEST…` placeholder, or any other
+mismatch, because wearable ingest polls Labfront by that ID. An enrolled RS participant with no
+push token is flagged too: no reminder or prompt can reach them.
+
+**When a prompt was seen.** The earliest evidence a participant saw a sent prompt is the device
+receipt (`device_received_at`) or the time they answered the `C0_helpful` rating on the linked
+`prompt_feedback` check-in, whichever came first (Dr. Chang, 2026-10-08; for RS03 the rating came
+four hours after the send, with no receipt). A prompt with neither once its 2-hour outcome window
+has closed is "no evidence"; one rated but never receipted points at the receipt pipeline, not the
+participant.
+
+**Available and eligible are different stages** (protocol §4, §5.4, §9.3):
+
+- **Available** describes a decision point. It means a randomization draw was taken, which happens
+  only when every gate passed: MSSD above the participant's expanding 80th-percentile threshold,
+  no cooldown, under the daily cap, study day 7 or later, and no active distress flag. The
+  protocol's sleep and stale-sync conditions are not implemented. The report's availability rate
+  is available ÷ decisions evaluated, MRT days only. It is compared with the power table's 0.21
+  and the 10–35% band (`AVAILABILITY_*` in `config.py`). Decisions that were not randomized are
+  broken down by reason, and `passed_mssd_gate` counts those that cleared the MSSD gate but were
+  blocked by a safeguard.
+- **Eligible** describes the message pool, and applies only after a decision is randomized to
+  send. The pool is one of three things: the matched coping category's messages minus the
+  participant's last 5 sent (`select_prompt`), the general fallback pool, or P020 alone for the
+  alcohol-severity override. It is never a count of decision points. The report checks that every
+  sent prompt came from its recorded pool and that coping prompts honour the last-5 exclusion
+  (control prompts have none).
+- `MetricsDaily.eligible_n` and the cohort `eligibility_rate` gauge predate this distinction and
+  mean **available** (draw not null). Do not rename them; it would need a migration and API
+  changes.
+
+**Arms.** Arm A is a decision whose prompt was sent. Arm B is a decision randomized out
+(draw ≥ p). A decision randomized to send whose message pool came back empty is in neither arm;
+it is reported under message eligibility.
+
+**Outcome-window scoring.** Every available decision opens the window
+[`decision_made_at` +60 min, +120 min] in both arms.
+
+- A check-in answered before +60 min is invalid and never counted as captured. It would be
+  confounded with treatment, since only the sent arm got a push.
+- The stored `outcome_window_start`/`end` must equal the decision time and +120 min, to within a
+  minute (the server stores the whole window; the +60 opening is enforced on the answer time above).
+  This is what proves both arms got the same timing, and it catches a regression to anchoring on
+  `push_sent_at`.
+- A window still open when the report runs is counted but not scored as captured or missing.
+
+**Distress in the report.**
+
+- "Follow-up required" means a baseline flag with `contact_documented_at` NULL, whatever the
+  signal. That includes AUDIT-C and gambling, which never pause randomization but are still
+  followed up at the next visit.
+- Momentary flags never require follow-up (Dr. Chang, 2026-09-23); the resource card and the 24-hour
+  pause handle them. They are listed for daily staff review and never appear as action items.
+- Resource-card displays are not logged, so that row reads NOT MEASURED.
+
+**Retention is provisional.** It is currently "never withdrew" (`active_retention`), pending a
+final definition. It is shown as provisional and kept out of the issues list.
+
+**Statuses.**
+
+- **PASS / FAIL / WATCH:** a benchmark passes when its Wilson lower bound is at or above the
+  target, fails when its upper bound is below it, and is WATCH otherwise.
+- **SUPPRESSED:** fewer than 10 participants or 30 units, so counts are shown and no rate.
+- **NO DATA:** the period had nothing to check.
+- **NOT MEASURED:** the schema has no source (hair samples, screened/eligible/consented counts,
+  resource cards).
+
+Integrity checks are never suppressed, the same as the cohort strip.
+
+**Compose telemetry is exploratory**, not a protocol endpoint: it is the only behavioral, non-self-report
+online signal. The logic is in `dashboard/data/compose.py`; the app side is in
+`mobile/src/telemetry/composeTelemetry.ts`.
+
+- **Visit:** the compose box holding focus. `session_start` fires on focus, or when the app returns to
+  the foreground with the box still focused. `session_end` fires on blur, backgrounding, or when the
+  EMA modal opens. Both carry a per-visit `session_id`. `autoFocus` was removed so an app launch is
+  not an open.
+- **Old builds:** a participant with no `session_start` on record is on an old build. Their opens are
+  shown as not measured, not as zero.
+- **Draft:** keyed by its own `session_id`. It starts on the first keystroke. It is abandoned when
+  neither submitted nor deleted within 24 hours, and pending (not scored) until then. Abandonment is
+  derived on the server, because a draft that loses focus can be resumed.
+- **Counts:** keystroke and deletion counts are character-length changes (`autoCorrect` is off, so
+  only a paste inflates them).
+- **Sent vs. randomized-out comparison:**
+  - Windows run from the decision time to +2 h, split at +60 min. Each event goes to the most recent
+    window that contains it.
+  - The cohort figure is the mean of within-person differences (A − B), shown beside a background rate
+    from 2-hour blocks of the 9–21 day that touch no decision window.
+  - The bootstrap CI is weekly only, and only above the usual 10-participant / 30-unit threshold.
+
+**Game days (weekly 2.6)** compare football game days with all other days, cumulatively from
+`GAME_DAY_COMPARISON_START` (2026-10-09, the Friday of homecoming weekend) to the report's end. Game
+days are the dates in `config.GAME_DAYS` (2026-10-10, the homecoming game, so far), kept by hand: the
+report does not read `EventDay`, which has no rows this season. Add each football date there as it is
+played. Completion uses
+`MetricsDaily` slots under the usual suppression. Answers come from scheduled check-ins only, as
+within-person game − non-game differences.
+
+**Garmin at check-in (weekly 2.7)** reads a Labfront export folder (`dashboard/data/labfront_export.py`)
+and never loads it into `HeartRateSample`/`StressSample`. Those tables feed the live engine:
+`_evaluate_user` stamps the newest sample onto every decision as `hr_at_trigger`/`stress_at_trigger`, so
+a back-loaded export would put a weeks-old reading on every new decision. Each scheduled check-in gets
+the mean HR (15 s Connect series) and stress (3 min, `-1`/`-2` codes dropped) over the 30 minutes before
+it was answered. A check-in whose window misses the export's dates is "outside export", not missing.
 
 ---
 

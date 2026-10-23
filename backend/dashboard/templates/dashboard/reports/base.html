@@ -1,0 +1,119 @@
+{% load report_format %}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}REACT Report{% endblock %}</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --series: #2a78d6;
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-critical: #d03b3b;
+  --status-neutral: #c3c2b7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series: #3987e5;
+    --status-neutral: #52514e;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --ink: #ffffff;
+  --ink-2: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.10);
+  --series: #3987e5;
+  --status-neutral: #52514e;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
+header.report { border-bottom: 1px solid var(--grid); padding-bottom: 16px; margin-bottom: 8px; }
+header.report h1 { font-size: 22px; margin: 0 0 4px; }
+.meta { color: var(--ink-2); margin: 2px 0; }
+.meta strong { color: var(--ink); font-weight: 600; }
+.stale { color: var(--ink); }
+section { margin-top: 28px; }
+h2 { font-size: 17px; margin: 0 0 10px; }
+h3 { font-size: 14px; margin: 18px 0 6px; color: var(--ink-2); }
+p.note { color: var(--ink-2); margin: 4px 0 10px; max-width: 72ch; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { color: var(--ink-2); font-weight: 600; font-size: 12px; }
+td.n, th.n { text-align: right; }
+tr:last-child td { border-bottom: none; }
+.status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-weight: 600; font-size: 12px; }
+.status i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--status-neutral); }
+.status-pass i { background: var(--status-good); }
+.status-watch i { background: var(--status-warning); }
+.status-fail i { background: var(--status-critical); }
+.tag { font-size: 11px; color: var(--ink-2); border: 1px solid var(--grid); border-radius: 4px; padding: 0 4px; margin-left: 6px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+ul.plain { margin: 4px 0; padding-left: 18px; }
+.muted { color: var(--muted); }
+.summary { font-size: 15px; max-width: 72ch; }
+svg.viz { display: block; max-width: 600px; }
+svg.viz text { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; }
+svg.viz .label { fill: var(--ink-2); }
+svg.viz .axis, svg.viz .note { fill: var(--muted); }
+svg.viz .value { fill: var(--ink); font-weight: 600; }
+svg.viz .grid { stroke: var(--grid); stroke-width: 1; }
+svg.viz .baseline { stroke: var(--axis); stroke-width: 1; }
+svg.viz .zero, svg.viz .target { stroke: var(--ink-2); stroke-width: 2; stroke-linecap: round; }
+svg.viz .ci, svg.viz .line { stroke: var(--series); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+svg.viz .dot { fill: var(--series); stroke: var(--surface); stroke-width: 2; }
+svg.viz .hit, svg.viz .hit-dot { fill: transparent; }
+svg.spark { display: inline-block; vertical-align: middle; }
+details > summary { cursor: pointer; color: var(--ink-2); margin: 10px 0 6px; }
+@media print {
+  :root { color-scheme: light; --page: #ffffff; --surface: #ffffff; --ink: #000; --ink-2: #333; --grid: #ccc; --series: #2a78d6; }
+  main { max-width: none; padding: 0; }
+  section { break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<main>
+<header class="report">
+  <h1>{% block heading %}{% endblock %}</h1>
+  <p class="meta">{% block period %}{% endblock %}</p>
+  <p class="meta">Generated <strong>{{ generated_at|eastern }}</strong> Eastern ·
+    daily metrics last computed <strong class="stale">{{ metrics_computed_at|eastern }}</strong></p>
+  <p class="meta">Cohort: study IDs beginning <strong>RS</strong> only ({{ cohort.participants }} enrolled).
+    Excluded: {{ status.test }} ST test/staff account{{ status.test|pluralize }},
+    {{ status.unclassified }} unclassified account{{ status.unclassified|pluralize }}.</p>
+</header>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

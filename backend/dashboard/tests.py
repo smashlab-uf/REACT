@@ -7,17 +7,23 @@ poll, and delivery failures sitting in the prompt-response denominator.
 """
 
 import json
+import tempfile
 from datetime import date, datetime, timedelta
 from io import StringIO
+from pathlib import Path
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 from app.models import (
     CheckinReminder,
+    DistressFlag,
     EMA,
     EMAItemResponse,
     EngagementLog,
+    EventDay,
     HeartRateSample,
     JITAILog,
+    PhoneTelemetry,
     User,
     WearableDevice,
     WearableSync,
@@ -34,6 +40,8 @@ from django.db.models import Sum
 from django.test import Client, TestCase, override_settings
 
 from dashboard.data import accounts
+from dashboard.data import compose as compose_data
+from dashboard.data import labfront_export as lf
 from dashboard.data import timeline as tl
 from dashboard.data import windows as w
 from dashboard.data.alerts import Context, evaluate_alerts, pipeline_stalled, randomization_audit
@@ -56,6 +64,10 @@ from dashboard.data.participant import (
     refresh_risk_scores,
 )
 from dashboard.models import Alert, MetricsCohort, MetricsDaily, MetricsParticipant
+from dashboard.reports import build as report_build
+from dashboard.reports import render as report_render
+from dashboard.reports import svg as report_svg
+from dashboard.reports import sections as report
 from dashboard.tasks import recompute_metrics
 
 EASTERN = ZoneInfo('America/New_York')
@@ -1928,3 +1940,840 @@ class AccountClassificationTests(TestCase):
         only_enrolled = User.objects.filter(enrolled_at__isnull=False)
         self.assertEqual(list(accounts.study_users(only_enrolled)), [enrolled])
         self.assertEqual(accounts.account_counts(only_enrolled)[accounts.STUDY], 1)
+
+
+# ---------------------------------------------------------------------------
+# PI report sections
+# ---------------------------------------------------------------------------
+
+class ReportFixture:
+    ENROLLED = datetime(2026, 9, 1, 14, 0, tzinfo=UTC)
+    DAY = date(2026, 9, 10)
+    NOW = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
+
+    def setUp(self):
+        self.rs1 = self._account('a@x.test', 'RS01')
+        self.rs2 = self._account('b@x.test', 'RS02')
+        self.staff = self._account('s@x.test', 'ST01')
+        self.sequence = 0
+
+    def _account(self, email, study_id):
+        user = make_participant(email, self.ENROLLED, device=False)
+        User.objects.filter(pk=user.pk).update(study_id=study_id)
+        return User.objects.get(pk=user.pk)
+
+    def _at(self, hour, minute=0, day=None):
+        local = day or self.DAY
+        return datetime(local.year, local.month, local.day, hour, minute, tzinfo=EASTERN)
+
+    def _decision(self, user, when, draw=0.3, send=None, p=0.5, **kwargs):
+        self.sequence += 1
+        if send is None:
+            send = draw is not None and draw < p
+        fields = {
+            'user': user, 'prompt_id': 'P1' if send else '',
+            'trigger_reason': kwargs.pop('trigger_reason', 'prompt sent'),
+            'decision_point_id': kwargs.pop('decision_point_id', f'ema_{self.sequence}'),
+            'randomization_draw': draw,
+            'randomization_probability': p if draw is not None else None,
+            'send_prompt': send, 'decision_made_at': when,
+            'push_sent_at': when if send else None,
+            'eligible_prompt_ids': ['P1', 'P2'] if draw is not None else None,
+            'message_arm': 'coping' if send else None,
+            'arm_randomization_draw': 0.2 if send else None,
+        }
+        fields.update(kwargs)
+        return JITAILog.objects.create(**fields)
+
+    def _rows(self, start=None, end=None):
+        users = list(report.study_participants())
+        return report.decision_rows(users, start or self.DAY, end or self.DAY)
+
+    def _status(self, checks, name):
+        return next(check['status'] for check in checks if check['name'] == name)
+
+
+class ReportSectionTests(ReportFixture, TestCase):
+    def test_test_accounts_are_left_out_of_every_count(self):
+        self._decision(self.rs1, self._at(10))
+        self._decision(self.staff, self._at(11))
+        decisions = report.decision_points(self._rows())
+        self.assertEqual(decisions['evaluated'], 1)
+
+    def test_decision_counts_and_availability(self):
+        self._decision(self.rs1, self._at(10), draw=0.3)
+        self._decision(self.rs1, self._at(12), draw=0.8)
+        self._decision(self.rs1, self._at(14), draw=None,
+                       trigger_reason='below within-person threshold')
+        self._decision(self.rs1, self._at(16), draw=None, trigger_reason='distress override (momentary)',
+                       suppression_reason='distress_momentary')
+
+        decisions = report.decision_points(self._rows())
+        self.assertEqual(decisions['evaluated'], 4)
+        self.assertEqual(decisions['passed_mssd_gate'], 3)
+        self.assertEqual(decisions['available'], 2)
+        self.assertEqual(decisions['unavailable_by_reason'], {
+            'below within-person threshold': 1, 'Distress override (check-in)': 1})
+        self.assertNotIn('eligible', decisions)
+        self.assertEqual(decisions['sent'], 1)
+        self.assertEqual(decisions['not_sent'], 1)
+        self.assertEqual(decisions['suppressed_by_reason'], {'distress_momentary': 1})
+        self.assertEqual(decisions['availability_rate'], 0.5)
+        self.assertEqual(decisions['availability_status'], report.WATCH)
+
+    def test_run_in_decisions_stay_out_of_the_availability_rate(self):
+        run_in_day = date(2026, 9, 3)
+        self._decision(self.rs1, self._at(10, day=run_in_day), draw=None,
+                       trigger_reason='run-in period', suppression_reason='run_in')
+        decisions = report.decision_points(self._rows(run_in_day, run_in_day))
+        self.assertEqual(decisions['evaluated'], 1)
+        self.assertEqual(decisions['mrt_evaluated'], 0)
+        self.assertEqual(decisions['availability_status'], report.NO_DATA)
+
+    def test_integrity_passes_on_clean_rows(self):
+        self._decision(self.rs1, self._at(10), draw=0.3)
+        self._decision(self.rs1, self._at(12), draw=0.8)
+        checks = report.randomization_integrity(self._rows())
+        self.assertEqual({check['status'] for check in checks}, {report.PASS})
+
+    def test_integrity_fails_on_a_send_the_draw_did_not_allow(self):
+        self._decision(self.rs1, self._at(10), draw=0.9, send=True)
+        checks = report.randomization_integrity(self._rows())
+        self.assertEqual(self._status(checks, 'Randomization executed'), report.FAIL)
+
+    def test_no_prompt_available_is_a_message_gap_not_a_randomization_failure(self):
+        self._decision(self.rs1, self._at(10), draw=0.3, send=False)
+        integrity = report.randomization_integrity(self._rows())
+        self.assertEqual(self._status(integrity, 'Randomization executed'), report.PASS)
+        messages = report.message_eligibility(self._rows())
+        self.assertEqual(
+            self._status(messages['checks'], 'Message available when randomized to send'), report.WATCH)
+
+    def test_prompt_outside_its_pool_fails(self):
+        self._decision(self.rs1, self._at(10), draw=0.3, prompt_id='P9')
+        messages = report.message_eligibility(self._rows())
+        self.assertEqual(
+            self._status(messages['checks'], 'Prompt drawn from its eligible pool'), report.FAIL)
+
+    def test_coping_repeat_within_last_five_fails_even_across_the_period_boundary(self):
+        earlier_day = self.DAY - timedelta(days=1)
+        self._decision(self.rs1, self._at(15, day=earlier_day), draw=0.3, prompt_id='P2')
+        self._decision(self.rs1, self._at(10), draw=0.3, prompt_id='P2')
+        messages = report.message_eligibility(self._rows())
+        self.assertEqual(
+            self._status(messages['checks'], 'Last-5 exclusion honored (coping)'), report.FAIL)
+
+    def test_coping_prompt_older_than_the_last_five_may_repeat(self):
+        for hour, prompt_id in zip(range(9, 15), ['P2', 'P3', 'P4', 'P5', 'P6', 'P7']):
+            self._decision(self.rs1, self._at(hour, day=self.DAY - timedelta(days=1)), draw=0.3,
+                           prompt_id=prompt_id, eligible_prompt_ids=[prompt_id])
+        self._decision(self.rs1, self._at(10), draw=0.3, prompt_id='P2', eligible_prompt_ids=['P2'])
+        messages = report.message_eligibility(self._rows())
+        self.assertEqual(
+            self._status(messages['checks'], 'Last-5 exclusion honored (coping)'), report.PASS)
+
+    def test_control_repeats_are_allowed_and_routing_is_counted(self):
+        self._decision(self.rs1, self._at(9), draw=0.3, prompt_id='C001',
+                       eligible_prompt_ids=['C001'], message_arm='control')
+        self._decision(self.rs1, self._at(11), draw=0.3, prompt_id='C001',
+                       eligible_prompt_ids=['C001'], message_arm='control')
+        self._decision(self.rs1, self._at(13), draw=0.3, prompt_id='P020',
+                       eligible_prompt_ids=['P020'], fallback_reason='closest_fit',
+                       category_drawn='Urge / craving')
+        messages = report.message_eligibility(self._rows())
+        self.assertEqual(
+            self._status(messages['checks'], 'Last-5 exclusion honored (coping)'), report.PASS)
+        self.assertEqual(messages['arms'], {'control': 2, 'coping': 1})
+        self.assertEqual(messages['routing'], {'Alcohol severity override (P020)': 1})
+        self.assertEqual(messages['categories'], {'Urge / craving': 1})
+
+    def test_integrity_flags_a_missing_pool_and_a_probability_on_a_suppressed_row(self):
+        self._decision(self.rs1, self._at(10), draw=0.8, eligible_prompt_ids=None)
+        self._decision(self.rs1, self._at(12), draw=None, randomization_probability=0.5,
+                       trigger_reason='run-in period', suppression_reason='run_in')
+        checks = report.randomization_integrity(self._rows())
+        self.assertEqual(self._status(checks, 'Message pool recorded'), report.FAIL)
+        self.assertEqual(self._status(checks, 'Randomization probability logged'), report.FAIL)
+
+    def test_ks_needs_enough_draws(self):
+        self._decision(self.rs1, self._at(10), draw=0.3)
+        checks = report.randomization_integrity(self._rows(), include_ks=True)
+        self.assertEqual(self._status(checks, 'Draws uniform on [0, 1] (KS)'), report.NO_DATA)
+
+    def test_outcome_windows_split_by_arm(self):
+        sent = self._decision(self.rs1, self._at(10), draw=0.3)
+        held = self._decision(self.rs2, self._at(10), draw=0.8)
+        make_ema(self.rs1, self._at(11, 10), ema_type='post_prompt', source=sent)
+        reminder = CheckinReminder.objects.create(user=self.rs2, jitai_log=held)
+        CheckinReminder.objects.filter(pk=reminder.pk).update(sent_at=self._at(11))
+
+        outcome = report.outcome_windows(self._rows(), self.NOW)
+        self.assertEqual(outcome['arms']['A']['closed'], 1)
+        self.assertEqual(outcome['arms']['A']['captured'], 1)
+        self.assertEqual(outcome['arms']['B']['closed'], 1)
+        self.assertEqual(outcome['arms']['B']['reminded'], 1)
+        self.assertEqual(outcome['arms']['B']['captured'], 0)
+        self.assertEqual(self._status(outcome['checks'], 'Check-in within 2-hour window'), report.PASS)
+
+    def test_assigned_to_send_with_no_message_is_in_neither_arm(self):
+        self._decision(self.rs1, self._at(10), draw=0.3, send=False)
+        outcome = report.outcome_windows(self._rows(), self.NOW)
+        self.assertEqual(outcome['arms']['A']['windows'], 0)
+        self.assertEqual(outcome['arms']['B']['windows'], 0)
+        self.assertEqual(outcome['assigned_no_message'], 1)
+
+    def _outcome_check_in(self, log, answered, start, end):
+        ema = make_ema(self.rs1, answered, ema_type='extra_check_in', source=log)
+        EMA.objects.filter(pk=ema.pk).update(outcome_window_start=start, outcome_window_end=end)
+
+    def test_stored_window_bounds_are_decision_time_and_two_hours(self):
+        log = self._decision(self.rs1, self._at(10), draw=0.8)
+        self._outcome_check_in(log, self._at(11, 5), self._at(10), self._at(12))
+        outcome = report.outcome_windows(self._rows(), self.NOW)
+        self.assertEqual(self._status(outcome['checks'], 'Check-in within 2-hour window'), report.PASS)
+        self.assertEqual(outcome['arms']['B']['captured'], 1)
+
+    def test_window_anchored_on_the_push_is_flagged(self):
+        log = self._decision(self.rs1, self._at(10), draw=0.3, push_sent_at=self._at(10, 20))
+        self._outcome_check_in(log, self._at(11, 25), self._at(10, 20), self._at(12, 20))
+        outcome = report.outcome_windows(self._rows(), self.NOW)
+        self.assertEqual(self._status(outcome['checks'], 'Check-in within 2-hour window'), report.FAIL)
+
+    def test_outcome_check_in_before_the_window_opens_is_flagged(self):
+        sent = self._decision(self.rs1, self._at(10), draw=0.3)
+        make_ema(self.rs1, self._at(10, 20), ema_type='post_prompt', source=sent)
+        outcome = report.outcome_windows(self._rows(), self.NOW)
+        self.assertEqual(outcome['arms']['A']['invalid_early'], 1)
+        self.assertEqual(outcome['arms']['A']['missing'], 1)
+        self.assertEqual(self._status(outcome['checks'], 'Check-in within 2-hour window'), report.FAIL)
+
+    def test_an_open_window_is_not_scored(self):
+        self._decision(self.rs1, self._at(10), draw=0.3)
+        outcome = report.outcome_windows(self._rows(), self._at(11))
+        self.assertEqual(outcome['arms']['A']['open'], 1)
+        self.assertEqual(outcome['arms']['A']['closed'], 0)
+
+    def test_cooldown_violation_names_the_participant(self):
+        self._decision(self.rs1, self._at(10), draw=0.3)
+        self._decision(self.rs1, self._at(10, 30), draw=0.3)
+        self._decision(self.rs2, self._at(10, 15), draw=0.3)
+        users = list(report.study_participants())
+        cooldown = report.cooldown(self._rows(), report.labels_for(users))
+        self.assertEqual(cooldown['status'], report.FAIL)
+        self.assertEqual(cooldown['closest_gap_min'], 30)
+        self.assertEqual([v['study_id'] for v in cooldown['violations']], ['RS01'])
+
+    def test_distress_breakdown_and_follow_up(self):
+        DistressFlag.objects.create(user=self.rs1, source='baseline', signals=['phq9_self_harm'],
+                                    raised_at=self._at(9))
+        DistressFlag.objects.create(user=self.rs2, source='momentary',
+                                    signals=['b1_low_valence', 'b1_affect_sad'],
+                                    raised_at=self._at(12), expires_at=self._at(12) + timedelta(hours=24))
+        self._decision(self.rs2, self._at(13), draw=None, suppression_reason='distress_momentary',
+                       trigger_reason='distress override (momentary)')
+
+        users = list(report.study_participants())
+        result = report.distress(users, self._rows(), self.DAY, self.DAY, self.NOW)
+        rows = {row['label']: row for row in result['breakdown']}
+        self.assertEqual(result['override_events'], 2)
+        self.assertEqual(result['randomization_suppressed'], 1)
+        self.assertEqual(rows['Self-harm item']['count'], 1)
+        self.assertTrue(rows['Self-harm item']['follow_up'])
+        self.assertEqual(rows['Other distress signal']['count'], 2)
+        self.assertFalse(rows['Other distress signal']['follow_up'])
+        self.assertEqual(result['resource_cards_status'], report.NOT_MEASURED)
+        self.assertEqual(result['momentary_review'][0]['study_id'], 'RS02')
+        self.assertEqual(result['momentary_review'][0]['signals'], [
+            'Check-in valence at the scale floor', 'Check-in sadness at the scale ceiling'])
+
+    def test_alert_only_baseline_flag_still_needs_follow_up(self):
+        DistressFlag.objects.create(user=self.rs1, source='baseline', signals=['audit_c'],
+                                    raised_at=self._at(9))
+        users = list(report.study_participants())
+        result = report.distress(users, self._rows(), self.DAY, self.DAY, self.NOW)
+        rows = {row['label']: row for row in result['breakdown']}
+        self.assertTrue(rows['High-risk alcohol']['follow_up'])
+        self.assertEqual(result['active_now'], 0)
+
+    def test_momentary_flags_never_become_issues(self):
+        DistressFlag.objects.create(user=self.rs1, source='momentary', signals=['b2_high_stress'],
+                                    raised_at=self._at(12), expires_at=self._at(12) + timedelta(hours=24))
+        daily = report_build.build_daily(self.DAY, now=self.NOW)
+        self.assertEqual(len(daily['distress']['momentary_review']), 1)
+        self.assertFalse(any('distress' in issue['description'].lower() for issue in daily['issues']))
+
+    def test_data_quality_flags_unlinked_outcomes_and_unlabelled_accounts(self):
+        make_ema(self.rs1, self._at(11), ema_type='post_prompt')
+        self._account('u@x.test', None)
+        users = list(report.study_participants())
+        checks = report.data_quality(users, self._rows(), self.DAY, self.DAY)
+        self.assertEqual(self._status(checks, 'Check-in linked to decision point'), report.WATCH)
+        self.assertEqual(self._status(checks, 'Missing participant IDs'), report.WATCH)
+        self.assertEqual(self._status(checks, 'Duplicate records'), report.PASS)
+
+    def test_save_order_jitter_is_not_a_timestamp_problem(self):
+        ema = make_ema(self.rs1, self._at(10))
+        EMA.objects.filter(pk=ema.pk).update(responded_at=self._at(10) - timedelta(microseconds=300))
+        users = list(report.study_participants())
+        checks = report.data_quality(users, self._rows(), self.DAY, self.DAY)
+        self.assertEqual(self._status(checks, 'Timestamp consistency'), report.PASS)
+
+        EMA.objects.filter(pk=ema.pk).update(responded_at=self._at(9, 50))
+        checks = report.data_quality(users, self._rows(), self.DAY, self.DAY)
+        self.assertEqual(self._status(checks, 'Timestamp consistency'), report.WATCH)
+
+    def _crosswalk(self):
+        return report.labfront_crosswalk(list(report.study_participants()))
+
+    def _device(self, user, labfront_id):
+        WearableDevice.objects.update_or_create(user=user, defaults={'labfront_participant_id': labfront_id})
+
+    def test_labfront_id_matching_the_study_id_passes(self):
+        self._device(self.rs1, 'RS01')
+        self._device(self.rs2, ' rs02 ')
+        self._device(self.staff, 'TEST-9')
+        self.assertEqual(self._crosswalk()['status'], report.PASS)
+
+    def test_labfront_placeholder_mismatch_and_missing_device_are_flagged(self):
+        self._device(self.rs1, 'TEST-101')
+        result = self._crosswalk()
+        self.assertEqual(result['status'], report.WATCH)
+        self.assertIn('placeholder ID: RS01 (TEST-101)', result['detail'])
+        self.assertIn('no device: RS02', result['detail'])
+
+        self._device(self.rs1, 'RS09')
+        self._device(self.rs2, 'RS02')
+        result = self._crosswalk()
+        self.assertEqual(result['detail'], 'different ID: RS01 (RS09)')
+
+    def _seen(self, now=None):
+        users = list(report.study_participants())
+        return report.prompt_seen(self._rows(), now or self.NOW, report.labels_for(users))
+
+    def _rate(self, log, when):
+        return make_ema(self.rs1, when, ema_type='prompt_feedback', answers={'C0_helpful': 'Yes'}, source=log)
+
+    def test_a_receipted_prompt_is_seen_at_the_receipt(self):
+        self._decision(self.rs1, self._at(10), draw=0.3, device_received_at=self._at(10, 2))
+        seen = self._seen()
+        self.assertEqual(seen['counts']['receipt'], 1)
+        self.assertEqual(seen['median_minutes_to_seen'], 2)
+        self.assertEqual(self._status(seen['checks'], 'Sent prompts seen'), report.PASS)
+
+    def test_a_rating_without_a_receipt_is_the_earliest_evidence(self):
+        log = self._decision(self.rs1, self._at(10), draw=0.3)
+        self._rate(log, self._at(14))
+        seen = self._seen()
+        self.assertEqual(seen['counts']['rating only'], 1)
+        self.assertEqual(seen['flagged'][0]['minutes_to_seen'], 240)
+        self.assertEqual(self._status(seen['checks'], 'Device receipts reported'), report.WATCH)
+        self.assertEqual(self._status(seen['checks'], 'Sent prompts seen'), report.PASS)
+
+    def test_earliest_of_receipt_and_rating_wins(self):
+        log = self._decision(self.rs1, self._at(10), draw=0.3, device_received_at=self._at(10, 30))
+        self._rate(log, self._at(10, 10))
+        seen = self._seen()
+        self.assertEqual(seen['counts']['receipt'], 1)
+        self.assertEqual(seen['median_minutes_to_seen'], 10)
+
+    def test_no_evidence_waits_for_the_outcome_window_to_close(self):
+        self._decision(self.rs1, self._at(10), draw=0.3)
+        self.assertEqual(self._seen(now=self._at(11))['counts']['pending'], 1)
+        seen = self._seen(now=self._at(13))
+        self.assertEqual(seen['counts']['no evidence'], 1)
+        self.assertEqual(self._status(seen['checks'], 'Sent prompts seen'), report.WATCH)
+        self.assertEqual(seen['flagged'][0]['study_id'], 'RS01')
+
+    def test_missing_push_token_is_flagged_without_printing_tokens(self):
+        User.objects.filter(pk=self.rs1.pk).update(push_token='ExponentPushToken[secret]')
+        users = list(report.study_participants())
+        result = report.push_tokens(users)
+        self.assertEqual(result['status'], report.WATCH)
+        self.assertIn('RS02', result['detail'])
+        self.assertNotIn('RS01', result['detail'])
+        self.assertNotIn('secret', result['detail'])
+
+    def test_scheduled_check_in_without_a_decision_row_is_missing(self):
+        make_ema(self.rs1, self._at(10), answers={'B1_valence': 4})
+        users = list(report.study_participants())
+        checks = report.data_quality(users, self._rows(), self.DAY, self.DAY)
+        self.assertEqual(self._status(checks, 'Missing decision logs'), report.WATCH)
+
+    def test_benchmarks_are_suppressed_below_ten_participants(self):
+        MetricsDaily.objects.create(
+            user=self.rs1, study_day=9, local_date=self.DAY, is_run_in=False, is_active_day=True,
+            item_bank_version='v1', slots_expected=6, slots_covered=5)
+        entry = report.benchmarks(list(report.study_participants()), self.DAY, self.DAY)[0]
+        self.assertEqual((entry['numerator'], entry['denominator']), (5, 6))
+        self.assertIsNone(entry['value'])
+        self.assertEqual(entry['status'], report.SUPPRESSED)
+
+    def test_retention_is_provisional_and_kept_out_of_issues(self):
+        for user in (self.rs1, self.rs2):
+            MetricsParticipant.objects.create(user=user, phase='withdrawn', is_enrolled_snapshot=False,
+                                              active_retention=False)
+        daily = report_build.build_daily(self.DAY, now=self.NOW)
+        retention = next(entry for entry in daily['benchmarks'] if entry['name'] == 'retention')
+        self.assertTrue(retention['provisional'])
+        self.assertFalse(any(issue['description'].startswith('Retention') for issue in daily['issues']))
+
+    def test_benchmark_verdict_uses_the_wilson_interval(self):
+        self.assertEqual(report.rate_entry('x', 'X', 95, 100, 20, target=0.75)['status'], report.PASS)
+        self.assertEqual(report.rate_entry('x', 'X', 40, 100, 20, target=0.75)['status'], report.FAIL)
+        self.assertEqual(report.rate_entry('x', 'X', 75, 100, 20, target=0.75)['status'], report.WATCH)
+        self.assertEqual(report.rate_entry('x', 'X', 0, 0, 20, target=0.75)['status'], report.NO_DATA)
+
+    def test_participant_status_counts_each_account_class(self):
+        self._account('u@x.test', None)
+        User.objects.create(email='n@x.test', birthdate=date(2005, 1, 1), gender='other', study_id='RS09')
+        status = report.participant_status()
+        self.assertEqual(status['study'], 3)
+        self.assertEqual(status['test'], 1)
+        self.assertEqual(status['unclassified'], 1)
+        self.assertEqual(status['not_enrolled'], 1)
+
+    def test_daily_and_weekly_builds(self):
+        self._decision(self.rs1, self._at(10), draw=0.9, send=True)
+        daily = report_build.build_daily(self.DAY, now=self.NOW)
+        self.assertEqual(daily['kind'], 'daily')
+        self.assertEqual(daily['decisions']['evaluated'], 1)
+        self.assertTrue(any(issue['severity'] == 'critical' for issue in daily['issues']))
+
+        weekly = report_build.build_weekly(self.DAY, now=self.NOW)
+        self.assertEqual(weekly['start'], self.DAY - timedelta(days=6))
+        self.assertEqual(len(weekly['trend']), 7)
+        self.assertIn('Randomization', weekly['assessment']['risks'])
+        self.assertIn('1 critical issue', weekly['summary'])
+        self.assertEqual([stage['stage'] for stage in weekly['flow']][:3],
+                         ['Screened', 'Eligible', 'Consented'])
+
+
+class ComposeTelemetryTests(ReportFixture, TestCase):
+    def _event(self, user, event_type, when, session_id, **metadata):
+        return PhoneTelemetry.objects.create(
+            user=user, session_id=session_id, event_type=event_type, occurred_at=when,
+            screen_name='compose', metadata=metadata or None)
+
+    def _draft(self, user, started, session_id, end_type=None, ended=None, keystrokes=10,
+               deletions=2, seconds=30):
+        self._event(user, 'draft_started', started, session_id)
+        if end_type:
+            self._event(user, end_type, ended or started + timedelta(minutes=1), session_id,
+                        keystroke_count=keystrokes, delete_count=deletions,
+                        time_on_compose=seconds * 1000)
+
+    def _visit(self, user, opened, session_id, seconds=None, had_draft=False):
+        self._event(user, 'session_start', opened, session_id, had_draft=False)
+        if seconds is not None:
+            self._event(user, 'session_end', opened + timedelta(seconds=seconds), session_id,
+                        had_draft=had_draft, visit_ms=seconds * 1000)
+
+    def _users(self):
+        return list(report.study_participants())
+
+    def _bounds(self):
+        return report.period_bounds(self.DAY, self.DAY)
+
+    def test_draft_outcomes(self):
+        self._draft(self.rs1, self._at(9), 'd1', 'draft_submitted', keystrokes=40, deletions=10)
+        self._draft(self.rs1, self._at(10), 'd2', 'draft_deleted')
+        self._draft(self.rs1, self._at(11), 'd3')
+        self._draft(self.rs1, self._at(23), 'd4')
+        self._draft(self.rs1, self._at(12), 'd5', 'draft_submitted',
+                    ended=self._at(12) + timedelta(hours=25))
+
+        drafts = {d['session_id']: d for d in compose_data.compose_drafts(
+            self._users(), *self._bounds(), self._at(12, day=self.DAY + timedelta(days=1)))}
+        self.assertEqual(drafts['d1']['outcome'], compose_data.SUBMITTED)
+        self.assertEqual(drafts['d1']['keystrokes'], 40)
+        self.assertEqual(drafts['d1']['seconds'], 30)
+        self.assertEqual(drafts['d2']['outcome'], compose_data.DELETED)
+        self.assertEqual(drafts['d3']['outcome'], compose_data.ABANDONED)
+        self.assertEqual(drafts['d4']['outcome'], compose_data.PENDING)
+        self.assertEqual(drafts['d5']['outcome'], compose_data.ABANDONED)
+
+    def test_visits_pair_by_session_and_keep_an_unclosed_one(self):
+        self._visit(self.rs1, self._at(9), 'v1', seconds=90, had_draft=True)
+        self._visit(self.rs1, self._at(10), 'v2')
+        visits = compose_data.compose_visits(self._users(), *self._bounds())
+        self.assertEqual([v['seconds'] for v in visits], [90, None])
+        self.assertEqual([v['closed'] for v in visits], [True, False])
+        self.assertTrue(visits[0]['had_draft_at_close'])
+
+    def test_opens_are_not_measured_before_the_new_build(self):
+        self._visit(self.rs1, self._at(9), 'v1', seconds=60)
+        self._draft(self.rs2, self._at(9), 'd1', 'draft_submitted')
+        rows = {r['study_id']: r for r in compose_data.compose_by_participant(
+            self._users(), *self._bounds(), self.NOW)}
+        self.assertEqual(rows['RS01']['opens'], 1)
+        self.assertIsNone(rows['RS02']['opens'])
+        self.assertEqual(rows['RS02']['drafts'], 1)
+        self.assertEqual(rows['RS02']['submit_rate'], 1)
+
+    def test_submit_rate_leaves_pending_drafts_out(self):
+        self._draft(self.rs1, self._at(9), 'd1', 'draft_submitted')
+        self._draft(self.rs1, self._at(10), 'd2')
+        self._draft(self.rs1, self._at(23), 'd3')
+        now = self._at(12, day=self.DAY + timedelta(days=1))
+        row = compose_data.compose_by_participant(self._users(), *self._bounds(), now)[0]
+        self.assertEqual((row['submitted'], row['abandoned'], row['pending']), (1, 1, 1))
+        self.assertEqual(row['submit_rate'], 0.5)
+
+    def test_an_event_goes_to_the_latest_overlapping_window_only(self):
+        first = self._decision(self.rs1, self._at(10), draw=0.3)
+        second = self._decision(self.rs1, self._at(10, 30), draw=0.8)
+        self._draft(self.rs1, self._at(10, 45), 'd1', 'draft_submitted')
+        windows = [(first.pk, self.rs1.pk, first.decision_made_at, 'A'),
+                   (second.pk, self.rs1.pk, second.decision_made_at, 'B')]
+        scored = {u['decision_id']: u for u in compose_data.compose_after_decisions(
+            self._users(), windows, self.NOW)}
+        self.assertEqual(scored[first.pk]['drafts'], 0)
+        self.assertEqual(scored[second.pk]['drafts'], 1)
+        self.assertEqual(scored[second.pk]['early_drafts'], 1)
+        self.assertEqual(scored[second.pk]['submitted'], 1)
+
+    def test_assigned_to_send_with_no_message_is_left_out(self):
+        self._decision(self.rs1, self._at(10), draw=0.3, send=False)
+        self._decision(self.rs1, self._at(13), draw=0.8)
+        result = report.compose(self._users(), self._rows(), self.DAY, self.DAY, self.NOW)
+        self.assertEqual(result['excluded_no_message'], 1)
+        self.assertEqual(result['comparison']['windows'], {'A': 0, 'B': 1})
+
+    def test_an_open_window_is_not_scored(self):
+        self._decision(self.rs1, self._at(10), draw=0.3)
+        result = report.compose(self._users(), self._rows(), self.DAY, self.DAY, self._at(11))
+        self.assertEqual(result['comparison']['open_windows'], 1)
+        self.assertEqual(result['comparison']['windows'], {'A': 0, 'B': 0})
+
+    def test_within_person_difference_and_suppression(self):
+        self._decision(self.rs1, self._at(10), draw=0.3)
+        self._decision(self.rs1, self._at(14), draw=0.8)
+        self._decision(self.rs2, self._at(10), draw=0.3)
+        self._decision(self.rs2, self._at(14), draw=0.8)
+        self._draft(self.rs1, self._at(10, 30), 'a1', 'draft_submitted')
+        self._draft(self.rs1, self._at(11, 30), 'a2', 'draft_submitted')
+        self._draft(self.rs2, self._at(10, 30), 'b1', 'draft_submitted')
+        self._draft(self.rs2, self._at(14, 30), 'b2', 'draft_submitted')
+
+        result = report.compose(self._users(), self._rows(), self.DAY, self.DAY, self.NOW, with_ci=True)
+        drafts = next(m for m in result['comparison']['metrics'] if m['metric'] == 'drafts')
+        self.assertEqual(drafts['difference_by_participant'], {'RS01': 2, 'RS02': 0})
+        self.assertEqual(drafts['mean_difference'], 1)
+        self.assertEqual(drafts['sent_mean'], 1.5)
+        self.assertTrue(drafts['suppressed'])
+        self.assertIsNone(drafts['ci_low'])
+        opened = next(m for m in result['comparison']['metrics'] if m['metric'] == 'opened')
+        self.assertIsNone(opened['sent_mean'])
+
+    def test_background_blocks_skip_any_block_touching_a_decision_window(self):
+        self._decision(self.rs1, self._at(10), draw=0.3)
+        self._draft(self.rs1, self._at(17, 15), 'd1', 'draft_submitted')
+        users = [self.rs1]
+        windows = [(1, self.rs1.pk, self._at(10), 'A')]
+        blocks = compose_data.background_blocks(users, windows, self.DAY, self.DAY, self.NOW)
+        self.assertEqual(len(blocks), 4)
+        self.assertEqual(sum(block['drafts'] for block in blocks), 1)
+
+    def test_ci_is_published_with_enough_participants(self):
+        scored = []
+        for user_id in range(12):
+            for index in range(3):
+                for arm, drafts in (('A', 1 + user_id % 2), ('B', 0)):
+                    scored.append({'user_id': user_id, 'arm': arm, 'closed': True,
+                                   **{name: 0 for name in compose_data.WINDOW_METRICS},
+                                   **{f'{h}_{n}': 0 for h in ('early', 'late')
+                                      for n in compose_data.HALF_METRICS},
+                                   'drafts': drafts})
+        drafts = next(m for m in compose_data.compare_arms(scored, with_ci=True)['metrics']
+                      if m['metric'] == 'drafts')
+        self.assertFalse(drafts['suppressed'])
+        self.assertLessEqual(drafts['ci_low'], drafts['mean_difference'])
+        self.assertGreaterEqual(drafts['ci_high'], drafts['mean_difference'])
+        self.assertEqual(drafts['mean_difference'], 1.5)
+
+
+class ReportRenderTests(ReportFixture, TestCase):
+    DAILY_HEADINGS = (
+        '1.1 Participant status', '1.2 Feasibility benchmarks', '1.3 Check-in compliance',
+        '1.4 Decision points', '1.5 Randomization integrity', '1.5b Message eligibility',
+        '1.6 Outcome window', '1.7 Cooldown and daily cap', '1.8 Distress override monitoring',
+        '1.9 Data quality', '1.10 Issues requiring attention', '1.11 Compose use',
+    )
+    WEEKLY_HEADINGS = (
+        '2.1 Executive summary', '2.2 Participant flow', '2.3 Feasibility benchmarks',
+        '2.4 Decision points', '2.5 Protocol compliance assessment', '2.6 Game days vs non-game days',
+        '2.7 Garmin signals at check-in', '2.8 Key actions for next week',
+        'A.1 Participant status', 'A.11 Compose use', 'Prompt seen',
+    )
+
+    def setUp(self):
+        super().setUp()
+        sent = self._decision(self.rs1, self._at(10), draw=0.3)
+        self._decision(self.staff, self._at(10), draw=0.3)
+        make_ema(self.rs1, self._at(11, 10), ema_type='post_prompt', source=sent)
+        DistressFlag.objects.create(user=self.rs2, source='momentary', signals=['b2_high_stress'],
+                                    raised_at=self._at(12), expires_at=self._at(12) + timedelta(hours=24))
+        PhoneTelemetry.objects.create(user=self.rs1, session_id='v1', event_type='session_start',
+                                      occurred_at=self._at(10, 20), metadata={'had_draft': False})
+
+    def test_daily_page_has_every_section_and_no_identifying_detail(self):
+        html = report_render.render_report(report_build.build_daily(self.DAY, now=self.NOW))
+        for heading in self.DAILY_HEADINGS:
+            self.assertIn(heading, html)
+        self.assertIn('RS01', html)
+        self.assertNotIn('ST01', html)
+        self.assertNotIn('@x.test', html)
+        self.assertIn('2026-09-10 12:00', html)
+
+    def test_weekly_page_has_every_section(self):
+        html = report_render.render_report(report_build.build_weekly(self.DAY, now=self.NOW))
+        for heading in self.WEEKLY_HEADINGS:
+            self.assertIn(heading, html)
+        self.assertNotIn('@x.test', html)
+
+    def test_a_suppressed_rate_is_never_drawn(self):
+        entry = report.rate_entry('slot_coverage', 'Check-in completion', 5, 6, 1, target=0.75)
+        chart = report_svg.benchmark_intervals([entry])
+        self.assertIn('5/6, rate suppressed', chart)
+        self.assertNotIn('<circle', chart)
+
+    def test_sparkline_leaves_gaps_and_needs_two_points(self):
+        self.assertEqual(report_svg.sparkline([('d1', 0.5), ('d2', None)]), '')
+        line = report_svg.sparkline([('d1', 0.5), ('d2', None), ('d3', 0.7), ('d4', 0.8)])
+        self.assertEqual(line.count('<polyline'), 1)
+        self.assertEqual(line.count('<circle'), 3)
+
+
+class BuildReportCommandTests(ReportFixture, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.out = tempfile.TemporaryDirectory()
+        self.addCleanup(self.out.cleanup)
+
+    def _run(self, *args):
+        stdout = StringIO()
+        call_command('build_report', *args, '--out', self.out.name, stdout=stdout)
+        return stdout.getvalue()
+
+    def test_daily_report_is_written_for_the_given_date(self):
+        self._decision(self.rs1, self._at(10), draw=0.3)
+        output = self._run('--daily', '--date', '2026-09-10')
+        path = Path(self.out.name) / 'react_daily_2026-09-10.html'
+        self.assertTrue(path.exists())
+        self.assertIn('1.11 Compose use', path.read_text())
+        self.assertIn('No daily metrics have been computed', output)
+
+    def test_weekly_report_names_the_last_day(self):
+        self._run('--weekly', '--end', '2026-09-10')
+        self.assertTrue((Path(self.out.name) / 'react_weekly_2026-09-10.html').exists())
+
+    def test_recompute_fills_the_metrics_first(self):
+        output = self._run('--daily', '--date', '2026-09-10', '--recompute')
+        self.assertIn('Recomputed', output)
+        self.assertNotIn('No daily metrics have been computed', output)
+        self.assertTrue(MetricsDaily.objects.filter(user=self.rs1).exists())
+        self.assertFalse(MetricsDaily.objects.filter(user=self.staff).exists())
+
+    def test_weekly_report_lines_up_a_labfront_export(self):
+        export = tempfile.TemporaryDirectory()
+        self.addCleanup(export.cleanup)
+        when = datetime(2026, 9, 10, 10, tzinfo=EASTERN)
+        write_export_file(export.name, 'RS01_abc', lf.HEART_RATE, '260910', HR_HEADER, [(when, 60)])
+        make_ema(self.rs1, when + timedelta(minutes=5))
+        output = self._run('--weekly', '--end', '2026-09-10', '--labfront-export', export.name)
+        html = (Path(self.out.name) / 'react_weekly_2026-09-10.html').read_text()
+        self.assertIn('2.7 Garmin signals at check-in', html)
+        self.assertIn('1 of 1 check-in(s) aligned', output)
+        self.assertIn('data through 2026-09-10 10:00 Eastern', output)
+
+    def test_labfront_export_is_weekly_only_and_must_exist(self):
+        with self.assertRaises(CommandError):
+            self._run('--daily', '--date', '2026-09-10', '--labfront-export', self.out.name)
+        with self.assertRaises(CommandError):
+            self._run('--weekly', '--end', '2026-09-10', '--labfront-export', '/no/such/folder')
+
+    def test_mismatched_and_future_dates_are_refused(self):
+        with self.assertRaises(CommandError):
+            self._run('--weekly', '--date', '2026-09-10')
+        with self.assertRaises(CommandError):
+            self._run('--daily', '--end', '2026-09-10')
+        with self.assertRaises(CommandError):
+            self._run('--daily', '--date', '2999-01-01')
+        with self.assertRaises(CommandError):
+            self._run('--daily', '--date', '10/09/2026')
+
+
+# ---------------------------------------------------------------------------
+# Weekly report: game days and the Labfront export
+# ---------------------------------------------------------------------------
+
+def make_study_participant(study_id, enrolled_at):
+    user = make_participant(f'{study_id.lower()}@x.test', enrolled_at, device=False)
+    User.objects.filter(pk=user.pk).update(study_id=study_id)
+    return User.objects.get(pk=user.pk)
+
+
+class GameDayComparisonTests(TestCase):
+    ENROLLED = datetime(2026, 9, 20, 9, tzinfo=EASTERN)
+
+    def setUp(self):
+        self.rs01 = make_study_participant('RS01', self.ENROLLED)
+        self.rs02 = make_study_participant('RS02', self.ENROLLED)
+        self.users = [self.rs01, self.rs02]
+
+    def _at(self, day, hour=14):
+        return datetime(2026, 10, day, hour, tzinfo=EASTERN)
+
+    def test_no_data_before_homecoming_weekend(self):
+        result = report.game_days(self.users, date(2026, 10, 8))
+        self.assertEqual(result['status'], report.NO_DATA)
+        self.assertIn('2026-10-09', result['detail'])
+
+    def test_no_data_without_a_game_day_in_range(self):
+        result = report.game_days(self.users, date(2026, 10, 9))
+        self.assertEqual(result['status'], report.NO_DATA)
+        self.assertIn('config.GAME_DAYS', result['detail'])
+
+    def test_homecoming_saturday_is_the_game_day(self):
+        result = report.game_days(self.users, date(2026, 10, 18))
+        self.assertIsNone(result['status'])
+        self.assertEqual(result['game_dates'], [date(2026, 10, 10)])
+
+    def test_game_days_come_from_config_not_event_day(self):
+        EventDay.objects.create(date=date(2026, 10, 11), sport='football')
+        listed = (date(2026, 10, 3), date(2026, 10, 10), date(2026, 10, 17))
+        with mock.patch.object(report, 'GAME_DAYS', listed):
+            result = report.game_days(self.users, date(2026, 10, 18))
+        self.assertEqual(result['game_dates'], [date(2026, 10, 10), date(2026, 10, 17)])
+
+    def test_completion_split_by_game_day_and_suppressed_below_threshold(self):
+        for day, covered in ((9, 3), (10, 4), (11, 6)):
+            MetricsDaily.objects.create(
+                user=self.rs01, study_day=day + 10, local_date=date(2026, 10, day), is_run_in=False,
+                is_active_day=True, item_bank_version='v1', slots_expected=6, slots_covered=covered)
+        MetricsDaily.objects.create(
+            user=self.rs01, study_day=13, local_date=date(2026, 10, 3), is_run_in=False,
+            is_active_day=True, item_bank_version='v1', slots_expected=6, slots_covered=0)
+        game, other = report.game_days(self.users, date(2026, 10, 11))['completion']
+        self.assertEqual((game['numerator'], game['denominator']), (4, 6))
+        self.assertEqual((other['numerator'], other['denominator']), (9, 12))
+        self.assertEqual(game['status'], report.SUPPRESSED)
+        self.assertIsNone(game['value'])
+
+    def test_difference_is_within_person_over_scheduled_check_ins(self):
+        make_ema(self.rs01, self._at(10), answers={'B1_valence': 6, 'B2_stress': 2})
+        make_ema(self.rs01, self._at(11), answers={'B1_valence': 4, 'B2_stress': 4})
+        make_ema(self.rs01, self._at(12), answers={'B1_valence': 2, 'B2_stress': 6})
+        make_ema(self.rs01, self._at(10, 16), ema_type='post_prompt', answers={'B1_valence': 1})
+        make_ema(self.rs01, self._at(8), answers={'B1_valence': 1})
+        make_ema(self.rs02, self._at(10), answers={'B1_valence': 5})
+
+        result = report.game_days(self.users, date(2026, 10, 18))
+        valence = next(item for item in result['items'] if item['item'] == 'B1_valence')
+        self.assertEqual((valence['game_n'], valence['other_n']), (2, 2))
+        self.assertEqual(valence['game_mean'], 5.5)
+        self.assertEqual(valence['other_mean'], 3)
+        self.assertEqual(valence['mean_difference'], 3)
+        self.assertEqual(valence['paired_participants'], 1)
+        self.assertEqual(valence['difference_by_participant'], {'RS01': 3, 'RS02': None})
+
+        rows = {row['study_id']: row for row in result['participants']}
+        self.assertEqual((rows['RS01']['game_checkins'], rows['RS01']['other_checkins']), (1, 2))
+        self.assertEqual(rows['RS01']['differences'], {'B1_valence': 3, 'B2_stress': -3})
+        self.assertIsNone(rows['RS02']['differences']['B1_valence'])
+
+
+HR_HEADER = ['dailySummaryId', 'timezoneOffsetInMs', 'unixTimestampInMs', 'isoDate', 'beatsPerMinute']
+STRESS_HEADER = ['timezoneOffsetInMs', 'unixTimestampInMs', 'isoDate', 'stressLevel', 'bodyBattery']
+
+
+def write_export_file(root, folder, stream, day, header, samples):
+    path = Path(root) / folder / stream
+    path.mkdir(parents=True, exist_ok=True)
+    study_id = folder.split('_')[0]
+    lines = [
+        'Header Length,5', 'Powered by Labfront', 'Documentation,https://help.labfront.com/data-documentation',
+        'projectId,projectTitle,participantId,participantInsignia', f'p,REACT_DEMO,x,{study_id}', '',
+        ','.join(header),
+    ]
+    for moment, value in samples:
+        stamp = str(int(moment.timestamp() * 1000))
+        if stream == lf.HEART_RATE:
+            lines.append(f'id,-14400000,{stamp},{moment.isoformat()},{value}')
+        else:
+            lines.append(f'-14400000,{stamp},{moment.isoformat()},{value},50')
+    (path / f'{day}_{stream}_{folder}.csv').write_text('\n'.join(lines) + '\n')
+
+
+class LabfrontExportTests(TestCase):
+    ENROLLED = datetime(2026, 9, 20, 9, tzinfo=EASTERN)
+
+    def setUp(self):
+        self.root = tempfile.TemporaryDirectory()
+        self.addCleanup(self.root.cleanup)
+        self.folder = Path(self.root.name) / 'RS01_abc'
+
+    def _at(self, day, hour, minute=0):
+        return datetime(2026, 10, day, hour, minute, tzinfo=EASTERN)
+
+    def test_reader_skips_the_preamble_and_drops_stress_codes(self):
+        write_export_file(self.root.name, 'RS01_abc', lf.STRESS, '261009', STRESS_HEADER, [
+            (self._at(9, 10), -1), (self._at(9, 10, 3), -2), (self._at(9, 10, 6), 30)])
+        times, values = lf.read_stream(self.folder, lf.STRESS)
+        self.assertEqual(values, [30.0])
+        self.assertEqual(times, [self._at(9, 10, 6)])
+        self.assertEqual(lf.coverage(self.folder), (self._at(9, 10), self._at(9, 10, 6)))
+
+    def test_reader_opens_only_files_near_the_period(self):
+        write_export_file(self.root.name, 'RS01_abc', lf.HEART_RATE, '261001', HR_HEADER, [(self._at(1, 10), 60)])
+        write_export_file(self.root.name, 'RS01_abc', lf.HEART_RATE, '261009', HR_HEADER, [(self._at(9, 10), 90)])
+        _, values = lf.read_stream(self.folder, lf.HEART_RATE, date(2026, 10, 8), date(2026, 10, 9))
+        self.assertEqual(values, [90.0])
+
+    def test_participant_folders_key_on_the_study_id(self):
+        (Path(self.root.name) / 'rs02_def').mkdir()
+        (Path(self.root.name) / '.hidden').mkdir()
+        self.assertEqual(set(lf.participant_folders(self.root.name)), {'RS02'})
+
+    def test_check_ins_line_up_with_the_thirty_minutes_before(self):
+        rs01 = make_study_participant('RS01', self.ENROLLED)
+        rs02 = make_study_participant('RS02', self.ENROLLED)
+        write_export_file(self.root.name, 'RS01_abc', lf.HEART_RATE, '261009', HR_HEADER, [
+            (self._at(9, 13, 20), 100), (self._at(9, 13, 50), 70), (self._at(9, 13, 55), 80)])
+        write_export_file(self.root.name, 'RS01_abc', lf.STRESS, '261009', STRESS_HEADER, [
+            (self._at(9, 13, 45), 40), (self._at(9, 15, 10), -1)])
+        (Path(self.root.name) / 'RS09_zzz').mkdir()
+        aligned = make_ema(rs01, self._at(9, 14), answers={'B1_valence': 5, 'B2_stress': 3})
+        make_ema(rs01, self._at(9, 15))
+        make_ema(rs01, self._at(10, 14))
+        make_ema(rs02, self._at(9, 14))
+        make_ema(rs01, self._at(9, 14, 30), ema_type='post_prompt')
+
+        result = report.garmin_at_checkins(
+            [rs01, rs02], date(2026, 10, 5), date(2026, 10, 11), self.root.name)
+        by_time = {(row['study_id'], row['at']): row for row in result['checkins']}
+        first = by_time[('RS01', aligned.responded_at)]
+        self.assertEqual(first['status'], report.GARMIN_ALIGNED)
+        self.assertEqual((first['hr_mean'], first['hr_n']), (75, 2))
+        self.assertEqual((first['stress_mean'], first['stress_n']), (40, 1))
+        self.assertEqual((first['valence'], first['self_stress']), (5, 3))
+        self.assertEqual(by_time[('RS01', self._at(9, 15))]['status'], report.GARMIN_NO_SIGNAL)
+        self.assertEqual(by_time[('RS01', self._at(10, 14))]['status'], report.GARMIN_OUTSIDE)
+        self.assertEqual(by_time[('RS02', self._at(9, 14))]['status'], report.GARMIN_NO_FOLDER)
+        self.assertEqual(len(result['checkins']), 4)
+        self.assertEqual(result['unmatched_folders'], ['RS09'])
+        self.assertEqual(result['coverage_end'], self._at(9, 15, 10))
+
+        rows = {row['study_id']: row for row in result['participants']}
+        self.assertEqual(rows['RS01']['pairs'], 1)
+        self.assertIsNone(rows['RS01']['spearman'])
+        self.assertFalse(rows['RS02']['in_export'])
+
+    def test_not_measured_without_an_export(self):
+        result = report.garmin_at_checkins([], date(2026, 10, 5), date(2026, 10, 11), None)
+        self.assertEqual(result['status'], report.NOT_MEASURED)
+
+    def test_spearman_ranks_ties_and_rejects_constant_input(self):
+        self.assertEqual(report._ranks([3, 1, 3, 2]), [3.5, 1.0, 3.5, 2.0])
+        self.assertAlmostEqual(report.spearman([1, 2, 3, 4], [10, 20, 30, 50]), 1.0)
+        self.assertIsNone(report.spearman([1, 1, 1], [1, 2, 3]))

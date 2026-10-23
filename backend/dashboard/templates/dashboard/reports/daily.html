@@ -1,0 +1,11 @@
+{% extends "dashboard/reports/base.html" %}{% load report_format %}
+{% block title %}REACT Daily Report{% endblock %}
+{% block heading %}REACT daily feasibility &amp; compliance report{% endblock %}
+{% block period %}Reporting date <strong>{{ start|date:"Y-m-d" }}</strong> (Eastern day){% endblock %}
+{% block content %}
+{% include "dashboard/reports/_participant_status.html" with number="1.1" %}
+{% include "dashboard/reports/_benchmarks.html" with number="1.2" %}
+{% include "dashboard/reports/_checkins.html" with p="1." %}
+{% include "dashboard/reports/_decisions.html" with number="1.4" %}
+{% include "dashboard/reports/_detail.html" with p="1." %}
+{% endblock %}

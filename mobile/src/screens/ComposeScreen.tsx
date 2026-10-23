@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  AppState,
   Keyboard,
   ScrollView,
   StyleSheet,
@@ -10,7 +11,12 @@ import {
 } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import ComposeInput from '../components/ComposeInput';
-import { emitDraftDeleted, emitDraftSubmitted } from '../telemetry/composeTelemetry';
+import {
+  emitDraftDeleted,
+  emitDraftSubmitted,
+  endComposeVisit,
+  onComposeAppStateChange,
+} from '../telemetry/composeTelemetry';
 import { useTelemetryStore, TelemetryEvent } from '../telemetry/telemetryStore';
 import { useAuthStore } from '../store/authStore';
 import { useAlertStore } from '../store/alertStore';
@@ -32,6 +38,14 @@ export default function ComposeScreen({ onOpenEMA, availableCheckin, checkinErro
   const flush = useTelemetryStore((s) => s.flush);
   const logout = useAuthStore((s) => s.logout);
   const showAlert = useAlertStore((s) => s.show);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', onComposeAppStateChange);
+    return () => {
+      subscription.remove();
+      endComposeVisit();
+    };
+  }, []);
 
   const devNote = __DEV__ ? ' Check the console for telemetry.' : '';
   const userId = useAuthStore((s) => s.userId);

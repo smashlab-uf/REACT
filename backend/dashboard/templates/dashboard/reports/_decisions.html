@@ -1,0 +1,31 @@
+{% load report_format %}<section>
+  <h2>{{ number }} Decision points{% if kind == 'weekly' %} (weekly aggregate){% endif %}</h2>
+  <div class="grid2">
+    <div class="card"><table>
+      <thead><tr><th>Metric</th><th class="n">{% if kind == 'weekly' %}Week total{% else %}Count{% endif %}</th>{% if kind == 'weekly' %}<th class="n">Daily average</th>{% endif %}</tr></thead>
+      <tbody>
+        <tr><td>Decision points evaluated</td><td class="n">{{ decisions.evaluated|num }}</td>{% if kind == 'weekly' %}<td class="n">{{ decisions.daily_average.evaluated|num:1 }}</td>{% endif %}</tr>
+        <tr><td>Available (randomized)</td><td class="n">{{ decisions.available|num }}</td>{% if kind == 'weekly' %}<td class="n">{{ decisions.daily_average.available|num:1 }}</td>{% endif %}</tr>
+        <tr><td>Prompts sent</td><td class="n">{{ decisions.sent|num }}</td>{% if kind == 'weekly' %}<td class="n">{{ decisions.daily_average.sent|num:1 }}</td>{% endif %}</tr>
+        <tr><td>Randomized, not sent</td><td class="n">{{ decisions.not_sent|num }}</td>{% if kind == 'weekly' %}<td class="n">{{ decisions.daily_average.not_sent|num:1 }}</td>{% endif %}</tr>
+        <tr><td>Suppressed by a safeguard</td><td class="n">{{ decisions.suppressed|num }}</td>{% if kind == 'weekly' %}<td class="n">{{ decisions.daily_average.suppressed|num:1 }}</td>{% endif %}</tr>
+        <tr><td>Passed MSSD gate (diagnostic)</td><td class="n">{{ decisions.passed_mssd_gate|num }}</td>{% if kind == 'weekly' %}<td class="n">{{ decisions.daily_average.passed_mssd_gate|num:1 }}</td>{% endif %}</tr>
+        {% if kind == 'weekly' %}<tr><td>Distress overrides raised</td><td class="n">{{ distress.override_events|num }}</td><td class="n">—</td></tr>{% endif %}
+      </tbody>
+    </table></div>
+    <div class="card"><table>
+      <thead><tr><th>Not available, by reason</th><th class="n">Count</th></tr></thead>
+      <tbody>{% for reason, n in decisions.unavailable_by_reason.items %}
+        <tr><td>{{ reason }}</td><td class="n">{{ n|num }}</td></tr>
+      {% empty %}<tr><td class="muted" colspan="2">None</td></tr>{% endfor %}</tbody>
+    </table></div>
+  </div>
+  <h3>Availability rate</h3>
+  <p>{{ decisions.mrt_available|num }} of {{ decisions.mrt_evaluated|num }} MRT-day decision points were available:
+    <strong>{{ decisions.availability_rate|pct:1 }}</strong>
+    {% include "dashboard/reports/_status.html" with value=decisions.availability_status %}.
+    The power calculation assumes {{ decisions.availability_planned|pct }}; the alarm band is
+    {{ decisions.alarm_band.0|pct }}–{{ decisions.alarm_band.1|pct }}.</p>
+  <p class="note">{{ decisions.availability_note }} Eligibility applies to the message pool, not to decision points;
+    see message eligibility below.</p>
+</section>

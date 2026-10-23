@@ -81,9 +81,15 @@ whatever the randomized assignment (`_latest_outcome_window`, `backend/app/views
 
 | Time after the decision point | What `/ema/next/` serves | Notification |
 |---|---|---|
-| 0 to 60 min | Nothing except, after a delivered prompt, the C0 post-prompt rating (§10.0). Ordinary scheduled check-ins are held back (`reason: outcome_window_pending`) in both arms. | None; scheduled check-in reminders are suppressed in both arms. |
-| 60 min to 2 h | The outcome check-in: current emotions and situation plus the four domain item sets (`POST_PROMPT_ITEM_IDS`), linked to the decision point (`source_jitai_log`). Typed `post_prompt`, or `extra_check_in` when it follows the notification. | At +60 min, if not yet answered: one visible check-in notification, identical in both arms (`_maybe_send_outcome_reminder`). |
-| After 2 h, or once answered | Ordinary scheduled check-ins resume. | Scheduled reminders resume. |
+| 0 to 60 min | Only the C0 post-prompt rating, after a delivered prompt that has not been rated (§10.0). Scheduled check-ins are held back in both arms (`reason: outcome_window_pending`). | None in either arm; scheduled check-in reminders are held back in both arms. |
+| At +60 min | — | If the outcome check-in is unanswered and the participant is under the daily cap of four outcome check-ins: one visible reminder, identical in both arms (`_maybe_send_outcome_reminder`). |
+| +60 min, for 30 min after the reminder | The outcome check-in: current emotions and situation plus the four domain item sets (`POST_PROMPT_ITEM_IDS`), served as `extra_check_in` and linked to the decision point (`source_jitai_log`). It is served only while the reminder is open (`_open_reminder`, `EMA_RESPONSE_WINDOW_MINUTES` = 30). | None further. |
+| Once answered, or once the window closes | Ordinary scheduled check-ins resume. | Scheduled reminders resume. |
+
+The randomized-out arm receives no notification at the decision; the +60-minute reminder announces its
+outcome check-in, as in the sent arm. An earlier build (68e507b, 2026-10-04) sent the randomized-out arm a
+check-in notification at the decision. It was removed on 2026-10-05 (a27fa2e) because the 60-minute lock
+leaves nothing to open at that time.
 
 The outcome check-ins share the protocol's cap of four per day. The 60-minute lag
 (`OUTCOME_CHECK_IN_DELAY_MINUTES`, `backend/dashboard/data/config.py`) makes the timing of the measurement
@@ -92,10 +98,20 @@ outcome would be recorded within minutes in the treated arm but at the next sche
 
 **Analysis definition.** For each available decision point, the outcome is taken from the first completed
 check-in linked to it (`source_jitai_log_id`, type `post_prompt` or `extra_check_in`) with
-`decision_made_at` + 60 min $\le$ `sent_at` $\le$ `decision_made_at` + 2 h. Outcome values are read from
+`decision_made_at` + 60 min $\le$ `sent_at` $\le$ `expires_at`, where `expires_at` is the check-in's own
+deadline, copied from its reminder (`views.py`), about `decision_made_at` + 90 min. Outcome values are read from
 `EMAItemResponse.value_numeric`/`value_choice` by `sub_item_id`. The EMA-level `mood`, `stress` and `energy`
 columns are not used, because the submit path does not populate them. A decision point with no such
 check-in has a missing outcome (§6).
+
+> **[DECIDED] Outcome window.** The analysis uses the window as deployed: +60 min to the outcome check-in's
+> deadline, about +90 min. The check-in is answerable only while its reminder is open, 30 minutes after it is
+> sent at +60 min (`_open_reminder`; the deadline arrived with 8d58378, 2026-10-07). A participant with no
+> push token, or at the daily cap, gets no reminder and so no outcome check-in; that decision point has a
+> missing outcome (§6).
+>
+> *Protocol amendment:* §9.2, §10.0 and §15.0 change from "within two hours after" the decision point to
+> "between 60 and about 90 minutes after" it.
 
 > **[RESOLVED — was the critical discrepancy] The outcome window opened only after a delivered prompt.**
 > Before this change, `_latest_active_jitai` filtered `send_prompt=True` and anchored the window on
@@ -121,12 +137,13 @@ check-in has a missing outcome (§6).
 > - Under the new design the rates are 0.76 and 0.75, and the estimate is 0.358 against a true effect of
 >   0.356, on twice as many decision points.
 
-> **[DISCREPANCY] Three or four domains.** §9.2 says "the three behavior domains"; §10.0 says "all four
-> domain item sets." The build serves `POST_PROMPT_ITEM_IDS = ['B1', 'B2', 'B4', 'B5', 'B6', 'B7']`, i.e.
-> the four rotating domains (B4 eating, B5 emotion regulation, B6 alcohol, B7 online activity) plus current
-> emotions and situation (`backend/app/ema_catalog.py`).
+> **[DECIDED] Domain count follows the build.** §9.2 says "the three behavior domains"; §10.0 says "all four
+> domain item sets." The analysis follows the build, which serves
+> `POST_PROMPT_ITEM_IDS = ['B1', 'B2', 'B4', 'B5', 'B6', 'B7']`: the four rotating domains (B4 eating, B5
+> emotion regulation, B6 alcohol, B7 online activity) plus current emotions and situation
+> (`backend/app/ema_catalog.py`), as in the outcome summary (`papers/primary_secondary_outcomes.docx`).
 >
-> *Recommendation:* amend §9.2 to "four", matching §10.0 and the build.
+> *Protocol amendment:* §9.2 changes to "four", matching §10.0 and the build.
 
 ### 2.2 Primary Behavioral Outcomes
 
@@ -136,35 +153,32 @@ Protocol, §15.0:
 > self-reported urge to post reactively, self-reported reactive online behavior, self-reported drinking and
 > drinking urge, and self-reported emotional or uncontrolled eating, each analyzed separately."
 
-Candidate operationalizations, from the item bank as built (`EMA_ITEM_BANK`, per
-`REACT_IRB01_StudyTeam_Measures_v2.docx` Part 1):
+**Decided: one confirmatory item per construct.** Backend IDs are the values stored in
+`EMAItemResponse.item_id` / `sub_item_id` (`EMA_ITEM_BANK`, per `REACT_IRB01_StudyTeam_Measures_v2.docx`
+Part 1):
 
-| Protocol outcome | Candidate sub-item(s) | Response type | Recall period | Model |
-|---|---|---|---|---|
-| Urge to post reactively | `B7_urge` ("Right now, how strong is your urge to post or reply about something that upset you?") | Likert 1–7 | Now | Linear WCLS |
-| Reactive online behavior | `B7_posted`; `B7_charged`; `B7_self_stopped` | Yes/No; Likert 1–7; 3-level choice | "Past few hours" / "heat of the moment" | Binary: WCLS on the risk-difference scale |
-| Drinking | `B6_consumed`; `B6_drink_count` | Yes/No; count | **"Today"** | See note |
-| Drinking urge | `B6_urge` | Likert 1–7 | Now | Linear WCLS |
-| Emotional or uncontrolled eating | `B4_emotion_influence`; `B4_loss_of_control` | Likert 1–7, shown only if `B4_ate = Yes` | "Since the last check-in" | See note |
+| Construct | Backend ID (item / sub-item) | Item text | Scale | Recall | Model |
+|---|---|---|---|---|---|
+| Urge to post reactively | `B7` / `B7_urge` | "Right now, how strong is your urge to post or reply about something that upset you?" | Likert 1–7 | Now | Linear WCLS, all participants |
+| Drinking urge | `B6` / `B6_urge` | "Right now, how strong is your urge to drink alcohol?" | Likert 1–7 | Now | Linear WCLS, all participants |
+| Urge to eat | `B4` / `B4_urge` | "Right now, how strong is your urge to eat?" | Likert 1–7 | Now | Linear WCLS, all participants |
 
-Each outcome is analyzed in its own WCLS model. Binary outcomes are analyzed as risk differences by the
-same estimator; a log-relative-risk version (the estimator of Qian et al., 2021) is a secondary
-specification.
+All three are asked of every participant at every outcome check-in (none has a `depends_on`, and only
+`B6_plan` has a schedule condition), so no primary analysis conditions on an event after the decision point.
+Eating is analyzed through the urge to eat in everyone, not only among participants who ate.
 
-> **[OPEN] Item mapping.** The protocol names four constructs, not items. Which sub-item (or composite)
-> operationalizes each outcome, and which of the two named drinking outcomes is primary, need PI sign-off
-> before data are examined.
+**Secondary outcomes.**
 
-> **[OPEN] Outcomes the prompt can't be credited with, or that condition on post-treatment events.**
-> - **Recall period.** `B6_consumed` and `B6_drink_count` ask about "today", so a value in the outcome window
->   includes drinking that happened before the decision point, which the prompt cannot have caused. A
->   time-locked drinking outcome needs either a "since the last check-in" wording or the within-day change in
->   `B6_drink_count` from the decision-point check-in to the outcome check-in.
-> - **Conditional items.** `B4_emotion_influence` and `B4_loss_of_control` are shown only if the participant
->   ate. Analyzing them only among eaters conditions on a post-treatment event, since the prompt may change
->   whether someone eats. A composite defined for everyone avoids this, e.g.
->   `emotional_eating = 1{B4_ate = Yes and B4_emotion_influence ≥ 5}` (the ≥ 5 cut matches the routing
->   convention in `ema_catalog.py`).
+| Domain | Sub-items | Treatment |
+|---|---|---|
+| Online behavior | `B7_posted`, `B7_charged`, `B7_self_stopped` | "Past few hours" recall, which can include time before the decision point. `B7_posted` on the risk-difference scale. |
+| Alcohol today | `B6_consumed`, `B6_drink_count` | Secondary because "today" includes drinking before the decision point, which the prompt cannot have caused. `B6_drink_count` is analyzed as the within-day change from the decision-point check-in to the outcome check-in. |
+| Eating, conditional | `B4_emotion_influence`, `B4_loss_of_control` | Shown only if `B4_ate = Yes`, and eating can itself be affected by the prompt. Analyzed only through composites defined for everyone: `emotional_eating = 1{B4_ate = Yes and B4_emotion_influence ≥ 5}`, and `uncontrolled_eating` likewise from `B4_loss_of_control`. Never modeled among eaters only. |
+| Affect | `B1_valence`, `B2_stress` | Linear WCLS. |
+
+Each outcome is analyzed in its own WCLS model. Binary secondary outcomes are analyzed as risk differences
+by the same estimator; a log-relative-risk version (the estimator of Qian et al., 2021) is a further
+specification. The ≥ 5 cut matches the routing convention in `ema_catalog.py`.
 
 *(Implementation: `EMA_ITEM_BANK`, `POST_PROMPT_ITEM_IDS`, `ROTATING_ITEM_IDS` in
 `backend/app/ema_catalog.py`; outcome join in `wcls_analysis.ipynb` §4.)*
@@ -180,6 +194,10 @@ Protocol, §15.0:
 > yields a consistent estimate of the marginal excursion effect without requiring a model for the outcome
 > under no treatment. Standard errors use a sandwich estimator with small-sample correction, clustering at
 > the participant level."
+
+**WCLS is the primary causal analysis.** A GEE fit of the same outcomes is reported as a comparison only. It
+is not an estimate of the causal excursion effect, because it neither weights by nor centers on the
+randomization probabilities.
 
 ### 3.1 Treatment Assignment and Weighting
 
@@ -198,6 +216,10 @@ Protocol, §9.3:
    `JITAI_ARM_RANDOMIZATION_PROBABILITY` (default 0.5). The row stores `message_arm`,
    `arm_randomization_probability` and `arm_randomization_draw`. Message selection within an arm is
    described in §5.4.
+
+Each stage is analyzed with its own logged probability, never an assumed 0.5: `randomization_probability`
+for the send (below), and `arm_randomization_probability` for the coping vs. active-control comparison
+(§5.4).
 
 **Weights.** Let $p_{it}$ be the logged probability and $\tilde p$ a reference probability that depends at
 most on the moderators $S_{it}$. The analysis sets $\tilde p$ to the mean of the logged $p_{it}$, a constant.
@@ -348,14 +370,16 @@ assumed availability of 0.6, which alone would detect 0.063.
 
 The closed form is therefore mildly conservative for this design, and the table stands as stated.
 
-> **[DISCREPANCY] Two protocol figures do not follow from availability 0.2.**
+> **[DECIDED] Availability of 0.2.** The analysis plan uses an availability of 0.2, the value from the
+> simulation (0.20 of evaluable decision points in the Paper A decision log) and the power computation above.
+> Two protocol figures do not follow from it:
 > - §7.0, "each participant contributes on the order of a hundred available randomized decision points":
 >   it is about 34 at full engagement and 19–25 at benchmark engagement.
 > - §9.3, "participants receive on average about two to three prompts per day": it is
 >   6 × 0.2 × 0.5 ≈ 0.6 per day.
 >
-> *Recommendation:* amend §7.0 to "each participant contributes roughly 20 to 35 available randomized
-> decision points, about 1,500 to 2,700 across the sample", and amend §9.3 to "about one prompt every one to
+> *Protocol amendment:* §7.0 becomes "each participant contributes roughly 20 to 35 available randomized
+> decision points, about 1,500 to 2,700 across the sample", and §9.3 becomes "about one prompt every one to
 > two days, never more than four in a day". Recompute the table with the availability, completion and
 > outcome variance observed in Phase 1 before the second wave starts.
 
@@ -402,7 +426,8 @@ Protocol, §9.3 (run-in):
   stopped by the run-in or the distress override additionally carries `suppression_reason`
   (`run_in`, `distress_baseline`, `distress_momentary`) and `status = 'suppressed'`, with
   `randomization_probability` also null, so it can never be mistaken for a prompt that was randomized and
-  dropped.
+  dropped. A suppressed decision point is **unavailable, not "no send"**: $I_{it} = 0$, it opens no outcome
+  window, and it never enters the WCLS as $A_{it} = 0$.
 - **Analysis definitions.** Availability is $I_{it} = \mathbf{1}\{\texttt{randomization\_draw}\text{ not null}\}$.
   Only rows written by the engine (`decision_point_id` prefixed `ema_`, `threshold_source = 'engine'`) are
   decision points; rows posted by a client through `POST /jitai/` are excluded.
@@ -414,13 +439,11 @@ Protocol, §9.3 (run-in):
 >
 > The safety override is no longer in this list. It is implemented and described in §4.1.
 
-> **[DISCREPANCY] What the cooldown and cap count.**
-> - Protocol: availability excludes decision points where "a prompt has been delivered within the preceding
->   60 minutes." The engine's cooldown and daily cap count *engine-eligible* decision points, including those
->   randomized to no prompt and those in the run-in (`apply_decision_rules`). Availability is therefore more
->   restrictive than the protocol states. It is still unaffected by past assignments, so the WCLS conditions
->   remain valid.
-> - The daily cap is counted over UTC calendar days, while every other daily quantity is Eastern.
+> **[RESOLVED] What the cooldown and cap count.** The cooldown and the daily cap now count delivered
+> prompts only (`JITAILog(send_prompt=True)`), over Eastern calendar days (`_cooldown_cap_reason`,
+> `backend/app/tasks.py`, shared by `_evaluate_user` and the `POST /jitai/` safeguard). This matches the
+> protocol's "a prompt has been delivered within the preceding 60 minutes." `apply_decision_rules`' own
+> eligible-point cooldown is no longer used for production availability.
 
 > **[DISCREPANCY] Decision points per day.** The protocol says "up to six decision points per day" (§3.0,
 > §9.3). The build creates a decision point from every completed check-in, including `post_prompt` and
@@ -451,7 +474,13 @@ Protocol, §11.0:
 | Flag | Raised by | Active until | Effect |
 |---|---|---|---|
 | **Momentary** | A submitted check-in with `B1_valence` = 1, `B2_stress` = 7, `B1_affect_sad` = 5 or `B1_affect_anxious` = 5, i.e. the scale floor or ceiling (exact-value cutoffs, PI-confirmed 2026-09-22) | 24 hours after it is raised | Randomization suspended; resource card shown |
-| **Baseline** | The scored Qualtrics baseline export, imported by `manage.py import_baseline_distress_flags` or the Django Admin import. Signals: PHQ-9 self-harm or moderately severe/severe total; SCOFF; AUDIT-C; PGSI problem gambling; food insecurity; free-text risk disclosure | Staff mark contact documented in Django Admin (`contact_documented_at`) | Randomization suspended; resource card shown |
+| **Baseline, suspending** | The scored Qualtrics baseline export, imported by `manage.py import_baseline_distress_flags` or the Django Admin import. Signals: PHQ-9 self-harm or moderately severe/severe total; SCOFF positive; Hunger Vital Sign (food insecurity) positive | Staff mark contact documented in Django Admin (`contact_documented_at`) | Randomization suspended; resource card shown; staff alerted by Qualtrics |
+| **Baseline, alert only** | The same import. Signals: AUDIT-C high risk; PGSI problem gambling (`BASELINE_ALERT_ONLY_SIGNALS`) | — | **Randomization not suspended.** Staff alerted by Qualtrics; follow-up at the next visit |
+| **Manual** | Disclosure of risk to self or others (`free_text_risk`), entered by staff, never by the import | Staff mark contact documented | Randomization suspended |
+
+In the PDF of record this is **Table 4** ("Safety override classifications and intervention routing"); Table
+3 is the power table. A baseline flag suspends randomization only if it carries a signal outside the
+alert-only pair (`DistressFlag.is_active`).
 
 - **Where suppression happens.** `_evaluate_user` checks for an active flag before the draw. A suppressed
   decision point is therefore unavailable in the sense of §4: no draw and no probability are recorded, and
@@ -547,15 +576,16 @@ Proposed pathway pairing (each Tier 1 moderator is tested against its paired out
 
 | Tier 1 moderator | Paired proximal outcome |
 |---|---|
-| SUPPS-P negative urgency; positive urgency | Urge to post reactively; reactive online behavior |
-| DMQ-R coping motives | Drinking; drinking urge |
-| TFEQ-R18 emotional and uncontrolled eating | Emotional or uncontrolled eating |
-| DERS-16 | All four outcomes |
-| MAIA-2 Noticing; Body Listening | All four outcomes |
+| SUPPS-P negative urgency; positive urgency | Urge to post reactively (`B7_urge`) |
+| DMQ-R coping motives | Drinking urge (`B6_urge`) |
+| TFEQ-R18 emotional and uncontrolled eating | Urge to eat (`B4_urge`) |
+| DERS-16 | All three primary outcomes |
+| MAIA-2 Noticing; Body Listening | All three primary outcomes |
 
-> **[DISCREPANCY] DERS-16.** DERS-16 is Tier 1 in §1.0 but absent from the Tier 1 list in §15.0.
+> **[DECIDED] DERS-16 stays Tier 1.** DERS-16 is Tier 1 in §1.0 but absent from the Tier 1 list in §15.0.
+> It stays a Tier 1 confirmatory moderator, tested against all three primary outcomes.
 >
-> *Recommendation:* add it to §15.0, since §1.0 fixes the tiers "before data are examined."
+> *Protocol amendment:* add it to §15.0, since §1.0 fixes the tiers "before data are examined."
 
 > **[OPEN] Pairing and multiplicity.** The protocol says each Tier 1 moderator "is tied to a specific
 > momentary pathway" but does not state the pairing or a multiplicity correction. The pairing above, and
@@ -661,8 +691,8 @@ this plan:
 
 | # | Protocol item | Specification | Constraint |
 |---|---|---|---|
-| S1 | Proximal outcome window | Close the window at +90 min instead of +2 h | The window opens at +60 min by design, so it can only be shortened. A window longer than 2 h would reach past the time-locked check-in. |
-| S2 | Definition of availability | (a) Drop decision points arising from `post_prompt`/`extra_check_in` check-ins, i.e. only scheduled check-ins, matching "up to six decision points per day"; (b) count cooldown and cap on delivered prompts only, replayed from the log | Availability can only be made **stricter**. A decision point that was never randomized cannot enter any version. |
+| S1 | Proximal outcome window | **Retired.** The primary window already ends at about +90 min (§2.1), so closing it at +90 min no longer differs from the primary analysis. | The label is kept so S2–S6 keep their numbers. |
+| S2 | Definition of availability | Drop decision points arising from `post_prompt`/`extra_check_in` check-ins, i.e. only scheduled check-ins, matching "up to six decision points per day". (Former part (b), counting cooldown and cap on delivered prompts only, is dropped: the deployed cooldown now does this, §4.) | Availability can only be made **stricter**. A decision point that was never randomized cannot enter any version. |
 | S3 | MSSD threshold quantile | Replay the threshold at 0.85 and 0.90 with `manage.py backfill_thresholds`/`build_decision_frame`, and restrict to decision points available under both the replayed and the deployed rule | Only quantiles **above** the deployed 0.80 are analyzable. Decision points that a looser quantile such as 0.75 would add were never randomized. |
 | S4 | Participants with low check-in completion | Exclude participants below the 75 % check-in completion benchmark (§7.0) | Reported alongside the full sample, never instead of it. |
 | S5 | Missing outcomes | Weight each complete case by the inverse of its estimated probability of an observed outcome, modeled on $A_{it}$, hour, study day and the decision check-in's affect, and cluster the variance on participant | Run if §4.2 of the notebook shows observation rates differing by arm. |
@@ -692,12 +722,12 @@ Ranked by impact on the primary estimand.
      show the resource card and are reported to staff daily.
    - **[OPEN]** Should a distress flag also pause check-ins (protocol §5.0 "rather than continued study
      contact")?
-3. **[DECIDED, §3.4] Availability ≈ 0.2.** Power still holds: minimum detectable effect 0.11–0.15 at N = 80,
-   within the protocol's 0.10–0.15. What remains:
+3. **[DECIDED, §3.4] Availability 0.2.** The plan uses 0.2 (simulation and power computation). Power still
+   holds: minimum detectable effect 0.11–0.15 at N = 80, within the protocol's 0.10–0.15. What remains:
    - amend §7.0's decision points per participant and §9.3's prompts per day;
    - recompute with Phase 1's realized availability before the second wave.
-4. **[OPEN, §2.2] Outcome item mapping.** Fix the sub-item for each protocol outcome. Resolve the "today"
-   recall of `B6_consumed`/`B6_drink_count` and the conditional eating items (use the proposed composite).
+4. **[DECIDED, §2.2] Outcome item mapping.** One confirmatory item per construct: `B7_urge`, `B6_urge`,
+   `B4_urge`. Alcohol-today items and the conditional eating items are secondary (composites for eating).
 5. **[DISCREPANCY, §1] Delivered vs. assigned.** Amend the estimand to assignment (ITT). Delivered-prompt
    effect as a secondary IV analysis.
 6. **[DISCREPANCY, §5.4] Message-type randomization.** Describe the two-stage design and routing. Define
@@ -706,15 +736,17 @@ Ranked by impact on the primary estimand.
    power. `N_TARGET = 40` is one wave. `CLAUDE.md` is corrected.
 8. **[DISCREPANCY, §4] Decision points per day.** Up to six (protocol) vs. every completed check-in, up to
    ten (build).
-9. **[DISCREPANCY, §4] Availability rules.** Sleep and sync checks are absent (ingestion stub). Cooldown and
-   cap count eligible, not delivered, points. The cap is counted over UTC days.
+9. **[DISCREPANCY, §4] Availability rules.** Sleep and sync checks are absent (ingestion stub). (Cooldown and
+   cap now count delivered prompts on Eastern days: resolved.)
 10. **[OPEN, §4] Below-threshold points.** Unavailable decision points or not decision points? This fixes the
     feasibility denominators.
-11. **[DISCREPANCY, §5.2] DERS-16** missing from §15.0's Tier 1 list.
+11. **[DECIDED, §5.2] DERS-16** stays Tier 1; add it to §15.0's Tier 1 list.
 12. **[OPEN, §5.2] Tier 1 pathway pairing and multiplicity correction** (Holm proposed).
 13. **[OPEN, §6] Missing-outcome wording** in §15.0. State complete-case, with S5 as the check.
-14. **[DISCREPANCY, §2.1] Three vs. four domains** (§9.2 vs. §10.0).
+14. **[DECIDED, §2.1] Three vs. four domains.** Follow the build (four domain item sets); amend §9.2.
 15. **[OPEN, §5.1] Wearable arousal moderator** is unmeasurable until wearable ingestion is implemented.
+16. **[DECIDED, §2.1] Outcome window.** +60 to about +90 min, as deployed (the check-in's `expires_at`);
+    amend §9.2/§10.0/§15.0. S1 retired.
 
 ---
 

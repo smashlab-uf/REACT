@@ -64,3 +64,9 @@ CLAUDE.md
 
 backend/dashboard/fixture_cohort.json
 analytics/papers
+# PI reports carry participant study IDs
+analytics/reports/output/
+
+labfront_data
+# Study summaries carry participant study IDs and distress overrides
+analytics/analysis-resources/react_summary_*.md

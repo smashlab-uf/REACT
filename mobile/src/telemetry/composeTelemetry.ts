@@ -10,6 +10,14 @@ function generateSessionId(): string {
 
 let currentSessionId = generateSessionId();
 
+type ComposeVisit = {
+  id: string;
+  startTime: number;
+};
+
+let inputFocused = false;
+let visit: ComposeVisit | null = null;
+
 type ComposeSession = {
   startTime: number | null;
   keystrokeCount: number;
@@ -86,4 +94,61 @@ export function emitDraftSubmitted() {
     push(buildPayload('draft_submitted'));
   }
   resetComposeSession();
+}
+
+function buildVisitPayload(
+  event_type: 'session_start' | 'session_end',
+  current: ComposeVisit,
+): TelemetryEvent {
+  const now = new Date();
+  const metadata: Record<string, unknown> = {
+    draft_session_id: currentSessionId,
+    had_draft: session.started,
+  };
+  if (event_type === 'session_end') {
+    metadata.visit_ms = now.getTime() - current.startTime;
+  }
+  return {
+    user: useAuthStore.getState().userId,
+    session_id: current.id,
+    event_type,
+    occurred_at: now.toISOString(),
+    screen_name: 'compose',
+    metadata,
+  };
+}
+
+function startVisit() {
+  if (visit) return;
+  visit = { id: generateSessionId(), startTime: Date.now() };
+  useTelemetryStore.getState().push(buildVisitPayload('session_start', visit));
+}
+
+export function endComposeVisit() {
+  if (!visit) return;
+  const ended = visit;
+  visit = null;
+  useTelemetryStore.getState().push(buildVisitPayload('session_end', ended));
+}
+
+export function resumeComposeVisit() {
+  if (inputFocused) startVisit();
+}
+
+export function onComposeFocus() {
+  inputFocused = true;
+  startVisit();
+}
+
+export function onComposeBlur() {
+  inputFocused = false;
+  endComposeVisit();
+}
+
+export function onComposeAppStateChange(state: string) {
+  if (state === 'active') {
+    resumeComposeVisit();
+  } else {
+    endComposeVisit();
+  }
 }

@@ -1,0 +1,12 @@
+{% load report_format %}<section>
+  <h2>{{ p }}3 Check-in compliance</h2>
+  <p class="note">Completed out of delivered, where delivered means the day's scheduled check-in slots.
+    Overall: {{ checkins.covered|num }} of {{ checkins.expected|num }} slots ({{ checkins.rate|pct:1 }}).</p>
+  <div class="card"><table>
+    <thead><tr><th>Participant</th><th class="n">Delivered</th><th class="n">Completed</th><th class="n">Rate</th><th>Notes</th></tr></thead>
+    <tbody>{% for row in checkins.participants %}
+      <tr><td>{{ row.study_id }}</td><td class="n">{{ row.expected|num }}</td><td class="n">{{ row.covered|num }}</td>
+        <td class="n">{{ row.rate|pct }}</td><td>{{ row.notes|join:"; " }}</td></tr>
+    {% empty %}<tr><td colspan="5" class="muted">No enrolled RS participants.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>

@@ -1,0 +1,6 @@
+<div class="card"><table>
+  <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
+  <tbody>{% for item in checks %}
+    <tr><td>{{ item.name }}</td><td>{% include "dashboard/reports/_status.html" with value=item.status %}</td><td>{{ item.detail }}</td></tr>
+  {% endfor %}</tbody>
+</table></div>

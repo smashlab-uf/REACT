@@ -12,7 +12,7 @@
 
 ### Core Focus Areas Tracked
 - Enrollment readiness
-- Eligibility rates vs. power assumptions
+- Availability rate vs. power assumptions; message eligibility
 - Check-in compliance (Completed / Delivered)
 - Randomization integrity & logging
 - Outcome window functionality (2-hour post-decision)
@@ -20,7 +20,7 @@
 - Reminder delivery
 - Participant retention & readiness
 - Distress override monitoring
-- Exclusion of test/staff accounts (`TEST`, `ST`) from analytic cohorts
+- Exclusion of test/staff (`ST`) and unclassified accounts from analytic cohorts
 
 ---
 
@@ -36,7 +36,7 @@
 | Not Yet Enrolled in Backend | |
 
 > **Notes on Exclusions:**
-> - Excluded IDs: `TEST` accounts and `ST` pilot accounts (retained for system validation only).
+> - Excluded IDs: `ST` test/staff accounts and accounts with no RS/ST study ID (retained for system validation only).
 > - Analysis strictly restricted to active Study IDs beginning with `RS`.
 
 ---
@@ -49,7 +49,7 @@
 | :--- | :--- | :--- | :--- |
 | **Check-in Completion** | `%` | $\ge 75\%$ | |
 | **Retention** | `%` | $\ge 85\%$ | |
-| **Prompt Response** | `%` | $\ge 60\%$ | |
+| **Prompt Response** | `%` | $\ge 70\%$ | |
 | **Device Wear** | `%` | $\ge 80\%$ | |
 
 ---
@@ -79,17 +79,19 @@
 | Metric | Count |
 | :--- | :--- |
 | **Decision Points Evaluated** | |
-| Available Decision Points | |
-| Eligible Decision Points | |
+| Available (Randomized) Decision Points | |
+| Not Available, by reason (MSSD gate, cooldown, cap, run-in, distress) | |
 | Prompts Delivered | |
 | Prompts Not Delivered | |
 | Suppressed | |
 
-#### Eligibility Rate Calculation
-$$\text{Eligibility Rate} = \frac{\text{Eligible Decision Points}}{\text{Total Decision Points Evaluated}} \times 100 = \text{XX.X}\%$$
+#### Availability Rate Calculation
+$$\text{Availability Rate} = \frac{\text{Available (Randomized) Decision Points}}{\text{Decision Points Evaluated on MRT Days}} \times 100 = \text{XX.X}\%$$
 
-- **Observed Rate:** `XX.X%` *(e.g., 14 eligible / 72 decisions = 19.4%)*
-- **Power Calculation Range Expected:** `XX.X% - XX.X%`
+*Available* is a decision-point state: every gate passed and a randomization draw was taken. *Eligible* describes the message pool once a decision is randomized to send (1.5b), never decision points.
+
+- **Observed Rate:** `XX.X%` *(e.g., 14 available / 72 decisions = 19.4%)*
+- **Power Calculation Assumption:** `21%` (deployed engine); alarm band `10% - 35%`
 - **Variance Analysis:** `[Within expected range / Deviation observed]`
 
 ---
@@ -106,6 +108,16 @@ $$\text{Eligibility Rate} = \frac{\text{Eligible Decision Points}}{\text{Total D
 | **Message pool recorded** | `PASS / FAIL` | |
 | **Decision logs complete** | `PASS / FAIL` | |
 
+#### 1.5b Message Eligibility
+
+*Applies only to decisions randomized to send. The eligible pool is the matched coping categories minus the last five messages sent, a fallback pool, or P020 for the alcohol override.*
+
+| Verification Item | Pass / Fail | Comments |
+| :--- | :---: | :--- |
+| **Prompt drawn from its eligible pool** | `PASS / FAIL` | |
+| **Last-5 exclusion honored (coping)** | `PASS / FAIL` | |
+| **Message available when randomized to send** | `PASS / WATCH` | |
+
 ---
 
 ### 1.6 Outcome Window Verification
@@ -120,9 +132,19 @@ $$\text{Eligibility Rate} = \frac{\text{Eligible Decision Points}}{\text{Total D
 | Reminder delivered | | |
 | Outcome captured | | |
 
+*Every available decision opens the window +60 to +120 minutes after the decision, in both arms. A check-in before +60 minutes is invalid; windows still open are counted but not scored.*
+
 #### Arm-Specific Verification Evidence
-- **Arm A:** `[Log confirmation / Timestamp evidence]`
-- **Arm B:** `[Log confirmation / Timestamp evidence]`
+- **Arm A (sent):** `[Windows closed / captured / missing / invalid early]`
+- **Arm B (randomized out, draw ≥ p):** `[Windows closed / captured / missing / invalid early]`
+- *Randomized to send with no message available: in neither arm.*
+
+#### Prompt Seen
+*Earliest evidence a sent prompt was seen: the device receipt or the helpfulness rating (C0), whichever came first. No evidence after 2 hours (the outcome window) is flagged.*
+
+| Sent | Receipt | Rating Only | Pending | No Evidence | Median Time to Seen |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| | | | | | `min` |
 
 ---
 
@@ -159,6 +181,13 @@ $$\text{Eligibility Rate} = \frac{\text{Eligible Decision Points}}{\text{Total D
 | Eating disorder screen | | |
 | Other distress signal | | |
 
+*Follow-up required = a baseline flag with no documented contact, whatever the signal (alcohol and gambling included). Momentary flags never require staff contact (Dr. Chang, 2026-09-23); list them for daily review only. Resource-card displays are not logged yet.*
+
+#### Momentary Flags for Daily Review
+| Participant ID | Raised (Eastern) | Signals |
+| :--- | :--- | :--- |
+| | | |
+
 ---
 
 ### 1.9 Data Quality & Integrity Checks
@@ -170,6 +199,8 @@ $$\text{Eligibility Rate} = \frac{\text{Eligible Decision Points}}{\text{Total D
 | Duplicate records | | |
 | Missing decision logs | | |
 | Missing participant IDs | | |
+| Labfront ID matches study ID | | |
+| Push token on file | | |
 
 ---
 
@@ -178,6 +209,22 @@ $$\text{Eligibility Rate} = \frac{\text{Eligible Decision Points}}{\text{Total D
 | Issue Description | Protocol Impact | Severity (`Low` / `Med` / `High`) | Owner | Action Plan / Deadline |
 | :--- | :--- | :---: | :--- | :--- |
 | | | | | |
+
+---
+
+### 1.11 Compose Use (Exploratory)
+
+*Not a protocol endpoint. An open is the compose box gaining focus; a draft is abandoned when neither submitted nor deleted within 24 hours. Descriptive only, no p-values.*
+
+| Participant ID | Opens | Drafts | Submitted | Abandoned | Submit Rate | Median Characters |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| `RS01` | | | | | `%` | |
+
+#### Two Hours After a Decision: Sent vs. Randomized Out
+| Measure (per window) | Sent | Randomized Out | Background | Within-Person Difference |
+| :--- | :---: | :---: | :---: | :---: |
+| Drafts started | | | | |
+| Drafts submitted | | | | |
 
 ---
 ---
@@ -214,7 +261,7 @@ $$\text{Eligibility Rate} = \frac{\text{Eligible Decision Points}}{\text{Total D
 | :--- | :---: | :---: | :---: |
 | **Retention** | `%` | $\ge 85\%$ | |
 | **Check-In Completion** | `%` | $\ge 75\%$ | |
-| **Prompt Response** | `%` | $\ge 60\%$ | |
+| **Prompt Response** | `%` | $\ge 70\%$ | |
 | **Device Wear** | `%` | $\ge 80\%$ | |
 | **Hair Sample Success** | `%` | $\ge 90\%$ | |
 
@@ -226,7 +273,7 @@ $$\text{Eligibility Rate} = \frac{\text{Eligible Decision Points}}{\text{Total D
 | :--- | :--- | :--- |
 | Decision Points Evaluated | | |
 | Available Decisions | | |
-| Eligible Decisions | | |
+| Not Available Decisions | | |
 | Prompts Sent | | |
 | Prompts Suppressed | | |
 | Distress Overrides | | |
@@ -252,8 +299,34 @@ $$\text{Eligibility Rate} = \frac{\text{Eligible Decision Points}}{\text{Total D
 
 ---
 
-### 2.6 Key Actions for Next Week
-1. Verify outcome-window records across all intervention arms (`Arm A` and `Arm B`).
+### 2.6 Game Days vs. Non-Game Days (Descriptive)
+
+*From the Friday of homecoming weekend (2026-10-09) through the end of the report, cumulative. Game days are the football dates listed in `config.GAME_DAYS` (2026-10-10, homecoming, so far). Answers come from completed scheduled check-ins only. Differences are within-person (game − non-game), averaged over participants with check-ins on both. No p-values.*
+
+| Days | Completed | Delivered | Rate | Status |
+| :--- | :---: | :---: | :---: | :---: |
+| Game days | | | `%` | |
+| Non-game days | | | `%` | |
+
+| Item | Game-Day Mean | Non-Game Mean | Within-Person Difference | Participants |
+| :--- | :---: | :---: | :---: | :---: |
+| Valence (B1) | | | | |
+| Stress (B2) | | | | |
+
+---
+
+### 2.7 Garmin Signals at Check-In (Exploratory)
+
+*From a Labfront export file (`build_report --labfront-export DIR`), not the live database. Each completed scheduled check-in gets the mean Garmin heart rate (15 s series) and stress score (3 min, codes −1/−2 dropped) over the 30 minutes before it was answered. A check-in whose window falls outside the export is not counted as missing.*
+
+| Participant ID | Export Dates | Check-Ins | Aligned | No Signal | Outside Export | Median HR | Median Garmin Stress | Self vs. Garmin Stress (ρ) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `RS01` | | | | | | | | |
+
+---
+
+### 2.8 Key Actions for Next Week
+1. Verify outcome-window records in both arms (`Arm A` sent, `Arm B` randomized out).
 2. Confirm reminder delivery rates and time-to-completion distributions.
 3. Review participant check-in completion trends for attrition signals.
 4. Monitor and cross-reference distress override entries with safety workflows.

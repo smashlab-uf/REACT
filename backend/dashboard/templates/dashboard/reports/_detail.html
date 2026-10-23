@@ -1,0 +1,159 @@
+{% load report_format %}
+<section>
+  <h2>{{ p }}5 Randomization integrity</h2>
+  <p class="note">Every decision point is logged whether or not a prompt is sent. These checks are never suppressed.</p>
+  {% include "dashboard/reports/_checks.html" with checks=integrity %}
+</section>
+
+<section>
+  <h2>{{ p }}5b Message eligibility</h2>
+  <p class="note">The eligible pool is the set of messages that fit once a decision is randomized to send: the matched
+    coping categories minus the last five sent, a fallback pool, or P020 for the alcohol override.
+    {{ messages.sent|num }} of {{ messages.randomized_to_send|num }} decisions randomized to send were sent.
+    Pool size median {{ messages.pool_size_median|num:1 }}, minimum {{ messages.pool_size_min|num }}.</p>
+  {% include "dashboard/reports/_checks.html" with checks=messages.checks %}
+  <div class="grid2" style="margin-top:12px">
+    <div class="card"><table><thead><tr><th>Message arm</th><th class="n">Sent</th></tr></thead><tbody>
+      {% for arm, n in messages.arms.items %}<tr><td>{{ arm|label }}</td><td class="n">{{ n|num }}</td></tr>{% empty %}<tr><td colspan="2" class="muted">None</td></tr>{% endfor %}
+    </tbody></table></div>
+    <div class="card"><table><thead><tr><th>Coping routing path</th><th class="n">Sent</th></tr></thead><tbody>
+      {% for path, n in messages.routing.items %}<tr><td>{{ path }}</td><td class="n">{{ n|num }}</td></tr>{% empty %}<tr><td colspan="2" class="muted">None</td></tr>{% endfor %}
+    </tbody></table></div>
+  </div>
+</section>
+
+<section>
+  <h2>{{ p }}6 Outcome window</h2>
+  <p class="note">Every available decision opens the window from +60 to +120 minutes after the decision, in both arms.
+    A check-in answered before +60 minutes is invalid. Windows still open are counted but not scored.
+    {% if outcome.assigned_no_message %}{{ outcome.assigned_no_message }} decision{{ outcome.assigned_no_message|pluralize }}
+    randomized to send had no message and belong{{ outcome.assigned_no_message|pluralize:"s," }} to neither arm.{% endif %}</p>
+  {% include "dashboard/reports/_checks.html" with checks=outcome.checks %}
+  <div class="card" style="margin-top:12px"><table>
+    <thead><tr><th>Arm</th><th class="n">Windows</th><th class="n">Closed</th><th class="n">Open</th><th class="n">Reminded</th>
+      <th class="n">Captured</th><th class="n">Missing</th><th class="n">Invalid (early)</th><th class="n">Capture rate</th></tr></thead>
+    <tbody>{% for key, arm in outcome.arms.items %}
+      <tr><td>{{ key }}: {{ arm.label }}</td><td class="n">{{ arm.windows|num }}</td><td class="n">{{ arm.closed|num }}</td>
+        <td class="n">{{ arm.open|num }}</td><td class="n">{{ arm.reminded|num }}</td><td class="n">{{ arm.captured|num }}</td>
+        <td class="n">{{ arm.missing|num }}</td><td class="n">{{ arm.invalid_early|num }}</td><td class="n">{{ arm.capture_rate|pct }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  <h3>Prompt seen</h3>
+  <p class="note">The earliest evidence a participant saw a sent prompt is the device receipt or the time they rated
+    its helpfulness, whichever came first. A prompt with neither after {{ seen.cutoff_hours }} hours, when its outcome
+    window has closed, has no evidence it was seen.
+    {% if seen.median_minutes_to_seen is not None %}Median time to seen: {{ seen.median_minutes_to_seen|num }} min
+    over {{ seen.seen_n }} prompt{{ seen.seen_n|pluralize }}.{% endif %}</p>
+  {% include "dashboard/reports/_checks.html" with checks=seen.checks %}
+  <div class="card" style="margin-top:12px"><table>
+    <thead><tr><th>Sent prompts</th><th class="n">Receipt</th><th class="n">Rating only</th><th class="n">Pending</th><th class="n">No evidence</th></tr></thead>
+    <tbody><tr><td>{{ seen.sent|num }}</td><td class="n">{{ seen.counts|get:"receipt"|num }}</td>
+      <td class="n">{{ seen.counts|get:"rating only"|num }}</td><td class="n">{{ seen.counts|get:"pending"|num }}</td>
+      <td class="n">{{ seen.counts|get:"no evidence"|num }}</td></tr></tbody>
+  </table></div>
+  {% if seen.flagged %}<div class="card" style="margin-top:12px"><table>
+    <thead><tr><th>Participant</th><th>Sent (Eastern)</th><th>Status</th><th>Delivery status</th><th class="n">Seen after</th><th class="n">Hours since sent</th></tr></thead>
+    <tbody>{% for prompt in seen.flagged %}
+      <tr><td>{{ prompt.study_id }}</td><td>{{ prompt.sent_at|eastern }}</td><td>{{ prompt.status }}</td>
+        <td>{{ prompt.delivery_status|label }}</td>
+        <td class="n">{% if prompt.minutes_to_seen is not None %}{{ prompt.minutes_to_seen|num }} min{% else %}—{% endif %}</td>
+        <td class="n">{{ prompt.hours_since_sent|num:1 }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>{% endif %}
+</section>
+
+<section>
+  <h2>{{ p }}7 Cooldown and daily cap</h2>
+  <div class="card"><table><tbody>
+    <tr><td>Prompts sent</td><td class="n">{{ cooldown.sent|num }}</td><td></td></tr>
+    <tr><td>Cooldown violations (&lt; {{ cooldown.cooldown_minutes }} min)</td><td class="n">{{ cooldown.violations|length }}</td>
+      <td>{% include "dashboard/reports/_status.html" with value=cooldown.status %}</td></tr>
+    <tr><td>Closest observed interval</td><td class="n">{% if cooldown.closest_gap_min is not None %}{{ cooldown.closest_gap_min }} min{% else %}—{% endif %}</td><td></td></tr>
+    <tr><td>Participant-days over the cap of {{ cooldown.daily_cap }}</td><td class="n">{{ cooldown.cap_exceeded|length }}</td>
+      <td>{% include "dashboard/reports/_status.html" with value=cooldown.cap_status %}</td></tr>
+  </tbody></table></div>
+  {% if cooldown.violations %}<h3>Violations</h3><ul class="plain">{% for v in cooldown.violations %}
+    <li>{{ v.study_id }} at {{ v.at|eastern }}: {{ v.gap_min }} min after the previous prompt</li>{% endfor %}</ul>{% endif %}
+</section>
+
+<section>
+  <h2>{{ p }}8 Distress override monitoring</h2>
+  <div class="grid2">
+    <div class="card"><table><tbody>
+      <tr><td>Flags raised in period</td><td class="n">{{ distress.override_events|num }}</td></tr>
+      <tr><td>Resource cards displayed</td><td class="n">{% include "dashboard/reports/_status.html" with value=distress.resource_cards_status %}</td></tr>
+      <tr><td>Decisions suppressed by distress</td><td class="n">{{ distress.randomization_suppressed|num }}</td></tr>
+      <tr><td>Overrides active now</td><td class="n">{{ distress.active_now|num }}</td></tr>
+      <tr><td>Baseline flags awaiting documented contact</td><td class="n">{{ distress.follow_up_open|num }}</td></tr>
+    </tbody></table></div>
+    <div class="card"><table>
+      <thead><tr><th>Signal</th><th class="n">Raised</th><th>Follow-up required</th></tr></thead>
+      <tbody>{% for row in distress.breakdown %}
+        <tr><td>{{ row.label }}{% if row.codes %}<div class="muted">{% for code, n in row.codes.items %}{{ code }} ({{ n }}){% if not forloop.last %}; {% endif %}{% endfor %}</div>{% endif %}</td>
+          <td class="n">{{ row.count|num }}</td><td>{{ row.follow_up|yesno_dash }}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+  </div>
+  <p class="note">Follow-up means a baseline flag with no documented contact, whatever the signal. Momentary flags are
+    handled by the resource card and the 24-hour pause and never require staff contact; they are listed here for daily review.</p>
+  {% if distress.momentary_review %}<div class="card"><table>
+    <thead><tr><th>Participant</th><th>Raised (Eastern)</th><th>Signals</th></tr></thead>
+    <tbody>{% for flag in distress.momentary_review %}
+      <tr><td>{{ flag.study_id }}</td><td>{{ flag.raised_at|eastern }}</td><td>{{ flag.signals|join:"; " }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>{% endif %}
+</section>
+
+<section>
+  <h2>{{ p }}9 Data quality</h2>
+  {% include "dashboard/reports/_checks.html" with checks=quality %}
+</section>
+
+<section>
+  <h2>{{ p }}10 Issues requiring attention</h2>
+  <div class="card"><table>
+    <thead><tr><th>Issue</th><th>Scope</th><th>Severity</th><th>Owner</th><th>Action / deadline</th></tr></thead>
+    <tbody>{% for issue in issues %}
+      <tr><td>{{ issue.description }}</td><td>{{ issue.scope }}</td><td>{{ issue.severity }}</td><td></td><td></td></tr>
+    {% empty %}<tr><td colspan="5" class="muted">No open issues.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+
+<section>
+  <h2>{{ p }}11 Compose use <span class="tag">exploratory</span></h2>
+  <p class="note">{{ compose.note }}</p>
+  <h3>Per participant</h3>
+  <div class="card"><table>
+    <thead><tr><th>Participant</th><th class="n">Opens</th><th class="n">Median visit (s)</th><th class="n">Drafts</th>
+      <th class="n">Submitted</th><th class="n">Deleted</th><th class="n">Abandoned</th><th class="n">Pending</th>
+      <th class="n">Submit rate</th><th class="n">Median chars</th><th class="n">Deletion ratio</th></tr></thead>
+    <tbody>{% for row in compose.participants %}
+      <tr><td>{{ row.study_id }}</td>
+        <td class="n">{% if row.visits_measured %}{{ row.opens|num }}{% else %}<span class="muted" title="App build does not report opens">n/m</span>{% endif %}</td>
+        <td class="n">{{ row.visit_seconds_median|num }}</td><td class="n">{{ row.drafts|num }}</td>
+        <td class="n">{{ row.submitted|num }}</td><td class="n">{{ row.deleted|num }}</td><td class="n">{{ row.abandoned|num }}</td>
+        <td class="n">{{ row.pending|num }}</td><td class="n">{{ row.submit_rate|pct }}</td>
+        <td class="n">{{ row.keystrokes_median|num }}</td><td class="n">{{ row.deletion_ratio|pct }}</td></tr>
+    {% empty %}<tr><td colspan="11" class="muted">No enrolled RS participants.</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <h3>Two hours after a decision: sent vs. randomized out</h3>
+  <p class="note">{{ compose.comparison.windows.A }} closed window{{ compose.comparison.windows.A|pluralize }} after a sent prompt,
+    {{ compose.comparison.windows.B }} after a randomized-out decision, {{ compose.comparison.open_windows }} still open;
+    background from {{ compose.comparison.background_blocks }} two-hour block{{ compose.comparison.background_blocks|pluralize }}
+    with no decision. Means are per window, averaged per participant first. The difference is the mean of each
+    participant's sent minus randomized-out value, over participants with windows in both arms.</p>
+  <div class="card"><table>
+    <thead><tr><th>Measure (per window)</th><th class="n">Sent</th><th class="n">Randomized out</th><th class="n">Background</th>
+      <th class="n">Difference</th><th class="n">95% CI</th><th class="n">Participants</th></tr></thead>
+    <tbody>{% for row in compose_rows %}
+      <tr><td>{{ row.label }}</td><td class="n">{{ row.sent_mean|num:2 }}</td><td class="n">{{ row.randomized_out_mean|num:2 }}</td>
+        <td class="n">{{ row.background_mean|num:2 }}</td><td class="n">{{ row.mean_difference|signed }}</td>
+        <td class="n">{% if row.ci_low is not None %}{{ row.ci_low|signed }} to {{ row.ci_high|signed }}{% elif row.suppressed %}<span class="muted">withheld</span>{% else %}—{% endif %}</td>
+        <td class="n">{{ row.paired_participants|num }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% if compose_strip %}<h3>{{ compose_strip_metric }}: per-participant difference</h3>
+  <div class="card">{{ compose_strip }}</div>{% endif %}
+  <p class="note">The confidence interval is shown in the weekly report only, and only with at least 10 participants
+    and 30 windows. No p-values: this is descriptive.</p>
+</section>

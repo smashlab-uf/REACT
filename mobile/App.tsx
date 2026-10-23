@@ -11,6 +11,7 @@ import ComposeScreen from './src/screens/ComposeScreen';
 import EMAScreen from './src/screens/EMAScreen';
 import { useAvailableCheckin } from './src/ema/useAvailableCheckin';
 import { flushQueue, startNetworkListener } from './src/telemetry/offlineQueue';
+import { endComposeVisit, resumeComposeVisit } from './src/telemetry/composeTelemetry';
 import { registerForPushNotifications } from './src/notifications/pushToken';
 import { parsePushData, shouldOpenEMA } from './src/notifications/payload';
 import { jitai, telemetry } from './src/api/endpoints';
@@ -54,6 +55,14 @@ export default function App() {
     setToastMessage(message);
     toastTimer.current = setTimeout(() => setToastMessage(null), 4000);
   }
+
+  useEffect(() => {
+    if (activeEMA !== null) {
+      endComposeVisit();
+    } else {
+      resumeComposeVisit();
+    }
+  }, [activeEMA !== null]);
 
   useEffect(() => {
     restoreSession();

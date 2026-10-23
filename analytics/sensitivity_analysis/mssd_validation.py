@@ -23,12 +23,12 @@ computed only over successive pairs where BOTH prompts were answered (a NaN in
 either position drops that difference). Plots are written to
 figures/validation/.
 
-SCALE NOTE: The synthetic generator currently produces a 1–5 Likert scale.
-Production models enforce 1–7 (MinValueValidator / MaxValueValidator in
-models.py). The construct-validity benchmarks (r >= 0.7, sigma/rho recovery)
-were established on 1–5; update generate_cohort() to use mu=4.0 and clip to
-1–7 before the final feasibility report to confirm benchmarks hold on the
-deployed scale. Max squared diff: 1–5 = 16; 1–7 = 36.
+SCALE NOTE: Everything here runs on the production 1–7 Likert scale
+(MinValueValidator / MaxValueValidator in models.py), with the grid baseline
+at the scale midpoint mu=4.0. The construct-validity benchmarks (r >= 0.7,
+sigma/rho recovery) were first established on a pre-production 1–5 scale;
+generate_cohort(likert_max=5) and mu=3.0 reproduce those runs. Max squared
+diff: 1–5 = 16; 1–7 = 36.
 
 STUDY DURATION NOTE: build_validation_cohort() uses days=14 matching the
 JITAI-analysis-plan-8.7.pdf feasibility sub-study. scripts.py targets the
@@ -47,7 +47,6 @@ import matplotlib.pyplot as plt
 from scipy import stats
 
 from synthetic_generator import generate_cohort
-from plotting import plot_config_recovery
 
 FIGURE_DIR = os.path.join(os.path.dirname(__file__), "figures", "validation")
 
@@ -56,7 +55,7 @@ def empirical_mssd(series):
     """
     Mean of squared successive differences for one user's EMA series.
 
-    `series` is a 1-5 Likert array that may contain NaN (missed prompts).
+    `series` is a 1-7 Likert array that may contain NaN (missed prompts).
     np.diff across a NaN yields NaN, so dropping NaN differences leaves only
     the successive pairs where both prompts were answered.
     """
@@ -73,7 +72,7 @@ def recover_ar1_params(series):
     """
     Recover the AR(1) latent knobs (rho, sigma) from one user's *observed* EMA.
 
-    `series` is the realised 1-5 Likert array (with NaN gaps), i.e. the latent
+    `series` is the realised 1-7 Likert array (with NaN gaps), i.e. the latent
     AR(1) process after mean-shift, Likert rounding/clipping and missingness.
     We demean by the empirical mean of the answered points (not the generator's
     mu, which a real analyst would not know):
@@ -116,8 +115,8 @@ def recover_ar1_params(series):
 def _label_for(sigma, rho):
     """Coarse Stable/Volatile tag for the strip comparison.
 
-    Thresholds calibrated for the 1-5 synthetic Likert scale. Re-calibrate
-    once generate_cohort() is updated to the 1-7 production scale.
+    Thresholds are on the latent expected MSSD 2*sigma^2*(1-rho), which does
+    not depend on the Likert range, so they hold on 1-5 and 1-7 alike.
     """
     expected = 2.0 * sigma ** 2 * (1 - rho)
 
@@ -134,7 +133,7 @@ def build_validation_cohort(days    = 14,
                             resp_rate = 0.80,
                             sigmas = (0.3, 0.6, 0.9, 1.2, 1.5),
                             rhos = (0.2, 0.5, 0.8),
-                            mu   = 3.0,
+                            mu   = 4.0,
                             seed = 7):
     """
     Generate one DataFrame of per-user MSSD records across a (sigma, rho) grid.
@@ -228,7 +227,7 @@ def plot_recovery(df, ax=None):
             label=f"OLS  y = {slope:.2f}x + {intercept:.2f}")
 
     ax.set_xlabel(r"ground-truth expected MSSD  $2\sigma^2(1-\rho)$")
-    ax.set_ylabel("empirical MSSD (observed 1-5 Likert, with missingness)")
+    ax.set_ylabel("empirical MSSD (observed 1-7 Likert, with missingness)")
     ax.set_title("MSSD recovers latent volatility")
     ax.annotate(f"Pearson r = {r:.3f}\nSpearman $\\rho$ = {spearman:.3f}\n"
                 f"p = {p:.1e}",
@@ -265,6 +264,26 @@ def plot_group_separation(df, ax=None):
     fig.tight_layout()
     fig.savefig(os.path.join(FIGURE_DIR, "mssd_group_separation.png"),
                 bbox_inches="tight")
+
+
+def plot_config_recovery(config):
+    """True vs. recovered sigma and rho per grid cell, one panel each."""
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    for ax, param, other in ((axes[0], "sigma", "rho"), (axes[1], "rho", "sigma")):
+        true = config[f"true_{param}"]
+        rec = config[f"recovered_{param}"]
+        sc = ax.scatter(true, rec, c=config[f"true_{other}"], cmap="viridis",
+                        s=60, edgecolor="white")
+        lo = min(true.min(), rec.min())
+        hi = max(true.max(), rec.max())
+        ax.plot([lo, hi], [lo, hi], "k--", alpha=0.6, label="perfect recovery")
+        ax.set_xlabel(f"true $\\{param}$")
+        ax.set_ylabel(f"mean recovered $\\hat{{\\{param}}}$ per cell")
+        ax.set_title(f"$\\{param}$ recovery by grid cell")
+        ax.legend(loc="upper left", fontsize=8)
+        fig.colorbar(sc, ax=ax, label=f"true $\\{other}$")
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIGURE_DIR, "config_recovery.png"), bbox_inches="tight")
 
 
 def main():

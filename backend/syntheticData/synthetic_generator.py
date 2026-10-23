@@ -1,9 +1,14 @@
 """
 LEGACY — MSSD construct-validation harness. Superseded by react_cohort.py for
-production-aligned cohorts. This module uses a 1-5 Likert scale and a flat EMA/HR
-dataframe shape intended only for validating the MSSD math against known latent
-volatility; it does NOT match the production schema (analytics/analysis-resources/production_schema.md)
-and is not a database seeder. Do NOT use it to generate analysis cohorts.
+production-aligned cohorts. This module uses a flat EMA/HR dataframe shape intended
+only for validating the MSSD math against known latent volatility; it does NOT match
+the production schema (analytics/analysis-resources/production_schema.md) and is not a
+database seeder. Do NOT use it to generate analysis cohorts.
+
+The Likert scale defaults to the production 1-7 (EMA MinValueValidator(1) /
+MaxValueValidator(7)). likert_max=5 reproduces the pre-production 1-5 runs: the
+baseline mu is drawn around the scale midpoint, so 1-5 gives back the original
+mu ~ U(2, 4) on the same RNG stream.
 
 Retained because react_cohort.py imports _clustered_missing_mask from here.
 
@@ -31,22 +36,33 @@ def generate_user(user_id,
                   days, 
                   ema_per_day, 
                   rng,
-                  resp_rate=0.80, 
-                  mean_gap_length = 3):
+                  resp_rate=0.80,
+                  mean_gap_length = 3,
+                  mu = None,
+                  sigma = None,
+                  rho = None,
+                  likert_min = 1,
+                  likert_max = 7):
     """
-    
+
     Generate one user's EMA series with KNOWN latent volatility.
     Assumes sample is normally distributed
-    
-    
+
+    mu / sigma / rho pin the latent parameters; None draws them at random.
+    The random draws are always taken, so pinning a parameter leaves the
+    rest of the RNG stream unchanged.
     """
 
     n = days * ema_per_day
 
     # per-user latent parameters (ground truth for the population)
-    mu    = rng.uniform(2.0, 4.0)
-    sigma = rng.uniform(0.3, 1.5) # How volatile a person is (0 means they are exactly at the mean)
-    rho   = rng.uniform(0.1, 0.8) # personal correlation
+    midpoint   = (likert_min + likert_max) / 2.0
+    mu_draw    = rng.uniform(midpoint - 1.0, midpoint + 1.0)
+    sigma_draw = rng.uniform(0.3, 1.5) # How volatile a person is (0 means they are exactly at the mean)
+    rho_draw   = rng.uniform(0.1, 0.8) # personal correlation
+    mu    = mu_draw if mu is None else mu
+    sigma = sigma_draw if sigma is None else sigma
+    rho   = rho_draw if rho is None else rho
 
     # AR(1)  -- consecutive points are related
     # lambda^2 = E[(x_{i+1} - x_i)^2] = 2\sigma^2(1-p(1))
@@ -59,7 +75,7 @@ def generate_user(user_id,
     latent = mu + z
 
     # map latent to Likert response
-    ema = np.clip(np.round(latent), 1, 5)
+    ema = np.clip(np.round(latent), likert_min, likert_max)
   
     mask = _clustered_missing_mask(n, resp_rate, mean_gap_length, rng) # bool mask
     ema[mask] = np.nan
@@ -134,7 +150,12 @@ def generate_cohort(users = 100,
                     seed = 0,
                     resp_rate = 0.8,
                     mean_gap_length = 3,
-                    user_ids = None):
+                    user_ids = None,
+                    mu = None,
+                    sigma = None,
+                    rho = None,
+                    likert_min = 1,
+                    likert_max = 7):
 
     if users < 1:
       raise ValueError(f"Need more than one user to generate... got {users}")
@@ -156,10 +177,15 @@ def generate_cohort(users = 100,
                                 ema_per_day = ema_per_day,
                                 rng = rng,
                                 resp_rate = resp_rate,
-                                mean_gap_length = mean_gap_length)
+                                mean_gap_length = mean_gap_length,
+                                mu = mu,
+                                sigma = sigma,
+                                rho = rho,
+                                likert_min = likert_min,
+                                likert_max = likert_max)
         all_data.append(df_user)
 
-    return pd.concat(all_data)
+    return pd.concat(all_data, ignore_index = True)
 
 ### HEART RATE GENERATOR
 def _generate_heart_rate(user_id,

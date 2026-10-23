@@ -1,0 +1,158 @@
+{% extends "dashboard/reports/base.html" %}{% load report_format %}
+{% block title %}REACT Weekly Report{% endblock %}
+{% block heading %}REACT weekly feasibility &amp; compliance report{% endblock %}
+{% block period %}Reporting period <strong>{{ start|date:"Y-m-d" }}</strong> to <strong>{{ end|date:"Y-m-d" }}</strong> (Eastern days){% endblock %}
+{% block content %}
+<section>
+  <h2>2.1 Executive summary</h2>
+  <p class="summary">{{ summary }}</p>
+</section>
+
+<section>
+  <h2>2.2 Participant flow</h2>
+  <div class="card"><table>
+    <thead><tr><th>Stage</th><th class="n">Target</th><th class="n">Current cumulative</th><th class="n">% of target</th></tr></thead>
+    <tbody>{% for stage in flow %}
+      <tr><td>{{ stage.stage }}</td><td class="n">{{ stage.target|num }}</td>
+        <td class="n">{% if stage.measurable %}{{ stage.n|num }}{% else %}{% include "dashboard/reports/_status.html" with value="NOT MEASURED" %}{% endif %}</td>
+        <td class="n">{{ stage.pct_of_target|pct }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  <p class="note">The target is the power calculation's N = 80 across all waves. Screening, eligibility and consent are
+    not recorded in the backend.</p>
+</section>
+
+{% include "dashboard/reports/_benchmarks.html" with number="2.3" %}
+
+<section>
+  <h3>Daily trend</h3>
+  <p class="note">Each day's count; the line shows the daily rate only on days with enough participants to publish one.</p>
+  <div class="card"><table>
+    <thead><tr><th>Measure</th>{% for date in trend_dates %}<th class="n">{{ date|date:"D j" }}</th>{% endfor %}<th>Trend</th></tr></thead>
+    <tbody>{% for row in trend_rows %}
+      <tr><td>{{ row.label }}{% if row.provisional %}<span class="tag">provisional</span>{% endif %}</td>
+        {% for cell in row.days %}<td class="n">{% if cell.value is not None %}{{ cell.value|pct }}{% elif cell.denominator %}{{ cell.numerator|num }}/{{ cell.denominator|num }}{% else %}—{% endif %}</td>{% endfor %}
+        <td>{% if row.spark %}{{ row.spark }}{% else %}<span class="muted">counts only</span>{% endif %}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+</section>
+
+{% include "dashboard/reports/_decisions.html" with number="2.4" %}
+
+<section>
+  <h2>2.5 Protocol compliance assessment</h2>
+  <div class="card"><table>
+    <thead><tr><th>Area</th><th>Status</th></tr></thead>
+    <tbody>{% for area, status in assessment.areas.items %}
+      <tr><td>{{ area }}</td><td>{% include "dashboard/reports/_status.html" with value=status %}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  <div class="grid2" style="margin-top:12px">
+    <div><h3>Working as expected</h3><ul class="plain">{% for area in assessment.working %}<li>{{ area }}</li>{% empty %}<li class="muted">None yet</li>{% endfor %}</ul></div>
+    <div><h3>Needs monitoring</h3><ul class="plain">{% for area in assessment.monitoring %}<li>{{ area }}</li>{% empty %}<li class="muted">None</li>{% endfor %}</ul></div>
+    <div><h3>Protocol risks</h3><ul class="plain">{% for area in assessment.risks %}<li>{{ area }}</li>{% empty %}<li class="muted">None reported</li>{% endfor %}</ul></div>
+  </div>
+</section>
+
+<section>
+  <h2>2.6 Game days vs non-game days <span class="tag">descriptive</span></h2>
+  {% if game_days.game_dates %}<p class="meta">{{ game_days.start|date:"Y-m-d" }} to {{ game_days.end|date:"Y-m-d" }} ·
+    {{ game_days.game_dates|length }} football game day{{ game_days.game_dates|pluralize }}:
+    {% for day in game_days.game_dates %}{{ day|date:"D M j" }}{% if not forloop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+  {% if game_days.status %}
+  <div class="card">{% include "dashboard/reports/_status.html" with value=game_days.status %} {{ game_days.detail }}</div>
+  {% else %}
+  <p class="note">{{ game_days.note }}</p>
+  <h3>Check-in completion</h3>
+  <div class="card"><table>
+    <thead><tr><th>Days</th><th class="n">Completed</th><th class="n">Delivered</th><th class="n">Participants</th>
+      <th class="n">Rate</th><th class="n">95% CI</th><th>Status</th></tr></thead>
+    <tbody>{% for entry in game_days.completion %}
+      <tr><td>{{ entry.label }}</td><td class="n">{{ entry.numerator|num }}</td><td class="n">{{ entry.denominator|num }}</td>
+        <td class="n">{{ entry.participants|num }}</td><td class="n">{{ entry.value|pct }}</td>
+        <td class="n">{% if entry.wilson_low is not None %}{{ entry.wilson_low|pct }}–{{ entry.wilson_high|pct }}{% else %}—{% endif %}</td>
+        <td>{% include "dashboard/reports/_status.html" with value=entry.status %}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  <h3>Check-in answers</h3>
+  <div class="card"><table>
+    <thead><tr><th>Item</th><th class="n">Game-day answers</th><th class="n">Game-day mean</th>
+      <th class="n">Other answers</th><th class="n">Other mean</th><th class="n">Difference</th><th class="n">Participants</th></tr></thead>
+    <tbody>{% for item in game_days.items %}
+      <tr><td>{{ item.label }}</td><td class="n">{{ item.game_n|num }}</td><td class="n">{{ item.game_mean|num:2 }}</td>
+        <td class="n">{{ item.other_n|num }}</td><td class="n">{{ item.other_mean|num:2 }}</td>
+        <td class="n">{{ item.mean_difference|signed }}</td><td class="n">{{ item.paired_participants|num }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% if game_day_strip %}<h3>{{ game_day_strip_label }}: per-participant difference</h3>
+  <div class="card">{{ game_day_strip }}</div>{% endif %}
+  <h3>Per participant</h3>
+  <div class="card"><table>
+    <thead><tr><th>Participant</th><th class="n">Game-day check-ins</th><th class="n">Other check-ins</th>
+      <th class="n">Valence difference</th><th class="n">Stress difference</th></tr></thead>
+    <tbody>{% for row in game_days.participants %}
+      <tr><td>{{ row.study_id }}</td><td class="n">{{ row.game_checkins|num }}</td><td class="n">{{ row.other_checkins|num }}</td>
+        <td class="n">{{ row.differences.B1_valence|signed }}</td><td class="n">{{ row.differences.B2_stress|signed }}</td></tr>
+    {% empty %}<tr><td colspan="5" class="muted">No enrolled RS participants.</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+</section>
+
+<section>
+  <h2>2.7 Garmin signals at check-in <span class="tag">exploratory</span></h2>
+  {% if garmin.status %}
+  <div class="card">{% include "dashboard/reports/_status.html" with value=garmin.status %} {{ garmin.detail }}</div>
+  {% endif %}
+  {% if garmin.participants %}
+  <p class="note">{{ garmin.note }}</p>
+  <p class="meta">{{ garmin.counts.aligned|num }} of {{ garmin.checkins|length }} check-in{{ garmin.checkins|length|pluralize }} aligned ·
+    {{ garmin.counts|get:"no signal in window"|num }} with no valid sample in the window ·
+    {{ garmin.counts|get:"outside export"|num }} outside the export's dates ·
+    {{ garmin.counts|get:"no export folder"|num }} with no export folder{% if garmin.coverage_end %} ·
+    export runs through <strong>{{ garmin.coverage_end|eastern }}</strong> Eastern{% endif %}</p>
+  <div class="card"><table>
+    <thead><tr><th>Participant</th><th>Export dates</th><th class="n">Check-ins</th><th class="n">Aligned</th>
+      <th class="n">No signal</th><th class="n">Outside export</th><th class="n">Median HR (bpm)</th>
+      <th class="n">Median Garmin stress</th><th class="n">Self vs Garmin stress (ρ)</th></tr></thead>
+    <tbody>{% for row in garmin.participants %}
+      <tr><td>{{ row.study_id }}</td>
+        <td>{% if row.coverage %}{{ row.coverage.0|eastern:"%m-%d" }} to {{ row.coverage.1|eastern:"%m-%d" }}{% elif row.in_export %}<span class="muted">no HR or stress files</span>{% else %}<span class="muted">not in export</span>{% endif %}</td>
+        <td class="n">{{ row.checkins|num }}</td><td class="n">{{ row.counts|get:"aligned"|num }}</td>
+        <td class="n">{{ row.counts|get:"no signal in window"|num }}</td><td class="n">{{ row.counts|get:"outside export"|num }}</td>
+        <td class="n">{{ row.hr_median|num:0 }}</td><td class="n">{{ row.stress_median|num:0 }}</td>
+        <td class="n">{% if row.spearman is not None %}{{ row.spearman|signed }} <span class="muted">(n={{ row.pairs }})</span>{% elif row.pairs %}<span class="muted" title="Needs {{ garmin.min_pairs }} aligned check-ins">n={{ row.pairs }}</span>{% else %}—{% endif %}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% if garmin.unmatched_folders %}<p class="note">Export folders with no enrolled RS participant: {{ garmin.unmatched_folders|join:", " }}.</p>{% endif %}
+  {% if garmin.checkins %}
+  <details>
+    <summary>Every check-in ({{ garmin.checkins|length }})</summary>
+    <div class="card"><table>
+      <thead><tr><th>Participant</th><th>Answered (Eastern)</th><th class="n">Valence</th><th class="n">Self stress</th>
+        <th class="n">HR mean (n)</th><th class="n">Garmin stress mean (n)</th><th>Status</th></tr></thead>
+      <tbody>{% for row in garmin.checkins %}
+        <tr><td>{{ row.study_id }}</td><td>{{ row.at|eastern:"%a %m-%d %H:%M" }}</td>
+          <td class="n">{{ row.valence|num }}</td><td class="n">{{ row.self_stress|num }}</td>
+          <td class="n">{{ row.hr_mean|num:0 }}{% if row.hr_n %} <span class="muted">({{ row.hr_n }})</span>{% endif %}</td>
+          <td class="n">{{ row.stress_mean|num:0 }}{% if row.stress_n %} <span class="muted">({{ row.stress_n }})</span>{% endif %}</td>
+          <td>{{ row.status }}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+  </details>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section>
+  <h2>2.8 Key actions for next week</h2>
+  <ol>{% for action in actions %}<li>{{ action }}</li>{% endfor %}</ol>
+</section>
+
+<section>
+  <h2>Weekly detail</h2>
+  <p class="note">The daily sections, computed over the whole week.</p>
+</section>
+{% include "dashboard/reports/_participant_status.html" with number="A.1" %}
+{% include "dashboard/reports/_checkins.html" with p="A." %}
+{% include "dashboard/reports/_detail.html" with p="A." %}
+{% endblock %}

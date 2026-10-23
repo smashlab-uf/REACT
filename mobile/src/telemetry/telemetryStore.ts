@@ -6,7 +6,7 @@ import { log } from '../utils/logger';
 export type TelemetryEvent = {
   user: number | null;
   session_id: string;
-  event_type: 'draft_started' | 'draft_deleted' | 'draft_submitted';
+  event_type: 'session_start' | 'session_end' | 'draft_started' | 'draft_deleted' | 'draft_submitted';
   occurred_at: string;
   screen_name: string;
   metadata: Record<string, unknown>;

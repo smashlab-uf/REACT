@@ -9,6 +9,7 @@ other way.
 """
 
 import os
+from datetime import date
 from zoneinfo import ZoneInfo
 
 from app.ema_catalog import (
@@ -18,6 +19,9 @@ from app.ema_catalog import (
 )
 
 __all__ = [
+    'AVAILABILITY_ALARM_HIGH',
+    'AVAILABILITY_ALARM_LOW',
+    'AVAILABILITY_PLANNED',
     'ARM_RANDOMIZATION_P_DEFAULT',
     'ARM_RANDOMIZATION_P_ENV',
     'BASELINE_ALERT_ONLY_SIGNALS',
@@ -29,6 +33,8 @@ __all__ = [
     'DISTRESS_B2_STRESS_CEILING',
     'DISTRESS_MOMENTARY_PAUSE_HOURS',
     'EMA_RESPONSE_WINDOW_MINUTES',
+    'GAME_DAY_COMPARISON_START',
+    'GAME_DAYS',
     'HRV_BASELINE_WINDOW',
     'HRV_BBI_MAX_MS',
     'HRV_BBI_MIN_CONFIDENCE',
@@ -43,6 +49,7 @@ __all__ = [
     'MSSD_WINDOW',
     'NOTIFICATION_WINDOW_END_HOUR',
     'NOTIFICATION_WINDOW_START_HOUR',
+    'N_POWER_TARGET',
     'N_TARGET',
     'OUTCOME_WINDOW_HOURS',
     'PARTICIPANT_TZ',
@@ -74,6 +81,7 @@ def _int_list_from_env(name):
 
 # Cohort
 N_TARGET = 40
+N_POWER_TARGET = 80
 PHASE1_USER_IDS = _int_list_from_env('REACT_PHASE1_USER_IDS')
 STUDY_ID_PREFIX = 'RS'
 TEST_ID_PREFIX = 'ST'
@@ -162,6 +170,13 @@ BENCHMARKS = {
 
 UNMEASURABLE_BENCHMARKS = frozenset()
 
+# Share of MRT-day decision points that are randomized. 0.21 is the deployed
+# engine's figure in the power table (analytics/analysis-resources/power-table.md);
+# the band is the alarm range the integrity strip already used.
+AVAILABILITY_PLANNED = 0.21
+AVAILABILITY_ALARM_LOW = 0.10
+AVAILABILITY_ALARM_HIGH = 0.35
+
 RATE_MIN_PARTICIPANTS = 10
 RATE_MIN_UNITS = 30
 
@@ -169,6 +184,13 @@ ITEM_BANK_VERSION = 'v1'
 
 METRICS_RECOMPUTE_TRAILING_DAYS = 3
 METRICS_COHORT_RETENTION_DAYS = 30
+
+# The weekly report's game-day comparison starts on the Friday of homecoming
+# weekend (Oct 9-11). Game days are listed here by hand rather than read from
+# EventDay, which holds no rows this season; add each football date as it is
+# played. 2026-10-10 is the homecoming game.
+GAME_DAY_COMPARISON_START = date(2026, 10, 9)
+GAME_DAYS = (date(2026, 10, 10),)
 
 # The two caps are different quantities and nothing else in the repo states both
 # in one place: 6 scheduled B1-B8 check-ins per day versus 4 JITAI prompts.

@@ -1,7 +1,7 @@
 import React, { useRef } from 'react';
 import { StyleSheet, TextInput, TextInputProps, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { onComposeChange } from '../telemetry/composeTelemetry';
+import { onComposeBlur, onComposeChange, onComposeFocus } from '../telemetry/composeTelemetry';
 import { colors, radius } from '../theme';
 
 type Props = Omit<TextInputProps, 'onChangeText'> & {
@@ -12,7 +12,7 @@ type Props = Omit<TextInputProps, 'onChangeText'> & {
 
 const MIN_INPUT_HEIGHT = 44;
 
-export default function ComposeInput({ value, onChangeText, onSubmit, ...rest }: Props) {
+export default function ComposeInput({ value, onChangeText, onSubmit, onFocus, onBlur, ...rest }: Props) {
   const prevText = useRef('');
   const isEmpty = value.trim().length === 0;
 
@@ -30,9 +30,16 @@ export default function ComposeInput({ value, onChangeText, onSubmit, ...rest }:
         onChangeText={handleChange}
         placeholder="What's on your mind?"
         placeholderTextColor="#999"
+        onFocus={(event) => {
+          onComposeFocus();
+          onFocus?.(event);
+        }}
+        onBlur={(event) => {
+          onComposeBlur();
+          onBlur?.(event);
+        }}
         multiline
         scrollEnabled={false}
-        autoFocus
         autoCorrect={false}
         autoCapitalize="none"
         spellCheck={false}

@@ -1,0 +1,15 @@
+{% load report_format %}<section>
+  <h2>{{ number }} Participant status</h2>
+  <div class="card"><table>
+    <tbody>
+      <tr><td>Total accounts</td><td class="n">{{ status.total_accounts|num }}</td></tr>
+      <tr><td>Study participants (RS)</td><td class="n">{{ status.study|num }}</td></tr>
+      <tr><td>Test / staff accounts (ST)</td><td class="n">{{ status.test|num }}</td></tr>
+      <tr><td>Unclassified accounts</td><td class="n">{{ status.unclassified|num }}</td></tr>
+      <tr><td>Active participants (run-in or MRT)</td><td class="n">{{ status.active|num }}</td></tr>
+      <tr><td>RS accounts not yet enrolled in backend</td><td class="n">{{ status.not_enrolled|num }}</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">ST and unclassified accounts keep their data for system validation and are left out of every
+    number below. Phases come from the participant rollup: {% for phase, n in status.phases.items %}{{ phase|label }} {{ n }}{% if not forloop.last %}, {% endif %}{% empty %}none computed yet{% endfor %}.</p>
+</section>
