@@ -242,3 +242,32 @@ class ParticipantEnrollmentAdminTests(TestCase):
         self.assertContains(response, 'already linked to another account')
         self.assertNotContains(response, credentials['password'])
         self.assertEqual(User.objects.count(), 1)
+
+
+class ScheduleRestartTests(TestCase):
+    def test_resave_and_reenroll_keep_restarted_schedule(self):
+        restart = timezone.now()
+        user = User.objects.create(
+            email='restarted@example.com', birthdate='2000-01-01', gender='other',
+            is_enrolled=True, enrolled_at=restart, schedule_restarted_at=restart,
+        )
+        user.save()
+        user.is_enrolled = False
+        user.save()
+        user.is_enrolled = True
+        user.save()
+        user.refresh_from_db()
+        self.assertEqual(user.enrolled_at, restart)
+        self.assertEqual(user.schedule_restarted_at, restart)
+
+    def test_admin_shows_schedule_restart_read_only(self):
+        staff = AuthUser.objects.create_superuser('restart-staff', 'restart@example.com', 'staff-password')
+        self.client.force_login(staff)
+        user = User.objects.create(
+            email='restarted@example.com', birthdate='2000-01-01', gender='other',
+            schedule_restarted_at=timezone.now(),
+        )
+        response = self.client.get(reverse('admin:app_user_change', args=[user.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Schedule restarted at')
+        self.assertNotContains(response, 'name="schedule_restarted_at"')

@@ -117,6 +117,7 @@ Participant record and enrollment status.
 | `push_token` | VARCHAR(128) | App telemetry | Expo push-notification token; required to deliver EMA/JITAI prompts. |
 | `is_enrolled` | BOOLEAN | Study/enrollment | Whether the participant is actively enrolled. Denominator for retention. |
 | `enrolled_at` | DATETIME | Study/enrollment | Enrollment timestamp (Day 1 anchor). |
+| `schedule_restarted_at` | DATETIME | Study/enrollment | Set only when staff restart a participant's schedule; `enrolled_at` is moved to the restart. Records timestamped before it are pre-restart (kept, not deleted). NULL for everyone else. |
 
 ### 2.2 `app_ema`
 

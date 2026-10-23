@@ -16,6 +16,10 @@ class User(models.Model):
     push_token = models.CharField(max_length=128, blank=True, null=True)
     is_enrolled = models.BooleanField(default=False)
     enrolled_at = models.DateTimeField(null=True, blank=True)
+    # Set when staff restart a participant's schedule (enrolled_at moved to the
+    # restart). Records timestamped before it are pre-restart and kept, never
+    # deleted.
+    schedule_restarted_at = models.DateTimeField(null=True, blank=True)
     # The Qualtrics baseline survey's "pid" embedded-data field (auto-populated
     # from the participant's personalized distribution link, confirmed
     # 2026-10-01 -- not typed by the participant). Crosswalk only: never a
