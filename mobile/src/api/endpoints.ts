@@ -85,8 +85,16 @@ export const telemetry = {
   }) => client.post('/telemetry/phone/', body),
 
   logEngagement: (body: {
-    event_type: 'notification_tapped' | 'notification_dismissed' | 'ema_opened' | 'ema_dismissed' | 'ema_completed';
+    event_type:
+      | 'notification_tapped'
+      | 'notification_dismissed'
+      | 'ema_opened'
+      | 'ema_dismissed'
+      | 'ema_completed'
+      | 'resource_card_shown_checkin'
+      | 'resource_card_shown_home';
     occurred_at: string;
     jitai_log?: number;
+    ema?: number;
   }) => client.post('/telemetry/engagement/', body),
 };

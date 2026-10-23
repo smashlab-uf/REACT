@@ -15,7 +15,7 @@ import { emitDraftDeleted, emitDraftSubmitted } from '../telemetry/composeTeleme
 import { useTelemetryStore, TelemetryEvent } from '../telemetry/telemetryStore';
 import { useAuthStore } from '../store/authStore';
 import { useAlertStore } from '../store/alertStore';
-import { jitai } from '../api/endpoints';
+import { jitai, telemetry } from '../api/endpoints';
 import { EMANextShowResponse, ResourceCard } from '../api/types';
 import { log } from '../utils/logger';
 import { colors, radius } from '../theme';
@@ -37,6 +37,15 @@ export default function ComposeScreen({ onOpenEMA, availableCheckin, checkinErro
 
   const devNote = __DEV__ ? ' Check the console for telemetry.' : '';
   const userId = useAuthStore((s) => s.userId);
+
+  function logResourceCardShown() {
+    if (!userId) return;
+    telemetry
+      .logEngagement({ event_type: 'resource_card_shown_home', occurred_at: new Date().toISOString() })
+      .catch((e) => {
+        log('[Home] resource_card_shown_home log failed:', e?.response?.status ?? e?.message);
+      });
+  }
 
   async function simulateJitaiPush() {
     if (!userId) return;
@@ -145,7 +154,7 @@ export default function ComposeScreen({ onOpenEMA, availableCheckin, checkinErro
 
         {resourceCard && (
           <View style={styles.resourceCard}>
-            <SupportResourceCard card={resourceCard} />
+            <SupportResourceCard card={resourceCard} onShown={logResourceCardShown} />
           </View>
         )}
 

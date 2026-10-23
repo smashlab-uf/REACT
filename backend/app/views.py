@@ -921,6 +921,8 @@ class EMAResponseView(APIView):
             outcome_window_end=data.get('outcome_window_end'),
             expires_at=reminder.expires_at if reminder else now + timedelta(minutes=EMA_RESPONSE_WINDOW_MINUTES),
             served_sub_item_ids=served,
+            app_version=data.get('app_version') or '',
+            app_build=data.get('app_build') or '',
         )
 
         responses = [
@@ -1286,7 +1288,7 @@ class EngagementLogView(APIView):
         app_user = _get_app_user(request)
         if app_user is None:
             return Response({"error": "User not found."}, status=status.HTTP_403_FORBIDDEN)
-        serializer = EngagementLogSerializer(data=request.data)
+        serializer = EngagementLogSerializer(data=request.data, context={'user': app_user})
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         log = serializer.save(user=app_user)

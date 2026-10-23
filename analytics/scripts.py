@@ -274,8 +274,9 @@ def load_ema(
         pd.DataFrame with columns matching app_ema:
             id, user_id, prompt_id, sent_at, responded_at, status, ema_type,
             source_jitai_log_id, outcome_window_start, outcome_window_end,
-            expires_at, mood, stress, energy.
+            expires_at, app_version, app_build, mood, stress, energy.
         One row per EMA prompt. Timestamps are timezone-aware (UTC).
+        app_version/app_build are blank for builds that did not send them.
 
     Example:
         load_ema(user_id=42, start_date=date(2026,9,1))
@@ -296,7 +297,8 @@ def load_ema(
         queryset.values(
             "id", "user_id", "prompt_id", "sent_at", "responded_at", "status",
             "ema_type", "source_jitai_log_id", "outcome_window_start",
-            "outcome_window_end", "expires_at", "mood", "stress", "energy",
+            "outcome_window_end", "expires_at", "app_version", "app_build",
+            "mood", "stress", "energy",
         )
     )
     return _to_utc(
@@ -457,7 +459,8 @@ def load_engagement_log(
     """
     Purpose:
         Load user engagement events (EMA opened/dismissed/completed,
-        notification tapped/dismissed) from app_engagementlog.
+        notification tapped/dismissed, resource card shown after a check-in
+        or on home) from app_engagementlog.
 
     Inputs:
         user_id    - int or None. If None, returns records for all participants.
@@ -466,7 +469,8 @@ def load_engagement_log(
 
     Outputs:
         pd.DataFrame with columns:
-            id, user_id, jitai_log_id, event_type, occurred_at, recorded_at.
+            id, user_id, jitai_log_id, ema_id, event_type, occurred_at,
+            recorded_at. ema_id is set on resource_card_shown_checkin rows.
         One row per engagement event. Timestamps are timezone-aware (UTC).
 
     Example:
@@ -485,7 +489,7 @@ def load_engagement_log(
 
     df = pd.DataFrame(
         queryset.values(
-            "id", "user_id", "jitai_log_id", "event_type",
+            "id", "user_id", "jitai_log_id", "ema_id", "event_type",
             "occurred_at", "recorded_at",
         )
     )

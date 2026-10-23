@@ -189,6 +189,10 @@ class EMA(models.Model):
     # can only be inferred from what they happened to answer. NULL on rows
     # written before this field existed.
     served_sub_item_ids = models.JSONField(null=True, blank=True)
+    # The build that submitted this check-in. Blank on rows written before the
+    # app sent it, and on any submission from a build older than that.
+    app_version = models.CharField(max_length=32, blank=True, default='')
+    app_build = models.CharField(max_length=32, blank=True, default='')
     mood = models.PositiveSmallIntegerField(
         null=True, blank=True,
         validators=[MinValueValidator(1), MaxValueValidator(7)],
@@ -296,6 +300,8 @@ ENGAGEMENT_EVENT_TYPES = (
     ('ema_completed', 'EMA Completed'),
     ('notification_tapped', 'Notification Tapped'),
     ('notification_dismissed', 'Notification Dismissed'),
+    ('resource_card_shown_checkin', 'Resource Card Shown After Check-in'),
+    ('resource_card_shown_home', 'Resource Card Shown On Home'),
 )
 
 def validate_phone_metadata(value):
@@ -484,6 +490,7 @@ class DistressFlag(models.Model):
 class EngagementLog(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     jitai_log = models.ForeignKey(JITAILog, on_delete=models.SET_NULL, null=True, blank=True)
+    ema = models.ForeignKey(EMA, on_delete=models.SET_NULL, null=True, blank=True)
     event_type = models.CharField(max_length=64, choices=ENGAGEMENT_EVENT_TYPES)
     occurred_at = models.DateTimeField(db_index=True)
     recorded_at = models.DateTimeField(auto_now_add=True)

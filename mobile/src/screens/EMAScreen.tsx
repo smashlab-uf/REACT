@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import * as Application from 'expo-application';
 import {
   ActivityIndicator,
   AppState,
@@ -76,6 +77,7 @@ export default function EMAScreen({ visible, jitaiLogId, checkinOnly = false, on
   const [survey, setSurvey] = useState<EMANextShowResponse | null>(null);
   const [noShowReason, setNoShowReason] = useState<string | null>(null);
   const [resourceCard, setResourceCard] = useState<ResourceCard | null>(null);
+  const [resourceCardEmaId, setResourceCardEmaId] = useState<number | null>(null);
   const [answers, setAnswers] = useState<Record<string, EMAAnswerValue>>({});
   const [submitting, setSubmitting] = useState(false);
   const [activeSectionTitle, setActiveSectionTitle] = useState<string | null>(null);
@@ -103,11 +105,25 @@ export default function EMAScreen({ visible, jitaiLogId, checkinOnly = false, on
     [userId, jitaiLogId],
   );
 
+  const logResourceCardShown = useCallback(() => {
+    if (!userId) return;
+    telemetry
+      .logEngagement({
+        event_type: 'resource_card_shown_checkin',
+        occurred_at: new Date().toISOString(),
+        ...(resourceCardEmaId !== null && { ema: resourceCardEmaId }),
+      })
+      .catch((e) => {
+        log('[EMA] resource_card_shown_checkin log failed:', e?.response?.status ?? e?.message);
+      });
+  }, [userId, resourceCardEmaId]);
+
   const load = useCallback(async () => {
     setPhase('loading');
     setSurvey(null);
     setNoShowReason(null);
     setResourceCard(null);
+    setResourceCardEmaId(null);
     setAnswers({});
     setSubmitting(false);
     setActiveSectionTitle(null);
@@ -205,6 +221,8 @@ export default function EMAScreen({ visible, jitaiLogId, checkinOnly = false, on
         jitai_log_id: survey.jitai_log_id ?? jitaiLogId ?? null,
         outcome_window_start: survey.outcome_window_start ?? null,
         outcome_window_end: survey.outcome_window_end ?? null,
+        app_version: Application.nativeApplicationVersion,
+        app_build: Application.nativeBuildVersion,
         responses: visibleItems.map((sub) => ({
           sub_item_id: sub.sub_item_id,
           value: answers[sub.sub_item_id],
@@ -214,6 +232,7 @@ export default function EMAScreen({ visible, jitaiLogId, checkinOnly = false, on
       logEngagement('ema_completed', survey.jitai_log_id);
       if (submitted.resource_card) {
         setResourceCard(submitted.resource_card);
+        setResourceCardEmaId(submitted.id);
         setSubmitting(false);
         setPhase('resources');
         return;
@@ -329,7 +348,7 @@ export default function EMAScreen({ visible, jitaiLogId, checkinOnly = false, on
     if (phase === 'resources' && resourceCard) {
       return (
         <ScrollView contentContainerStyle={styles.body}>
-          <SupportResourceCard card={resourceCard} />
+          <SupportResourceCard card={resourceCard} onShown={logResourceCardShown} />
         </ScrollView>
       );
     }

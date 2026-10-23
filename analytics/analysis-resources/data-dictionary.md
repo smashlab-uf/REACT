@@ -145,6 +145,8 @@ prompt metadata.
 | `outcome_window_start` | DATETIME | Decision engine | Start of the outcome measurement window for this prompt (used to identify post-JITAI EMA outcomes). |
 | `outcome_window_end` | DATETIME | Decision engine | End of the outcome measurement window. |
 | `expires_at` | DATETIME | EMA push | When the response window closes: `sent_at + 30 min` (`app.ema_catalog.EMA_RESPONSE_WINDOW_MINUTES`). Responses after this are out-of-window. Not the outcome window — see `outcome_window_end`. |
+| `app_version` | VARCHAR(32) | App telemetry | App version (`nativeApplicationVersion`) of the build that submitted this check-in (migration `0056`). Blank on rows written before it and on submissions from older builds, which is itself how an un-updated participant shows up. |
+| `app_build` | VARCHAR(32) | App telemetry | Native build number (`nativeBuildVersion`) of that build; distinguishes builds that share a version string. Blank under the same conditions as `app_version`. |
 | `mood` | SMALLINT | EMA push | Top-level self-reported mood (Likert, 1–7). Denormalized summary field; detailed per-item responses are in `ema_item_response`. |
 | `stress` | SMALLINT | EMA push | Top-level self-reported stress (Likert, 1–7). |
 | `energy` | SMALLINT | EMA push | Top-level self-reported energy (Likert, 1–7). |
@@ -295,7 +297,8 @@ User interactions with a delivered JITAI prompt.
 | `id` | INT (PK) | App telemetry | Primary key. |
 | `user_id` | INT (FK → `user.user_id`) | App telemetry | Participant. |
 | `jitai_log_id` | INT (FK → `jitai_log.id`) | App telemetry | The prompt interacted with. |
-| `event_type` | VARCHAR(64) | App telemetry | One of `ema_opened`, `ema_dismissed`, `ema_completed`, `notification_tapped`, `notification_dismissed`. |
+| `ema_id` | INT (FK → `ema.id`, nullable) | App telemetry | The check-in whose submission returned the resource card; set on `resource_card_shown_checkin` rows only (migration `0056`). |
+| `event_type` | VARCHAR(64) | App telemetry | One of `ema_opened`, `ema_dismissed`, `ema_completed`, `notification_tapped`, `notification_dismissed`, `resource_card_shown_checkin` (the Section 11 resource card rendered after a flagged check-in), `resource_card_shown_home` (the card rendered on the home screen while a flag is active). The two card events are logged once each time the card is put on screen, by builds from migration `0056` on; an older build logs neither. |
 | `occurred_at` | DATETIME | App telemetry | When the interaction happened (device clock). |
 | `recorded_at` | DATETIME | App telemetry | When the event was persisted server-side. |
 
@@ -413,6 +416,7 @@ participant has an active JITAI outcome window open. Confirmed by Dr. Chang, 202
 - `phone_telemetry.user_id` → `user.user_id` (many-to-one)
 - `engagement_log.user_id` → `user.user_id` (many-to-one)
 - `engagement_log.jitai_log_id` → `jitai_log.id` (many-to-one)
+- `engagement_log.ema_id` → `ema.id` (many-to-one, nullable)
 - `checkin_reminder.user_id` → `user.user_id` (many-to-one)
 - `hair_sample.user_id` → `user.user_id` (many-to-one)
 - `hair_hygiene_covariates.user_id` → `user.user_id` (one-to-one)

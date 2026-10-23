@@ -1715,6 +1715,37 @@ class EngagementEndpointTests(TestCase):
         }, format='json')
         self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
 
+    def test_card_shown_after_checkin_links_its_ema(self):
+        from app.models import EngagementLog
+        ema = EMA.objects.create(user=self.user, prompt_id='EMA-CARD', status='completed')
+        response = self.client.post('/telemetry/engagement/', {
+            'ema': ema.id,
+            'event_type': 'resource_card_shown_checkin',
+            'occurred_at': '2026-09-01T15:10:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+        log = EngagementLog.objects.get(user=self.user)
+        self.assertEqual(log.ema, ema)
+
+    def test_card_shown_on_home_needs_no_ema(self):
+        response = self.client.post('/telemetry/engagement/', {
+            'event_type': 'resource_card_shown_home',
+            'occurred_at': '2026-09-01T15:10:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_201_CREATED)
+
+    def test_ema_of_another_user_returns_400(self):
+        from app.models import EngagementLog
+        other = make_user(email='other-engage@ufl.edu')
+        ema = EMA.objects.create(user=other, prompt_id='EMA-OTHER', status='completed')
+        response = self.client.post('/telemetry/engagement/', {
+            'ema': ema.id,
+            'event_type': 'resource_card_shown_checkin',
+            'occurred_at': '2026-09-01T15:10:00Z',
+        }, format='json')
+        self.assertEqual(response.status_code, http_status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(EngagementLog.objects.exists())
+
 
 # ---------------------------------------------------------------------------
 # IDOR: cross-user access blocked for WearableDevice
@@ -4481,6 +4512,23 @@ class EMARotationEndpointTests(TestCase):
         self.assertEqual(response.status_code, 201)
         ema = EMA.objects.get(prompt_id=self.reminder.prompt_id)
         self.assertEqual(ema.expires_at, self.reminder.expires_at)
+        self.assertEqual((ema.app_version, ema.app_build), ('', ''))
+
+    def test_submitted_ema_records_app_version(self):
+        response = self.client.post('/ema/responses/', {
+            'prompt_id': self.reminder.prompt_id,
+            'ema_type': 'scheduled_check_in',
+            'app_version': '1.1.0',
+            'app_build': '14',
+            'responses': [
+                {'sub_item_id': 'B1_valence', 'value': 4},
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()['app_build'], '14')
+        ema = EMA.objects.get(prompt_id=self.reminder.prompt_id)
+        self.assertEqual((ema.app_version, ema.app_build), ('1.1.0', '14'))
 
     def test_submit_variable_ema_responses(self):
         response = self.client.post('/ema/responses/', {
