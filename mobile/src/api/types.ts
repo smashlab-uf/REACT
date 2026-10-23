@@ -75,6 +75,8 @@ export type EMASubmitRequest = {
   jitai_log_id?: number | null;
   outcome_window_start?: string | null;
   outcome_window_end?: string | null;
+  app_version?: string | null;
+  app_build?: string | null;
   responses: EMAAnswer[];
 };
 

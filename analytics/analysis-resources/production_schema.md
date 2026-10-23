@@ -92,11 +92,13 @@ production (sourced/joined outside the Django backend).
 | outcome_window_start | timestamptz | | |
 | source_jitai_log_id | bigint | | |
 | served_sub_item_ids | jsonb | | |
+| app_version | varchar(32) | not null | '' |
+| app_build | varchar(32) | not null | '' |
 
 **PK:** id &nbsp;·&nbsp; **Indexes:** user_id, source_jitai_log_id &nbsp;·&nbsp;
 **Checks:** mood/stress/energy >= 0
 **FKs:** user_id → app_user(user_id); source_jitai_log_id → app_jitailog(id)
-**Referenced by:** app_emaitemresponse(ema_id), app_jitailog(ema_id)
+**Referenced by:** app_emaitemresponse(ema_id), app_jitailog(ema_id), app_engagementlog(ema_id)
 
 `served_sub_item_ids` (migration `0044`) records which sub-items this check-in actually put on
 screen, after the B4–B7 rotation and the `schedule_condition` filter. Without it, "how many
@@ -200,10 +202,11 @@ yet.
 | occurred_at | timestamptz | not null | |
 | recorded_at | timestamptz | not null | |
 | jitai_log_id | bigint | | |
+| ema_id | bigint | | |
 | user_id | integer | not null | |
 
-**PK:** id &nbsp;·&nbsp; **Indexes:** (user_id, occurred_at), jitai_log_id, occurred_at, user_id
-**FKs:** user_id → app_user(user_id); jitai_log_id → app_jitailog(id)
+**PK:** id &nbsp;·&nbsp; **Indexes:** (user_id, occurred_at), jitai_log_id, ema_id, occurred_at, user_id
+**FKs:** user_id → app_user(user_id); jitai_log_id → app_jitailog(id); ema_id → app_ema(id)
 
 ### app_heartratesample — data dictionary: `heart_rate_sample` (§2.5)
 

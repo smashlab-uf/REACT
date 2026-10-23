@@ -224,7 +224,7 @@ randomization and routing audit landed in migrations `0042`–`0043`, and
 `threshold_at_decision` / `threshold_source` in `0046`, and `distress_flag_active` in `0054`); `User` carries `study_id` (migration
 `0051`, see the baseline-import section below) and `schedule_restarted_at` (`0055`: set when staff restart a
 participant's schedule by moving `enrolled_at`; records before it are pre-restart, kept, and logged in `docs/CHANGELOG.md`); `EMA` carries `ema_type`,
-outcome-window fields and `served_sub_item_ids`; there are additional tables (`EMAItemResponse`,
+outcome-window fields, `served_sub_item_ids` and `app_version`/`app_build` (`0056`); there are additional tables (`EMAItemResponse`,
 `EngagementLog`, `PhoneTelemetry`, `EventDay`, `CheckinReminder`, `WearableSync`, `DistressFlag`); and four derived
 `dashboard_*` monitoring tables. For the actual deployed schema,
 trust `backend/app/models.py` and `analytics/analysis-resources/production_schema.md` (the latter maps every
@@ -493,7 +493,7 @@ endpoints and `/dashboard/participants/`: study ID, else Labfront ID, else `user
 carries email. The admin "Enroll for notifications" shortcut writes a `TEST-<user_id>` Labfront ID, so never use it on
 a real participant (user 102 / RS02 was enrolled that way and needs the real ID set).
 
-`JITAILog.distress_flag_active` (migration `0054`, added 2026-10-19) is true on every decision row written while any distress flag was active, whatever the row's own outcome: below threshold, run-in, randomized out or sent. It records context only and does not drive any decision; `suppression_reason` is still the sole record of what blocked a prompt, so a below-threshold row inside a flag window stays `not_sent` with `distress_flag_active=True`. `manage.py backfill_distress_flag_active [--dry-run] [--user N]` (dashboard app) fills it for older rows from `DistressFlag.was_active_at`. `GET /ema/next/` separately returns `distress_active` for the app. The resource card is returned by `POST /ema/responses/` after any flagged check-in, independent of whether a decision was due; nothing logs the app rendering it, so the database cannot show that a participant saw it.
+`JITAILog.distress_flag_active` (migration `0054`, added 2026-10-19) is true on every decision row written while any distress flag was active, whatever the row's own outcome: below threshold, run-in, randomized out or sent. It records context only and does not drive any decision; `suppression_reason` is still the sole record of what blocked a prompt, so a below-threshold row inside a flag window stays `not_sent` with `distress_flag_active=True`. `manage.py backfill_distress_flag_active [--dry-run] [--user N]` (dashboard app) fills it for older rows from `DistressFlag.was_active_at`. `GET /ema/next/` separately returns `distress_active` for the app. The resource card is returned by `POST /ema/responses/` after any flagged check-in, independent of whether a decision was due. Since migration `0056` the app logs each time it puts the card on screen as an `EngagementLog` event: `resource_card_shown_checkin` (linked by `ema` to the check-in that returned it) or `resource_card_shown_home`. An older build logs neither, so a missing event on a check-in with blank `EMA.app_build` means "old build", not "card not shown".
 
 A suppressed decision point is logged with `send_prompt=False`, `randomization_draw` and
 `randomization_probability` both null, `status` and `delivery_status` both `'suppressed'` (never
@@ -531,8 +531,9 @@ a write through it always gets this safeguard check regardless of what the calle
 is active) after any check-in submitted under an active override. Card contents are
 `RESOURCE_CARD_RESOURCES` in `distress.py`: the seven resources from the study's resource document
 (the same seven as the baseline block), with digits-only contacts so tap-to-call works, and the
-911 instruction in the card message. The backend cannot see the app version, so a participant on
-an old build is suppressed but sees no card; every participant must be on the new build before Day 8.
+911 instruction in the card message. A participant on a build older than the card is suppressed but
+sees no card; `EMA.app_version`/`app_build` (sent on submit since `0056`, blank from older builds) is
+how to tell who has not updated.
 
 Decided by Dr. Chang 2026-09-23, so do not add them to the backend: **staff alerts come from
 Qualtrics** (it emails the PI and staff when a flagged baseline is submitted, so the same-day

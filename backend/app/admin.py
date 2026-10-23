@@ -262,10 +262,13 @@ class EMAAdmin(ReadableAdminMixin, admin.ModelAdmin):
     date_hierarchy = "sent_at"
     ordering = ("-sent_at",)
     autocomplete_fields = ("user",)
-    readonly_fields = ("sent_at",)
+    readonly_fields = ("sent_at", "app_version", "app_build")
     fieldsets = (
         ("Respondent", {
             "fields": ("user", "prompt_id", "sent_at", "responded_at", "status", "ema_type"),
+        }),
+        ("App Build", {
+            "fields": ("app_version", "app_build"),
         }),
         ("Outcome Window", {
             "fields": ("source_jitai_log", "outcome_window_start", "outcome_window_end", "expires_at"),
@@ -471,10 +474,10 @@ class PhoneTelemetryAdmin(ReadableAdminMixin, admin.ModelAdmin):
 
 @admin.register(EngagementLog)
 class EngagementLogAdmin(ReadableAdminMixin, admin.ModelAdmin):
-    list_display = ("id", "user", "event_type", "occurred_at", "jitai_log")
+    list_display = ("id", "user", "event_type", "occurred_at", "jitai_log", "ema")
     list_filter = ("event_type", "occurred_at")
     search_fields = ("user__email",)
     date_hierarchy = "occurred_at"
     ordering = ("-occurred_at",)
-    autocomplete_fields = ("user",)
+    autocomplete_fields = ("user", "ema")
     readonly_fields = ("recorded_at",)

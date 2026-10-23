@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { ResourceCard } from '../api/types';
 import { colors, radius, typography } from '../theme';
@@ -6,7 +6,12 @@ import { colors, radius, typography } from '../theme';
 const DIALABLE = /^[0-9+\-\s()]+$/;
 
 // Both screens render the server's resource wording without rewriting it.
-export default function SupportResourceCard({ card }: { card: ResourceCard }) {
+// onShown fires once per mount, so each time the card is put on screen is logged once.
+export default function SupportResourceCard({ card, onShown }: { card: ResourceCard; onShown?: () => void }) {
+  useEffect(() => {
+    onShown?.();
+  }, []);
+
   return (
     <View>
       <Text accessibilityRole="header" style={styles.title}>{card.title}</Text>
